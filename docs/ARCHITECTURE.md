@@ -448,7 +448,7 @@ GAME_OVER：回合冻结（不切换、输入与命令全拒）
   gameOver / winnerId（Phase 7），本状态机只消费该标志；
 - **GAME_OVER 后续**：Phase 11 菜单 / Phase 16 Rematch 在此接续。
 
-## 6. 联机（Phase 12 Transport 已落地；13+ 继续实现）
+## 6. 联机（Phase 12 Transport + Phase 13 Connection + Phase 14 Gameplay Sync 已落地）
 
 ### 分层
 
@@ -489,6 +489,62 @@ WebRTCTransport（P2P dataChannel）      LocalLoopbackTransport（离线开发 
   仅协助 NAT traversal；严格 NAT / 防火墙场景可能需要 TURN 中继。
   Phase 12 仅架构支持（`WebRTCConfig.iceServers` 可注入 TURN），不部署
   任何 TURN；TURN 凭据属部署环境，禁止入仓库。
+
+### Phase 14 落地架构（P2P Gameplay Sync，HOST AUTHORITATIVE）
+
+消息流（值即 wire 协议，NetworkMessageType 全集含 `COMMAND_REJECTED`）：
+
+```
+Lobby：PLAYER_READY（双向，1.5s 低频重发直到 GAME_START —— 订阅时序防线）
+       → Host 汇齐双 Ready → GAME_START（matchId + seed + 权威初始快照）
+回合中：Guest MOVE_REQUEST / FIRE_REQUEST → Host 请求级守卫（sender /
+       turnId / 存活 / FIRE 参数：速度∈[min,max]、起点距炮塔≤5px、seed 一致）
+       → 重建 GameCommand 进同一 CommandBus → GameLogic → Systems
+       （语义校验全在系统层，单一 validate+execute 路径）
+       → GameLogic.onOutcome 广播 MOVE / FIRE（accepted）或
+       COMMAND_REJECTED（guest 请求被拒，拒因映射见 OnlineReasonMap）
+收口： Host TURN_RESULT（权威 snapshot + damages + hpBefore + stateHash）
+       → Host dwell 完成 → TURN_END（Turn Barrier 授权）
+       → Guest applyRemoteTurnEnd + 相机转场收尾
+```
+
+分层（network/online/ 目录，全部 <400 行）：
+
+```
+BattleScene（只经 OnlineGameCoordinatorApi 交互）
+   ├─ OnlineGameCoordinator（生命周期壳：lobby 握手 / attach /
+   │    入站三防线 guardInbound / 统一出站 sendOut / 诊断 debugInfo）
+   │     ├─ OnlineHostChannel（请求验证 verdict 纯函数 + outcome 广播；
+   │     │    重入红线：outcome handler 只 send 不 dispatch）
+   │     └─ OnlineGuestChannel（权威应用 + Turn Barrier 双条件 +
+   │        synthesizeAuthoritativeDamage 权威伤害展示）
+   ├─ GuestIntentBus（Guest 输入总线：本地命令 → *_REQUEST，不本地执行）
+   ├─ AuthoritativeState（buildSnapshot / stateFromSnapshot /
+   │    buildTurnResultPayload / applyTurnResult / computeStateHash FNV-1a）
+   └─ OnlinePayloads（全部入站 payload 形状守卫 —— Untrusted 第一道防线）
+```
+
+关键不变量：
+
+- **Session 归属**：OnlineSessionManager 经 `game.registry` 跨 Scene 共享
+  （main.ts 组合根注入）；OnlineConnectionScene 交接后 SHUTDOWN 走
+  `controller.detach()`（禁 dispose —— destroySession 会杀死已交接通道），
+  对局结束统一由 BattleScene.onShutdown `disposeSession` 收口。
+- **Guest HP 权威**：Guest 注入 calculate-only 伤害系统（apply no-op），
+  本地 HP 只经 `applyTurnResult` 覆写；伤害数字用 Host 数值
+  （不显示本地预测）。
+- **Turn Barrier**：Guest 本地 dwell 完成 + TURN_END 到达双条件才推进
+  （`TurnManager.applyRemoteTurnEnd` 消费 Host 值；场景层不得在
+  guest-'proceed' 后重复发起转场 —— 双驱动会把首个 transition tween
+  提前 resolve，P2P E2E 实测踩坑）。
+- **幂等三防线**（guardInbound，顺序固定）：payload 守卫 → matchId →
+  senderId → per-type sequence 去重（有序通道下单调，重放必被挡）。
+- **离线零依赖**：Single Player / Local 2P 全程不构造 coordinator
+  （BattleScene `online === null` → 所有 `?.` 无操作），无需 Dummy RTC。
+- **断线**：优雅关闭（DataChannel close / 关标签页）即时感知 →
+  冻结输入 + OPPONENT DISCONNECTED 横幅 + BACK TO MENU；进程异常崩溃
+  依赖 ICE failed 终局判定（瞬态 disconnected 不误杀，Phase 12 设计），
+  完整恢复策略归 Phase 15。
 
 ### 阶段边界
 

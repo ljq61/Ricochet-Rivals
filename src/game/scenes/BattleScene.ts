@@ -31,7 +31,19 @@ import { TurnBanner } from '../ui/TurnBanner';
 import { DamageNumbers } from '../ui/DamageNumbers';
 import { DebugOverlay } from '../ui/DebugOverlay';
 import { ResultScene, type ResultSceneData } from './ResultScene';
-import { DEBUG_GAME } from '../config/DebugConfig';
+import { MainMenuScene } from './MainMenuScene';
+import { DEBUG_GAME, DEBUG_NETWORK } from '../config/DebugConfig';
+import { MenuButton } from '../ui/MenuButton';
+import { stateFromSnapshot } from '../network/online/AuthoritativeState';
+import type {
+  CommandRejectedPayload,
+  OnlineBattleBootstrap,
+  OnlineGameCoordinatorApi,
+} from '../network/online/OnlineTypes';
+import {
+  ONLINE_SESSION_MANAGER_KEY,
+  type OnlineSessionManager,
+} from '../network/OnlineSession';
 
 /**
  * 战斗场景（CODELY.md §3）。
@@ -98,6 +110,18 @@ export class BattleScene extends Phaser.Scene {
   /** Phase 9 横幅状态检测（同 PlayerHud displayedHp 模式：State 唯一数据源） */
   private bannerTurnKey: string | null = null;
   private bannerGameOverShown = false;
+  // ---- Phase 14 联机（离线全部 null —— 零网络依赖） ----
+  /** 协调器（bootstrap 注入；BattleScene 只经 OnlineGameCoordinatorApi 交互） */
+  private online: OnlineGameCoordinatorApi | null = null;
+  private onlineBootstrap: OnlineBattleBootstrap | null = null;
+  /** 通道中断冻结（OPPONENT DISCONNECTED 后禁输入） */
+  private connectionLost = false;
+  /** 断线后的返回菜单按钮（懒创建） */
+  private disconnectButton: MenuButton | null = null;
+  /** COMMAND_REJECTED 轻量提示防刷屏 */
+  private lastRejectedToastMs = 0;
+  /** 相机/回合流事件环形日志（E2E 排查 aim/transition 时序用） */
+  private readonly cameraEventLog: string[] = [];
 
   constructor() {
     super(BattleScene.KEY);
@@ -108,8 +132,10 @@ export class BattleScene extends Phaser.Scene {
    * init 阶段到达。缺省兜底 local_2p（健壮降级，不抛错），直接启动
    * BattleScene（BootScene / 调试）不会因缺 setup 崩溃。
    */
-  init(data: BattleSceneData): void {
+  init(data: BattleSceneData & { online?: OnlineBattleBootstrap }): void {
     this.setup = data?.setup ?? createMatchSetup('local_2p');
+    this.onlineBootstrap = data?.online ?? null;
+    this.online = this.onlineBootstrap?.coordinator ?? null;
     // scene.start 复用 Scene 实例：类字段初始化只在构造时执行一次，
     // 对局级字段必须全部在此复位（旧实例资源已在 onShutdown destroy，
     // 这里只清引用）。逐字段审视结论（create 是否每局无条件重建）：
@@ -118,7 +144,8 @@ export class BattleScene extends Phaser.Scene {
     //   deviceProfile / viewportService / inputRouter / cameraController /
     //   aimButton / controls（touch / desktop 两分支必走其一）/
     //   aimController / aimRenderer / playerHud / turnBanner / damageNumbers /
-    //   debugOverlay；setup 由 init 本身无条件赋值（带兜底）
+    //   debugOverlay；setup / onlineBootstrap / online 由 init 本身无条件
+    //   赋值（带兜底，联机局结束后转离线 = null 天然复位）
     // - 条件赋值（必须复位）：
     //   aiInput —— 仅 SP（p2Controller === 'ai'）分支赋值；SP 完赛后
     //   转 local_2p 时旧实例残留非 null（destroy 只 reset 内部状态，闭包
@@ -127,18 +154,28 @@ export class BattleScene extends Phaser.Scene {
     //   touchControls —— 仅 touch 分支赋值；同会话 profile 不变理论安全，
     //   为防 profile 漂移一并复位（一行成本消除整类隐患）
     //   bannerTurnKey / bannerGameOverShown —— 横幅去重 / 转场单次守卫状态
+    //   disconnectButton / connectionLost / lastRejectedToastMs —— Phase 14
+    //   联机专属条件状态（联机局结束后转离线必须清）
     this.aiInput = null;
     this.touchControls = null;
     this.bannerTurnKey = null;
     this.bannerGameOverShown = false;
+    this.connectionLost = false;
+    this.disconnectButton = null;
+    this.lastRejectedToastMs = 0;
   }
 
   create(): void {
-    // 1. 逻辑状态（纯数据，不持有 Phaser 对象）
-    this.state = createInitialGameState({
-      matchId: `${this.setup.mode}-match`,
-      seed: 1,
-    });
+    // 1. 逻辑状态（纯数据，不持有 Phaser 对象）。
+    //    Phase 14 联机：从 GAME_START 权威快照重建（双方同源，Guest 禁止
+    //    自产 seed / 位置 / 首位玩家）；离线：本地初始状态。
+    this.state =
+      this.onlineBootstrap !== null
+        ? stateFromSnapshot(this.onlineBootstrap.gameStart.initialState)
+        : createInitialGameState({
+            matchId: `${this.setup.mode}-match`,
+            seed: 1,
+          });
 
     // 2. 静态世界
     new WorldBuilder(this).build();
@@ -157,13 +194,35 @@ export class BattleScene extends Phaser.Scene {
       fire: new FireSystem(),
       projectile: this.projectileSystem,
     });
-    // Phase 7：爆炸结算链（Projectile 不直接改 HP）
-    this.explosionSystem = new ExplosionSystem({
-      damage: new ConcreteDamageSystem(),
-    });
-
     // Phase 8：回合状态机（startMatch → P1 ACTION，重置预算 / hasFired）
     this.turnManager = new TurnManager(this.state);
+    // Phase 14：联机协调器 attach（必须先于爆炸系统 / 输入源接线 ——
+    // damageSystem 与 inputBus 均由协调器提供）。Host 的本地输入与
+    // Guest 请求走同一条 Bus → GameLogic → Systems 权威路径；Guest 的
+    // inputBus 为意图拦截（*_REQUEST），本地不执行。
+    if (this.online !== null) {
+      this.online.attach({
+        getState: () => this.state,
+        commandBus: this.commandBus,
+        gameLogic: this.gameLogic,
+        turnManager: this.turnManager,
+        resumeNextTurn: () => this.beginNextTurnTransition(),
+        showAuthoritativeDamage: (result) =>
+          this.damageNumbers.show(result, this.state.players),
+        showRejected: (payload) => this.showOnlineRejected(payload),
+        onDisconnected: () => this.handleOnlineDisconnected(),
+      });
+      this.online.startKeepAlive();
+    }
+    // Phase 7：爆炸结算链（Projectile 不直接改 HP）。
+    // 联机 Guest 注入 calculate-only 伤害系统 —— 本地 HP 只经
+    // TURN_RESULT reconcile 改写（Host 权威）。
+    this.explosionSystem = new ExplosionSystem({
+      damage:
+        this.online !== null
+          ? this.online.damageSystem
+          : new ConcreteDamageSystem(),
+    });
     this.turnManager.startMatch();
 
     // 5. 平台档案 + 视口服务（动态 zoom，必须在相机初始定位前应用）
@@ -193,11 +252,15 @@ export class BattleScene extends Phaser.Scene {
     });
 
     // 9. 平台控制门面：共享 MoveInputCore / 规则系统，仅输入采集不同；
-    //    控制目标 = 当前回合玩家（Phase 8 热座）
+    //    控制目标 = 当前回合玩家（Phase 8 热座）。
+    //    Phase 14 联机：输入总线换协调器 inputBus（Host = 真实执行总线，
+    //    广播由 outcome 钩子负责；Guest = 意图拦截 → *_REQUEST）
+    const inputBus: CommandBus =
+      this.online !== null ? this.online.inputBus : this.commandBus;
     if (isTouch) {
       this.touchControls = new TouchControls(this, {
         getState: () => this.state,
-        commandBus: this.commandBus,
+        commandBus: inputBus,
         router: this.inputRouter,
         viewport: this.viewportService,
         onFocusSelf: () =>
@@ -215,7 +278,7 @@ export class BattleScene extends Phaser.Scene {
     } else {
       this.controls = new DesktopControls(this, {
         getState: () => this.state,
-        commandBus: this.commandBus,
+        commandBus: inputBus,
         hotkeys: {
           onAimRequest: () => this.requestAim(),
           onAimCancel: () => this.cancelAim(),
@@ -239,11 +302,12 @@ export class BattleScene extends Phaser.Scene {
       });
     }
 
-    // 10. 瞄准输入与渲染（AIM claimant，桌面 / 触屏共用计算）
+    // 10. 瞄准输入与渲染（AIM claimant，桌面 / 触屏共用计算；
+    //     Phase 14 联机：FIRE 意图同样进协调器 inputBus）
     this.aimController = new AimController(this, {
       getState: () => this.state,
       getCameraMode: () => this.cameraController.currentMode,
-      commandBus: this.commandBus,
+      commandBus: inputBus,
       isTouchProfile: isTouch,
       getUiScale: () => this.viewportService.current.uiScale,
     });
@@ -255,6 +319,7 @@ export class BattleScene extends Phaser.Scene {
     //     碰撞 → 伤害结算 → RESOLVE 相位 → 反馈 → 锁定爆炸点停留；
     //     停留结束 / 出界 → 回合收口（endTurn / TURN_TRANSITION / GAME_OVER）
     this.projectileSystem.onLaunched(() => {
+      this.logCameraEvent(`launched`);
       this.turnManager.notifyProjectileLaunched();
       this.cameraController.followProjectile(() => {
         const projectile = this.projectileSystem.activeProjectiles[0];
@@ -262,24 +327,34 @@ export class BattleScene extends Phaser.Scene {
       });
     });
     this.projectileSystem.onImpact((impact) => {
+      this.logCameraEvent(`impact@${Math.round(impact.x)}`);
       // Phase 7：ExplosionEvent → DamageSystem → DamageResult → GameState，
       // 再驱动反馈（相机抖动 / 伤害数字 / 受击闪烁 / HP HUD 动画）
       const result = this.explosionSystem.explode(this.state, impact);
       this.turnManager.notifyProjectileResolved(result);
       this.cameraController.shake();
-      this.damageNumbers.show(result, this.state.players);
       for (const entry of result.players) {
         if (entry.damage > 0) {
           this.playerViews[entry.playerId].playHitReaction();
         }
+      }
+      // Phase 14：Host 广播权威 TURN_RESULT；Guest 记录本地结算
+      this.online?.notifyTurnResolved(impact, result);
+      // 伤害数字：Host / 离线 = 本地结算即权威，立即展示；
+      // Guest = 等 TURN_RESULT（showAuthoritativeDamage 用 Host 数值，
+      // 不展示本地预测 —— 避免先弹 2 再改 1 的双跳）
+      if (this.online === null || this.online.role === 'host') {
+        this.damageNumbers.show(result, this.state.players);
       }
       void this.cameraController
         .focusImpact({ x: impact.x, y: impact.y })
         .then(() => this.onAttackResolved());
     });
     this.projectileSystem.onOutOfBounds(() => {
+      this.logCameraEvent('outOfBounds');
       // 出界：无爆炸无伤害，同样进入 RESOLVE 并收口回合
       this.turnManager.notifyProjectileResolved(null);
+      this.online?.notifyTurnResolved(null, null);
       this.onAttackResolved();
     });
 
@@ -315,20 +390,31 @@ export class BattleScene extends Phaser.Scene {
 
     this.cameraController.update(delta);
     this.aimRenderer.update(this.aimController.aimState);
-    this.aimButton.refresh(this.cameraController.currentMode);
-    this.touchControls?.refresh(this.cameraController.currentMode);
+    // Phase 14：联机对手回合隐藏瞄准 / 移动按钮（相机 Free View 仍可用）
+    const localControls = this.isLocalControlledTurn();
+    this.aimButton.refresh(this.cameraController.currentMode, localControls);
+    this.touchControls?.refresh(this.cameraController.currentMode, localControls);
     this.playerHud.refresh(this.state.players);
 
     // Phase 9：回合横幅 —— 新回合进入 ACTION 时短暂提示轮到谁
     // （开场与每次 TURN_TRANSITION 完成后各触发一次；取消瞄准回到
     // ACTION 不换 key，不重复弹横幅）。游戏结束改由胜负横幅接管。
+    // Phase 14 联机：本地视角 YOUR TURN / OPPONENT'S TURN。
     const turnKey = `${this.state.currentPlayerId}:${this.state.turnId}`;
     if (
       this.bannerTurnKey !== turnKey &&
       this.state.phase === TurnPhase.ACTION
     ) {
       this.bannerTurnKey = turnKey;
-      this.turnBanner.showTurn(this.state.currentPlayerId, this.state.turnId);
+      if (this.online !== null) {
+        const label =
+          this.state.currentPlayerId === this.online.localPlayerId
+            ? `YOUR TURN · 第 ${this.state.turnId} 回合`
+            : `OPPONENT'S TURN · 第 ${this.state.turnId} 回合`;
+        this.turnBanner.showTurn(this.state.currentPlayerId, this.state.turnId, label);
+      } else {
+        this.turnBanner.showTurn(this.state.currentPlayerId, this.state.turnId);
+      }
     }
     if (!this.bannerGameOverShown && this.state.gameOver) {
       this.bannerGameOverShown = true;
@@ -364,6 +450,9 @@ export class BattleScene extends Phaser.Scene {
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
       uiScale: this.viewportService.current.uiScale,
+      // Phase 14：DEBUG_NETWORK 段（离线 null = 不显示）
+      online:
+        this.online !== null && DEBUG_NETWORK ? this.online.debugInfo() : null,
     });
   }
 
@@ -385,6 +474,7 @@ export class BattleScene extends Phaser.Scene {
         this.scene.start(ResultScene.KEY, {
           setup: this.setup,
           winnerId: this.state.winnerId,
+          localPlayerId: this.online?.localPlayerId,
         } satisfies ResultSceneData);
       }
     );
@@ -395,9 +485,13 @@ export class BattleScene extends Phaser.Scene {
     if (this.isAiControlledTurn()) {
       return; // SP：AI 回合内人类瞄准入口（Space / AimButton）全部静默
     }
+    if (this.isRemoteControlledTurn()) {
+      return; // Phase 14：对手回合 / 断线后瞄准入口全部静默
+    }
     if (!this.turnManager.requestAim()) {
       return;
     }
+    this.logCameraEvent(`requestAim→cam=${this.cameraController.currentMode}`);
     this.cameraController.requestAim(
       () => this.state.players[this.state.currentPlayerId].x
     );
@@ -405,11 +499,20 @@ export class BattleScene extends Phaser.Scene {
 
   /** 取消瞄准：相位与相机各自回退 */
   private cancelAim(): void {
-    if (this.isAiControlledTurn()) {
+    if (this.isAiControlledTurn() || this.isRemoteControlledTurn()) {
       return; // SP：AI 回合内 Esc / 右键不得打断 AI 攻击的相机流程
     }
+    this.logCameraEvent(`cancelAim→cam=${this.cameraController.currentMode}`);
     this.turnManager.cancelAim();
     this.cameraController.cancelAim();
+  }
+
+  /** E2E / 手动诊断：相机流事件环形日志（最近 30 条） */
+  private logCameraEvent(event: string): void {
+    this.cameraEventLog.push(`${this.state.turnId}:${event}`);
+    if (this.cameraEventLog.length > 30) {
+      this.cameraEventLog.shift();
+    }
   }
 
   /** SP：当前回合是否由 AI 控制（Local 2P 恒 false） */
@@ -420,16 +523,40 @@ export class BattleScene extends Phaser.Scene {
     );
   }
 
+  /**
+   * Phase 14：当前回合是否不可由本地输入发起动作（对手回合或已断线）。
+   * 离线恒 false。移动 / 瞄准入口据此静默；相机 Free View 不受影响
+   * （对方回合仍可观察战场，CODELY.md Phase 14 规约）。
+   */
+  private isRemoteControlledTurn(): boolean {
+    return (
+      this.connectionLost ||
+      (this.online !== null && !this.online.isLocalTurn())
+    );
+  }
+
+  /** Phase 14：本地输入源是否可交互（按钮可见性 / 输入锁共用口径） */
+  private isLocalControlledTurn(): boolean {
+    return !this.isRemoteControlledTurn();
+  }
+
   /** SP：回合归属切换人类 / AI 输入（gameOver 后人类恢复自由观察） */
   private syncInputOwnership(): void {
-    if (!this.aiInput) {
+    if (this.aiInput) {
+      const aiTurn =
+        this.state.currentPlayerId === this.aiInput.playerId &&
+        !this.state.gameOver;
+      this.controls.setEnabled(!aiTurn);
+      this.aiInput.setEnabled(aiTurn);
       return;
     }
-    const aiTurn =
-      this.state.currentPlayerId === this.aiInput.playerId &&
-      !this.state.gameOver;
-    this.controls.setEnabled(!aiTurn);
-    this.aiInput.setEnabled(aiTurn);
+    if (this.online !== null) {
+      // Phase 14：仅本地玩家回合启用本地输入（Move/Aim/Fire）；
+      // 对手回合期间相机 Free View 仍可自由观察
+      this.controls.setEnabled(this.isLocalControlledTurn());
+      return;
+    }
+    // Local 2P 热座：恒启用（系统层按回合归属校验）
   }
 
   /**
@@ -437,22 +564,109 @@ export class BattleScene extends Phaser.Scene {
    * Phase 8：RESOLVE → END（切换玩家 + turnId++ + 重置预算）→
    * 相机 TURN_TRANSITION 到新玩家 → 下一回合 ACTION。
    * 游戏结束：相位停留 GAME_OVER，相机回自由观察，不再切换。
+   * Phase 14 联机：Turn Barrier —— Host 在此发 TURN_END（本地权威
+   * endTurn）；Guest 'waiting' 时挂起（TURN_END 到达且本地 dwell 完成
+   * 后经 resumeNextTurn 补驱），回合切换始终由 Host 控制。
    */
   private onAttackResolved(): void {
     const mode = this.cameraController.currentMode;
     if (mode !== CameraMode.IMPACT && mode !== CameraMode.PROJECTILE_FOLLOW) {
+      this.logCameraEvent(`attackResolved-guarded(cam=${mode})`);
       return;
     }
     if (this.state.gameOver) {
+      this.logCameraEvent('attackResolved-gameOver');
       this.cameraController.enableFreeView();
       return;
     }
+    if (this.online !== null) {
+      const decision = this.online.onLocalAttackResolved();
+      this.logCameraEvent(`attackResolved-${decision}`);
+      if (decision === 'waiting') {
+        return; // Guest：TURN_END 未到 —— resumeNextTurn 回调补驱转场
+      }
+      if (this.online.role === 'host') {
+        this.turnManager.endTurn(); // Host 本地权威推进
+        this.beginNextTurnTransition();
+        return;
+      }
+      // guest 'proceed'：applyRemoteTurnEnd 已在协调器内驱动
+      // resumeNextTurn → 转场已启动 —— 场景严禁重复发起（二次发起会把
+      // 首个 transition tween 提前 resolve，相机滞留 TURN_TRANSITION，
+      // 后续 requestAim 被 aimFlow 静默拒绝 —— P2P E2E 实测）
+      return;
+    }
     this.turnManager.endTurn();
+    this.beginNextTurnTransition();
+  }
+
+  /** 相机 TURN_TRANSITION 到新玩家 → ACTION（Host/离线/Guest 共用收尾） */
+  private beginNextTurnTransition(): void {
+    this.logCameraEvent(
+      `beginTransition→cam=${this.cameraController.currentMode}`
+    );
     void this.cameraController
       .transitionToPlayer(
         () => this.state.players[this.state.currentPlayerId].x
       )
       .then(() => this.turnManager.notifyTurnTransitionComplete());
+  }
+
+  // ---- Phase 14 联机表现层 ----------------------------------------------
+
+  /**
+   * COMMAND_REJECTED 轻量提示（Guest）。状态本就从未本地执行 ——
+   * 无需回滚；2s 防刷屏（移动键连按可能触发一串拒绝）。
+   */
+  private showOnlineRejected(payload: CommandRejectedPayload): void {
+    const now = Date.now();
+    if (now - this.lastRejectedToastMs < 2_000) {
+      return;
+    }
+    this.lastRejectedToastMs = now;
+    this.turnBanner.showMessage(`ACTION REJECTED — ${payload.reason}`, 0xffd24a);
+  }
+
+  /**
+   * 通道中断：冻结输入 + 持久横幅 + 返回菜单入口（无重连 ——
+   * 复杂 reconnect 属 Phase 15+；对局结束后的正常关闭已被协调器抑制）。
+   */
+  private handleOnlineDisconnected(): void {
+    if (this.connectionLost) {
+      return;
+    }
+    this.connectionLost = true;
+    this.controls.setEnabled(false);
+    this.turnBanner.showMessage('OPPONENT DISCONNECTED', 0xff5063);
+    if (this.disconnectButton === null) {
+      this.disconnectButton = new MenuButton(this, {
+        router: this.inputRouter,
+        id: 'battle-back-to-menu',
+        viewport: this.viewportService,
+        label: 'BACK TO MENU',
+        onTap: () => this.leaveToMainMenu(),
+      });
+      const { width, height } = this.viewportService.current;
+      this.disconnectButton.setPosition(width / 2, height * 0.62);
+    }
+  }
+
+  /** 断线 / 退出返回主菜单（fade + rAF 冻结兜底，幂等） */
+  private leaveToMainMenu(): void {
+    let started = false;
+    const startMenu = (): void => {
+      if (started) {
+        return;
+      }
+      started = true;
+      this.scene.start(MainMenuScene.KEY);
+    };
+    this.cameras.main.fadeOut(220, 26, 34, 51);
+    this.cameras.main.once(
+      Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE,
+      startMenu
+    );
+    this.time.delayedCall(300, startMenu);
   }
 
   /**
@@ -523,6 +737,31 @@ export class BattleScene extends Phaser.Scene {
       get aiEnabled(): boolean {
         return self.aiInput !== null;
       },
+      /** Phase 14：联机诊断快照（离线 null） */
+      get online(): object | null {
+        return self.online !== null ? self.online.debugInfo() : null;
+      },
+      get onlineRole(): string | null {
+        return self.online?.role ?? null;
+      },
+      get localPlayerId(): string | null {
+        return self.online?.localPlayerId ?? null;
+      },
+      get connectionLost(): boolean {
+        return self.connectionLost;
+      },
+      /** 诊断：相机流事件环形日志（E2E 时序排查） */
+      get cameraEventLog(): string[] {
+        return [...self.cameraEventLog];
+      },
+      /**
+       * E2E 用（仅 DEBUG_GAME）：优雅关闭联机通道 —— 触发对端
+       * OPPONENT DISCONNECTED 完整链路（真实用户关标签页路径；
+       * 进程异常崩溃依赖 ICE failed 判定，见 Known Issues）
+       */
+      closeOnlineChannel(): void {
+        self.online?.transport.close();
+      },
       get winnerId(): string | null {
         return self.state.winnerId;
       },
@@ -564,5 +803,18 @@ export class BattleScene extends Phaser.Scene {
     this.playerHud.destroy();
     this.turnBanner.destroy();
     this.projectileSystem.destroy();
+    this.disconnectButton?.destroy();
+    this.disconnectButton = null;
+    // Phase 14：协调器与联机会话随对局结束彻底清理
+    //（coordinator.dispose 尽力而为发 DISCONNECT；SessionManager 关
+    // transport —— 对端经 onDisconnect 收到通知，gameOver 后被抑制）
+    if (this.online !== null) {
+      this.online.dispose();
+      this.online = null;
+    }
+    const sessionManager = this.registry.get(ONLINE_SESSION_MANAGER_KEY) as
+      | OnlineSessionManager
+      | undefined;
+    sessionManager?.disposeSession();
   }
 }

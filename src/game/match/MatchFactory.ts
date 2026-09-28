@@ -1,4 +1,5 @@
 import type { AIDifficulty } from '../config/GameConfig';
+import type { PeerRole } from '../network/PeerRole';
 import type { MatchSetup } from './MatchSetup';
 
 /**
@@ -6,8 +7,10 @@ import type { MatchSetup } from './MatchSetup';
  *
  *   single_player：P1 = human，P2 = ai
  *   local_2p     ：P1 = human，P2 = human（热座）
- *   online       ：P2 = network（Phase 12+ 契约占位，本阶段菜单
- *                  不会以 online 启动 BattleScene）
+ *   online       ：按 PeerRole 决定本地/远程归属（Phase 14）——
+ *                  host  → P1 = human，P2 = network
+ *                  guest → P1 = network，P2 = human
+ *                  （Host = P1 / Guest = P2 固定，见 OnlineSession）
  *
  * Rematch 语义：以同一 setup 再次 scene.start —— BattleScene.create
  * 重建全新 GameState，旧局任何污染（HP / 位置 / 预算 / 相位 /
@@ -18,21 +21,28 @@ export function createMatchSetup(
   aiDifficulty?: AIDifficulty
 ): MatchSetup;
 export function createMatchSetup(mode: 'local_2p'): MatchSetup;
-export function createMatchSetup(mode: 'online'): MatchSetup;
+export function createMatchSetup(mode: 'online', role?: PeerRole): MatchSetup;
 export function createMatchSetup(
   mode: 'single_player' | 'local_2p' | 'online',
-  aiDifficulty?: AIDifficulty
+  arg2?: AIDifficulty | PeerRole
 ): MatchSetup {
   if (mode === 'single_player') {
     return {
       mode,
       p1Controller: 'human',
       p2Controller: 'ai',
-      aiDifficulty: aiDifficulty ?? 'normal',
+      aiDifficulty: (arg2 as AIDifficulty | undefined) ?? 'normal',
     };
   }
   if (mode === 'local_2p') {
     return { mode, p1Controller: 'human', p2Controller: 'human' };
   }
-  return { mode, p1Controller: 'human', p2Controller: 'network' };
+  // online：缺省 role = host（Phase 12 契约占位语义；Phase 14 起联机
+  // 启动一律显式传 role —— OnlineConnectionScene 从 session.role 提供）
+  const isHost = arg2 !== 'guest';
+  return {
+    mode,
+    p1Controller: isHost ? 'human' : 'network',
+    p2Controller: isHost ? 'network' : 'human',
+  };
 }

@@ -48,7 +48,9 @@ function isPingPongPayload(value: unknown): value is PingPongPayload {
 
 export class NetworkManager {
   private readonly transport: NetworkTransport;
-  private readonly matchId: MatchId;
+  /** 本通道绑定的 matchId（Phase 14：Coordinator 校验入站 envelope.matchId 防线用，
+   * 字段名让位给下方 getter —— 具名 matchIdValue） */
+  private readonly matchIdValue: MatchId;
   private readonly localPlayerId: PlayerId;
   private readonly messageHandlers = new Map<NetworkMessageType, Set<EnvelopeHandler>>();
   private readonly stateChangeHandlers = new Set<(state: TransportState) => void>();
@@ -61,7 +63,7 @@ export class NetworkManager {
 
   constructor(options: NetworkManagerOptions) {
     this.transport = options.transport;
-    this.matchId = options.matchId;
+    this.matchIdValue = options.matchId;
     this.localPlayerId = options.localPlayerId;
     // transport 回调统一经本类转发与兜底；dispose 时逐一取消
     this.transportCancels.push(
@@ -73,6 +75,12 @@ export class NetworkManager {
 
   get state(): TransportState {
     return this.transport.state;
+  }
+
+  /** 本通道绑定的 matchId（出站 envelope 全部戳记该值；
+   * Phase 14 Coordinator 以它校验入站 envelope.matchId 一致性） */
+  get matchId(): MatchId {
+    return this.matchIdValue;
   }
 
   /** 远端最近 sequence（按 max 合并；未收到过消息为 undefined）—— Phase 14/15 消费 */
@@ -96,7 +104,7 @@ export class NetworkManager {
     const raw: NetworkEnvelope<T> = {
       version: 1,
       type,
-      matchId: this.matchId,
+      matchId: this.matchIdValue,
       turnId: this.turnId,
       senderId: this.localPlayerId,
       sequence: ++this.sequenceCounter, // 计数器从 0 起：首条 = 1，跨消息类型连续

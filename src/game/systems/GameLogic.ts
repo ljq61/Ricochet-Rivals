@@ -1,8 +1,12 @@
 import type { CommandBus } from '../commands/CommandBus';
-import type { GameCommand } from '../commands/GameCommand';
+import type {
+  FireCommand,
+  GameCommand,
+  MoveCommand,
+} from '../commands/GameCommand';
 import type { GameState } from '../state/GameState';
-import type { FireSystem } from './FireSystem';
-import type { MovementSystem } from './MovementSystem';
+import type { FireResult, FireSystem } from './FireSystem';
+import type { MovementResult, MovementSystem } from './MovementSystem';
 import type { ProjectileSystem } from './ProjectileSystem';
 
 export interface GameLogicSystems {
@@ -10,6 +14,24 @@ export interface GameLogicSystems {
   fire: FireSystem;
   projectile: ProjectileSystem;
 }
+
+/**
+ * 命令执行结果（Phase 14 Host 广播源）：
+ * MOVE / FIRE 不论 accepted 还是 rejected 都产出 outcome ——
+ * Host 用 reject reason 构造 COMMAND_REJECTED 回执广播给 Guest。
+ * READY 保持被忽略，不产出 outcome。
+ */
+export type CommandOutcome =
+  | {
+      readonly kind: 'MOVE';
+      readonly command: MoveCommand;
+      readonly result: MovementResult;
+    }
+  | {
+      readonly kind: 'FIRE';
+      readonly command: FireCommand;
+      readonly result: FireResult;
+    };
 
 /**
  * Game Logic 核心：订阅 CommandBus，把命令路由到对应系统。
@@ -21,9 +43,17 @@ export interface GameLogicSystems {
  * ProjectileSystem 生成炮弹（TASKS Phase 5 流程）。
  * Phase 7 在炮弹爆炸处接 ExplosionEvent → DamageSystem，
  * Phase 8 扩展完整回合流程。
+ * Phase 14：MOVE / FIRE 经系统执行后同步对全部订阅者发射
+ * CommandOutcome（accepted / rejected 都发）——Host 本地输入与
+ * Guest 网络请求走同一条 validate+execute 路径，订阅 outcome
+ * 即可把权威执行结果广播出去；无订阅者时行为与离线模式一致。
  */
 export class GameLogic {
   private readonly unsubscribe: () => void;
+
+  private readonly outcomeHandlers = new Set<
+    (outcome: CommandOutcome) => void
+  >();
 
   constructor(
     private readonly state: GameState,
@@ -33,18 +63,46 @@ export class GameLogic {
     this.unsubscribe = commandBus.subscribe(this.handleCommand);
   }
 
+  /**
+   * 订阅命令执行结果（accepted / rejected 均会发射）。
+   * 返回取消函数，风格对齐 CommandBus.subscribe /
+   * ProjectileSystem.onLaunched。单个 handler 抛错只
+   * console.error，不阻断其余 handler 与命令执行。
+   */
+  onOutcome(handler: (outcome: CommandOutcome) => void): () => void {
+    this.outcomeHandlers.add(handler);
+    return () => {
+      this.outcomeHandlers.delete(handler);
+    };
+  }
+
   private readonly handleCommand = (command: GameCommand): void => {
     if (command.type === 'MOVE') {
-      this.systems.movement.execute(this.state, command);
+      const result = this.systems.movement.execute(this.state, command);
+      this.emitOutcome({ kind: 'MOVE', command, result });
     } else if (command.type === 'FIRE') {
       const result = this.systems.fire.execute(this.state, command);
       if (result.accepted) {
         this.systems.projectile.launch(command);
       }
+      this.emitOutcome({ kind: 'FIRE', command, result });
     }
   };
 
+  private emitOutcome(outcome: CommandOutcome): void {
+    for (const handler of this.outcomeHandlers) {
+      try {
+        handler(outcome);
+      } catch (error) {
+        // 对齐 NetworkManager 的 handler 兜底风格：单个订阅者异常不阻断广播
+        console.error('[GameLogic] CommandOutcome handler threw:', error);
+      }
+    }
+  }
+
   destroy(): void {
     this.unsubscribe();
+    // 防 scene.start 实例复用后旧闭包复活（同 C1 幽灵 AI 坑）
+    this.outcomeHandlers.clear();
   }
 }

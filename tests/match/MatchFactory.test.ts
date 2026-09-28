@@ -39,6 +39,18 @@ describe('MatchFactory（Phase 11）', () => {
     expect(setup.p1Controller).toBe('human');
     expect(setup.p2Controller).toBe('network');
   });
+
+  it('Online（Phase 14）：host → P1=human / P2=network', () => {
+    const setup = createMatchSetup('online', 'host');
+    expect(setup.p1Controller).toBe('human');
+    expect(setup.p2Controller).toBe('network');
+  });
+
+  it('Online（Phase 14）：guest → P1=network / P2=human', () => {
+    const setup = createMatchSetup('online', 'guest');
+    expect(setup.p1Controller).toBe('network');
+    expect(setup.p2Controller).toBe('human');
+  });
 });
 
 describe('Rematch 语义：同 setup 重建全新 GameState', () => {

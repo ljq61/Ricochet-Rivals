@@ -321,4 +321,49 @@ describe('OnlineConnectionController', () => {
     expect(sessionCalls).toBe(1); // 不产生第二个 session
     expect(session?.transport.state).toBe(TransportState.CONNECTED); // 旧连接未被 dispose
   });
+
+  it('17. Phase 14 detach：交接后只清场景侧 handler，不销毁已移交的会话', async () => {
+    const { host, guest } = makePair();
+    const manager = new OnlineSessionManager();
+    host.controller.onSession((session) => manager.store(session));
+    await performFullHandshake(host, guest);
+    const session = manager.current;
+    expect(session).not.toBeNull();
+
+    // 连接场景 SHUTDOWN（交接给 BattleScene）：detach 禁止 destroySession
+    host.controller.detach();
+    expect(session?.transport.state).toBe(TransportState.CONNECTED);
+    expect(() =>
+      session?.networkManager.send(NetworkMessageType.PLAYER_READY, { readyAt: 1 })
+    ).not.toThrow();
+
+    // detach 后 dispose 为 no-op：不得销毁已移交的通道 / manager
+    host.controller.dispose();
+    expect(session?.transport.state).toBe(TransportState.CONNECTED);
+    expect(() =>
+      session?.networkManager.send(NetworkMessageType.PING, { sentAt: Date.now() })
+    ).not.toThrow();
+
+    // 场景侧 handler 已清：onSession / onStateChange 不再触发
+    let sessionCalls = 0;
+    host.controller.onSession(() => {
+      sessionCalls += 1;
+    });
+    session?.networkManager.ping();
+    await tick();
+    expect(sessionCalls).toBe(0);
+  });
+
+  it('18. Phase 14 语义回归：未交接时 dispose 仍彻底销毁（既有行为不变）', async () => {
+    const { host, guest } = makePair();
+    const manager = new OnlineSessionManager();
+    host.controller.onSession((session) => manager.store(session));
+    await performFullHandshake(host, guest);
+
+    const session = manager.current;
+    expect(session).not.toBeNull();
+    host.controller.dispose(); // 未 detach：正常销毁路径
+    expect(session?.transport.state).toBe(TransportState.CLOSED);
+    expect(() => session?.networkManager.ping()).toThrow();
+  });
 });

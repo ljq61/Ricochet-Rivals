@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { createPhaserGameConfig } from './game/config/PhaserGameConfig';
 import { OrientationGate } from './game/platform/OrientationGate';
+import { ONLINE_SESSION_MANAGER_KEY, OnlineSessionManager } from './game/network/OnlineSession';
 
 const root = document.getElementById('game-root');
 if (!root) {
@@ -8,6 +9,12 @@ if (!root) {
 }
 
 const game = new Phaser.Game(createPhaserGameConfig(root));
+
+// Phase 14：联机会话持有者注入 game.registry（跨 Scene 容器 ——
+// Scene 之间共享同一实例，Scene 切换不销毁连接；禁止模块级 singleton，
+// 归属链见 OnlineSession.ts 注释）。OnlineConnectionScene VERIFIED 时
+// store，BattleScene 接管消费，退出对局 / 回菜单时 disposeSession。
+game.registry.set(ONLINE_SESSION_MANAGER_KEY, new OnlineSessionManager());
 
 // Phase 6.5 Mobile：竖屏门禁（触屏设备竖屏时显示旋转提示，
 // 覆盖层同时拦截 InputRouter 的指针手势 —— pointerdown 只认 canvas）。

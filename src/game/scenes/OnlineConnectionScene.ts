@@ -8,10 +8,17 @@ import {
   ONLINE_FAILURE_MESSAGES,
 } from '../network/OnlineConnectionController';
 import { OnlineConnectionState } from '../network/OnlineConnectionState';
-import { OnlineSessionManager } from '../network/OnlineSession';
+import {
+  ONLINE_SESSION_MANAGER_KEY,
+  OnlineSessionManager,
+} from '../network/OnlineSession';
+import { OnlineGameCoordinator } from '../network/online/OnlineGameCoordinator';
+import type { OnlineBattleBootstrap } from '../network/online/OnlineTypes';
 import { WebRTCTransport } from '../network/WebRTCTransport';
 import { DEFAULT_WEBRTC_CONFIG } from '../network/WebRTCConfig';
+import { createMatchSetup } from '../match/MatchFactory';
 import { MenuButton, type ButtonRect } from '../ui/MenuButton';
+import { BattleScene } from './BattleScene';
 import { MainMenuScene } from './MainMenuScene';
 
 const TITLE_FONT = 34;
@@ -19,12 +26,19 @@ const TEXT_FONT = 16;
 const SMALL_WIDTH = 260;
 
 /**
- * OnlineConnectionScene（Phase 13）—— 手动配对连接流程 UI。
+ * OnlineConnectionScene（Phase 13 手动配对 + Phase 14 进局）—— 连接流程 UI。
  *
  * OnlineConnectionScene（本类，只渲染状态与转发输入）
  *   → OnlineConnectionController（流程编排 / 状态机 / 超时 / 清理）
  *     → NetworkManager → WebRTCTransport。
  * 本类不 import 任何 RTC API —— 连接码 / SDP 全部经 Controller。
+ *
+ * Phase 14 进局流：VERIFIED → ENTER BATTLE → OnlineGameCoordinator
+ * （PLAYER_READY 双向握手 → Host 汇齐 → GAME_START）→ scene.start
+ * (BattleScene, { setup, online: bootstrap })。coordinator 为同一实例
+ * 跨 Scene 携带（BattleScene attach 接管），**交接后本场景 SHUTDOWN 不
+ * 销毁会话**（handedOff 标志）；SessionManager 由 game.registry 共享
+ * （main.ts 组合根注入）。
  *
  * 平台：
  * - 屏幕空间布局（identity 相机，物理像素坐标 + uiScale）
@@ -35,7 +49,6 @@ const SMALL_WIDTH = 260;
  *   微信连接码时竖屏体验更佳）
  * - COPY 走 navigator.clipboard.writeText，失败降级为选中文本提示，
  *   不阻塞流程
- * - Phase 11 的占位场景由本类替换（OnlineModePlaceholderScene 已删）
  */
 export class OnlineConnectionScene extends Phaser.Scene {
   static readonly KEY = 'OnlineConnectionScene';
@@ -43,7 +56,17 @@ export class OnlineConnectionScene extends Phaser.Scene {
   private viewport!: ViewportService;
   private inputRouter!: InputRouter;
   private controller!: OnlineConnectionController;
-  private sessionManager = new OnlineSessionManager();
+  /** Phase 14：game.registry 注入的跨 Scene 会话持有者（main.ts 组合根） */
+  private sessionManager!: OnlineSessionManager;
+  /** Phase 14：进局协调器（VERIFIED 后创建，交接后由 BattleScene 接管） */
+  private coordinator: OnlineGameCoordinator | null = null;
+  private lobbyCancel: (() => void) | null = null;
+  /** 已把 coordinator/session 交接给 BattleScene —— SHUTDOWN 不销毁 */
+  private handedOff = false;
+  /** Lobby 握手阶段（'idle' → ENTER BATTLE 后 'waiting' → GAME_START 后交棒） */
+  private lobbyPhase: 'idle' | 'waiting' = 'idle';
+  /** Lobby 期断线 / 异常提示（VERIFIED 页展示） */
+  private lobbyNotice: string | null = null;
 
   private title!: Phaser.GameObjects.Text;
   private statusLine!: Phaser.GameObjects.Text;
@@ -55,6 +78,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
   private currentCode: string | null = null;
   private lastRttMs: number | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  /** RTT 显示的 PONG 订阅取消器（交接 / 关闭时清理） */
+  private pongCancel: (() => void) | null = null;
   private failureMessage: string | null = null;
   private transitioning = false;
 
@@ -67,6 +92,16 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.failureMessage = null;
     this.currentCode = null;
     this.lastRttMs = null;
+    this.handedOff = false;
+    this.lobbyPhase = 'idle';
+    this.lobbyNotice = null;
+    this.coordinator = null;
+    this.lobbyCancel = null;
+    this.pongCancel = null;
+    // Phase 14：跨 Scene 会话持有者（game.registry；防御缺省本地实例）
+    this.sessionManager =
+      (this.registry.get(ONLINE_SESSION_MANAGER_KEY) as OnlineSessionManager | undefined) ??
+      new OnlineSessionManager();
     this.viewport = new ViewportService(this, { worldCameraZoom: false });
     this.inputRouter = new InputRouter(this);
     this.cameras.main.fadeIn(220, 0, 0, 0);
@@ -93,7 +128,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
           }
         }, 2_000);
       }
-      session.networkManager.onPong((envelope) => {
+      this.pongCancel = session.networkManager.onPong((envelope) => {
         this.lastRttMs = Math.max(0, Date.now() - envelope.payload.sentAt);
         this.renderState();
       });
@@ -171,6 +206,13 @@ export class OnlineConnectionScene extends Phaser.Scene {
         this.failureMessage = null;
       },
     });
+    this.buttons.enterBattle = new MenuButton(this, {
+      router: this.inputRouter,
+      id: 'online-enter-battle',
+      viewport: this.viewport,
+      label: 'ENTER BATTLE',
+      onTap: () => this.onEnterBattle(),
+    });
     this.buttons.back = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-back',
@@ -198,6 +240,82 @@ export class OnlineConnectionScene extends Phaser.Scene {
   }
 
   // ---- 用户动作 ---------------------------------------------------------
+
+  /**
+   * Phase 14 进局：VERIFIED 后创建协调器并发送 PLAYER_READY。
+   * Host 汇齐双方 Ready → GAME_START（本端本地触发）；Guest 收到
+   * GAME_START 校验通过触发 —— 双方经 onStart 转入 BattleScene。
+   * createMatchIdentity 的随机性属对局 setup（非 Gameplay RNG，
+   * CODELY.md §16 管的是局内随机）。
+   */
+  private onEnterBattle(): void {
+    const session = this.sessionManager.current;
+    if (
+      session === null ||
+      this.coordinator !== null ||
+      this.controller.currentState !== OnlineConnectionState.VERIFIED ||
+      this.transitioning
+    ) {
+      return;
+    }
+    this.coordinator = new OnlineGameCoordinator({
+      session,
+      createMatchIdentity: () => ({
+        matchId: `match-${Date.now().toString(36)}-${Math.floor(
+          Math.random() * 1e9,
+        ).toString(36)}`,
+        seed: (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0,
+      }),
+    });
+    this.lobbyCancel = this.coordinator.enterLobby({
+      onStart: (bootstrap) => this.startOnlineBattle(bootstrap),
+      onDisconnected: () => {
+        // Lobby 期断线：清协调器并提示（连接已失效，只能返回菜单）
+        this.coordinator?.dispose();
+        this.coordinator = null;
+        this.lobbyCancel = null;
+        this.lobbyPhase = 'idle';
+        this.lobbyNotice = 'CONNECTION LOST — BACK TO MENU';
+        this.renderState();
+      },
+    });
+    this.coordinator.sendPlayerReady();
+    this.lobbyPhase = 'waiting';
+    this.lobbyNotice = null;
+    this.renderState();
+  }
+
+  /** GAME_START 就绪 → 转场 BattleScene（交接 coordinator + 会话） */
+  private startOnlineBattle(bootstrap: OnlineBattleBootstrap): void {
+    if (this.transitioning) {
+      return;
+    }
+    this.transitioning = true;
+    this.handedOff = true;
+    // Lobby handlers 交棒：取消本场景回调（BattleScene attach 后由协调器接管）
+    this.lobbyCancel?.();
+    this.lobbyCancel = null;
+    const data = {
+      setup: createMatchSetup('online', bootstrap.role),
+      online: bootstrap,
+    };
+    let started = false;
+    const startBattle = (): void => {
+      if (started) {
+        return;
+      }
+      started = true;
+      this.scene.start(BattleScene.KEY, data);
+    };
+    this.cameras.main.fadeOut(220, 0, 0, 0);
+    this.cameras.main.once(
+      Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE,
+      startBattle
+    );
+    // 兜底：页面后台化（visibilityState=hidden）时 rAF 冻结会卡住 fade
+    // 完成事件（P2P E2E 双页实测）—— 300ms 定时器先到先得
+    this.time.delayedCall(300, startBattle);
+  }
 
   private async onCreateGame(): Promise<void> {
     try {
@@ -253,6 +371,9 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.transitioning = true;
     this.controller.back();
     this.controller.dispose();
+    this.coordinator?.dispose();
+    this.coordinator = null;
+    this.lobbyCancel = null;
     this.sessionManager.disposeSession();
     let started = false;
     const startMenu = (): void => {
@@ -322,11 +443,12 @@ export class OnlineConnectionScene extends Phaser.Scene {
         visibleButtons.push('copy');
         break;
       case OnlineConnectionState.VERIFIED:
-        status = 'CONNECTION VERIFIED';
+        status = 'CONNECTION VERIFIED — ENTER BATTLE';
         prompt =
-          'Opponent connected. Gameplay synchronization will be enabled in Phase 14.';
+          this.lobbyNotice ??
+          'Opponent connected. The match starts when both players press ENTER BATTLE.';
         visibleButtons.length = 0;
-        visibleButtons.push('backToMenu');
+        visibleButtons.push('enterBattle', 'backToMenu');
         break;
       case OnlineConnectionState.FAILED:
         status = message ?? ONLINE_FAILURE_MESSAGES.setupFailed;
@@ -345,7 +467,11 @@ export class OnlineConnectionScene extends Phaser.Scene {
     if (state === OnlineConnectionState.VERIFIED) {
       const role = this.sessionManager.current?.role === 'guest' ? 'GUEST' : 'HOST';
       const rtt = this.lastRttMs !== null ? `PING ${this.lastRttMs}ms` : 'PING …';
-      status = `CONNECTED — ${role} — ${rtt}`;
+      // Phase 14：ENTER BATTLE 后进入等待 Host GAME_START 阶段
+      status =
+        this.lobbyPhase === 'waiting'
+          ? `WAITING FOR OPPONENT… — ${role} — ${rtt}`
+          : `CONNECTED — ${role} — ${rtt}`;
     }
 
     for (const [key, button] of Object.entries(this.buttons)) {
@@ -431,6 +557,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.connect?.setPosition(centerX, bottomRow - 40 * uiScale);
     this.buttons.createResponse?.setPosition(centerX, bottomRow - 40 * uiScale);
     this.buttons.tryAgain?.setPosition(centerX, height * 0.6);
+    this.buttons.enterBattle?.setPosition(centerX, height * 0.58);
     this.buttons.back?.setPosition(
       centerX - 200 * uiScale,
       bottomRow
@@ -485,6 +612,13 @@ export class OnlineConnectionScene extends Phaser.Scene {
       get sessionStored(): boolean {
         return self.sessionManager.current !== null;
       },
+      /** Phase 14：Lobby 握手阶段（E2E 断言 ENTER BATTLE 流程用） */
+      get lobbyPhase(): string {
+        return self.lobbyPhase;
+      },
+      get handedOff(): boolean {
+        return self.handedOff;
+      },
       /** 诊断:Phaser 全场景生命周期状态（切换问题定位用） */
       get phaserSceneStates(): Array<{ key: string; status: string }> {
         const manager = self.scene.manager;
@@ -531,8 +665,21 @@ export class OnlineConnectionScene extends Phaser.Scene {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
     }
-    this.controller.dispose();
-    this.sessionManager.disposeSession();
+    this.pongCancel?.();
+    this.pongCancel = null;
+    // Phase 14：交接后 coordinator / session 归 BattleScene 生命周期
+    //（SHUTDOWN 禁销毁 —— scene.start 转场必经此处）。controller 交接后
+    // 必须 detach：dispose 的 destroySession 会就地杀死已交接的通道。
+    // 未交接（回菜单 / 失败退出）则彻底清理。
+    if (this.handedOff) {
+      this.controller.detach();
+    } else {
+      this.controller.dispose();
+      this.coordinator?.dispose();
+      this.coordinator = null;
+      this.sessionManager.disposeSession();
+      this.lobbyCancel = null;
+    }
     this.textarea?.remove();
     this.textarea = null;
     this.viewport.destroy();
@@ -547,5 +694,6 @@ type OnlineButton =
   | 'copy'
   | 'createResponse'
   | 'tryAgain'
+  | 'enterBattle'
   | 'back'
   | 'backToMenu';

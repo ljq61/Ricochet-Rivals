@@ -4,11 +4,20 @@ import type { PeerRole } from './PeerRole';
 import type { PlayerId } from '../state/ids';
 
 /**
+ * Phase 14：跨 Scene 容器 key（main.ts 组合根 → game.registry 注入
+ * OnlineSessionManager 实例；各 Scene 经 this.registry 读取）。
+ * 归属链：OnlineConnectionScene（VERIFIED 产出）→ registry → BattleScene
+ * 接管 —— 不挂任何单一 Scene 生命周期（Scene 切换不销毁连接）。
+ */
+export const ONLINE_SESSION_MANAGER_KEY = 'onlineSessionManager';
+
+/**
  * OnlineSession（Phase 13）—— 已验证的联机会话。
  *
  * 归属链：OnlineConnectionController（VERIFIED 产出）→ OnlineSessionManager
- * 持有 → 未来 BattleScene 接管（Phase 14）—— **不挂在任何 Scene 生命周期上**
- * （Scene 切换不销毁连接）；回菜单 / Game Over 退出时 disposeSession 彻底关闭。
+ * 持有（Phase 14 起经 game.registry 跨 Scene 共享）—— **不挂在任何 Scene
+ * 生命周期上**（Scene 切换不销毁连接）；回菜单 / Game Over 退出时
+ * disposeSession 彻底关闭。
  *
  * Host = P1 / Guest = P2 固定（Phase 13 不做角色选择，Future 可扩展）。
  */

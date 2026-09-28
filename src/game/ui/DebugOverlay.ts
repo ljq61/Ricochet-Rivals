@@ -1,10 +1,11 @@
 import Phaser from 'phaser';
-import { DEBUG_GAME } from '../config/DebugConfig';
+import { DEBUG_GAME, DEBUG_NETWORK } from '../config/DebugConfig';
 import type { CameraMode } from '../camera/CameraMode';
 import type { ControlProfile } from '../platform/DeviceProfile';
 import type { Orientation } from '../platform/ViewportService';
 import type { PlayerId } from '../state/ids';
 import type { TurnPhase } from '../state/TurnPhase';
+import type { OnlineDebugInfo } from '../network/online/OnlineTypes';
 
 export interface DebugSnapshot {
   fps: number;
@@ -26,6 +27,8 @@ export interface DebugSnapshot {
   viewportWidth: number;
   viewportHeight: number;
   uiScale: number;
+  /** Phase 14 联机：DEBUG_NETWORK 时展示（离线 null = 不显示） */
+  online?: OnlineDebugInfo | null;
 }
 
 /**
@@ -80,6 +83,17 @@ export class DebugOverlay {
       `VP       ${snapshot.viewportWidth}x${snapshot.viewportHeight}`,
       `UIScale  ${snapshot.uiScale}`,
     ];
+    // Phase 14：NETWORK 段（ROLE / LOCAL / REMOTE / MATCH / NET STATE /
+    // LAST RX / LAST TX / PING）—— 离线对局无 online 快照则不显示
+    if (DEBUG_NETWORK && snapshot.online) {
+      const net = snapshot.online;
+      const ping = net.pingMs === null ? '…' : `${net.pingMs.toFixed(0)}ms`;
+      lines.push(
+        `Net      ${net.role} ${net.netState} ${ping}`,
+        `Local    ${net.localPlayerId} vs ${net.remotePlayerId}`,
+        `Match    ${net.matchId ?? '…'} rx=${net.lastRxType ?? '…'} tx=${net.lastTxType ?? '…'}`,
+      );
+    }
     this.label.setText(lines.join('\n'));
   }
 }

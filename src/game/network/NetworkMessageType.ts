@@ -4,6 +4,10 @@
  * * PING/PONG —— 连接保活 / RTT 测量（Phase 13 使用，本阶段仅定义）。
  * * 其余与 Phase 14 命令同步一一对应（HOST AUTHORITATIVE：
  *   *_REQUEST 由 Guest 上报，Host 校验后广播权威版本）。
+ * * COMMAND_REJECTED —— Phase 14 新增：Host 拒绝 Guest 非法请求的
+ *   轻量回执（拒因枚举见 online/OnlineTypes），不 disconnect。
+ *   新增值为向后兼容扩展（旧端 validateEnvelope 会拒绝未知类型，
+ *   实际部署两端同版本，不受影响）。
  *
  * wire 兼容防线：值即协议 —— 改动任何值都是破坏性协议变更，
  * 必须递增 NetworkEnvelope.version（tests/network/NetworkContracts 锁定）。
@@ -19,6 +23,7 @@ export enum NetworkMessageType {
   FIRE = 'FIRE',
   TURN_RESULT = 'TURN_RESULT',
   TURN_END = 'TURN_END',
+  COMMAND_REJECTED = 'COMMAND_REJECTED',
   STATE_SYNC_REQUEST = 'STATE_SYNC_REQUEST',
   STATE_SNAPSHOT = 'STATE_SNAPSHOT',
   REMATCH = 'REMATCH',

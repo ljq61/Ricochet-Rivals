@@ -80,17 +80,40 @@ export class TurnBanner {
     return this.lastText;
   }
 
-  /** 新回合开始：短暂展示「P1 · 第 N 回合」（不阻塞输入） */
-  showTurn(playerId: PlayerId, turnId: number): void {
+  /**
+   * 新回合开始：短暂展示「P1 · 第 N 回合」（不阻塞输入）。
+   * label（Phase 14 联机）：覆盖默认文本 —— 本地视角展示
+   * YOUR TURN / OPPONENT'S TURN；离线不传 = 原行为不变。
+   */
+  showTurn(playerId: PlayerId, turnId: number, label?: string): void {
     if (this.winnerActive) {
       return;
     }
     const color = playerColor(playerId);
-    this.label.setText(`${playerId} · 第 ${turnId} 回合`);
+    this.label.setText(label ?? `${playerId} · 第 ${turnId} 回合`);
     this.label.setFontSize(TURN_FONT_SIZE * this.viewport.current.uiScale);
     this.label.setColor(toCssColor(color));
     this.drawPill(color, 0.85);
+    this.playTurnFade();
+  }
 
+  /**
+   * Phase 14 联机：轻量瞬时消息（COMMAND_REJECTED 提示 /
+   * OPPONENT DISCONNECTED 等），同 showTurn 的淡入-停留-淡出节奏。
+   */
+  showMessage(text: string, accent: number): void {
+    if (this.winnerActive) {
+      return;
+    }
+    this.label.setText(text);
+    this.label.setFontSize(TURN_FONT_SIZE * this.viewport.current.uiScale);
+    this.label.setColor('#e8eef7');
+    this.drawPill(accent, 0.85);
+    this.playTurnFade();
+  }
+
+  /** 回合横幅的统一淡入 → 停留 → 淡出动画（showTurn / showMessage 共用） */
+  private playTurnFade(): void {
     this.container.setVisible(true);
     this.turnTween?.stop();
     this.turnTween = this.scene.tweens.add({

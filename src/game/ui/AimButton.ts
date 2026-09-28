@@ -40,6 +40,8 @@ export class AimButton {
   private width: number;
   private height: number;
   private hovered = false;
+  /** Phase 14：本地回合外（对手回合）隐藏并失活 zone */
+  private interactable = true;
   private readonly unsubscribeViewport: () => void;
 
   constructor(scene: Phaser.Scene, deps: AimButtonDeps) {
@@ -65,7 +67,7 @@ export class AimButton {
     this.deps.router.registerZone({
       id: 'aim-button',
       kind: 'UI',
-      isActive: () => true,
+      isActive: () => this.interactable,
       contains: (x, y) => this.contains(x, y),
       onDown: () => deps.onTap(),
       onHover: (inside) => {
@@ -79,8 +81,18 @@ export class AimButton {
     this.reposition();
   }
 
-  /** 根据相机模式刷新按钮外观与文案 */
-  refresh(mode: CameraMode): void {
+  /**
+   * 根据相机模式刷新按钮外观与文案。
+   * interactable（Phase 14 联机）：本地玩家回合 = true；对手回合 = false
+   * → 按钮隐藏且 zone 失活（对手回合 Move/Aim/Fire 全部禁用，
+   * 相机 Free View 仍可用）。离线不传 = 恒可交互，行为不变。
+   */
+  refresh(mode: CameraMode, interactable = true): void {
+    this.interactable = interactable;
+    this.container.setVisible(interactable);
+    if (!interactable) {
+      return; // 隐藏后无需重绘
+    }
     const aiming = mode === CameraMode.AIMING;
     const inFlow =
       mode === CameraMode.FREE_VIEW || mode === CameraMode.RETURN_HOME;

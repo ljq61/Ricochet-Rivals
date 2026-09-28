@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { createInitialGameState, type GameState } from '../../src/game/state/GameState';
 import { TurnManager } from '../../src/game/systems/TurnManager';
 import { TurnPhase } from '../../src/game/state/TurnPhase';
@@ -190,6 +190,77 @@ describe('TurnManager', () => {
       state.players.P1.hasFired = true; // FireSystem 已标记
 
       expect(manager.requestAim()).toBe(false);
+    });
+  });
+
+  describe('applyRemoteTurnEnd（Online Guest 专用，Phase 14）', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('RESOLVE 应用 Host TURN_END：END / turnId=Host 值 / 玩家切换 / 预算与 hasFired 复位，且不告警', () => {
+      manager.startMatch();
+      manager.notifyProjectileLaunched();
+      manager.notifyProjectileResolved(null);
+      state.players.P2.moveRemaining = 0;
+      state.players.P2.hasFired = true;
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      manager.applyRemoteTurnEnd('P2', 2);
+
+      expect(state.phase).toBe(TurnPhase.END);
+      expect(state.turnId).toBe(2);
+      expect(state.currentPlayerId).toBe('P2');
+      expect(state.players.P2.moveRemaining).toBe(
+        GAME_CONFIG.player.maxMovePerTurn
+      );
+      expect(state.players.P2.hasFired).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('gameOver 时忽略（幂等）', () => {
+      manager.startMatch();
+      manager.notifyProjectileLaunched();
+      manager.notifyProjectileResolved(null);
+      state.gameOver = true; // DamageSystem.apply 已判定
+      state.players.P2.moveRemaining = 42;
+      state.players.P2.hasFired = true;
+
+      manager.applyRemoteTurnEnd('P2', 2);
+
+      expect(state.phase).toBe(TurnPhase.RESOLVE);
+      expect(state.turnId).toBe(1);
+      expect(state.currentPlayerId).toBe('P1');
+      expect(state.players.P2.moveRemaining).toBe(42);
+      expect(state.players.P2.hasFired).toBe(true);
+    });
+
+    it('非 RESOLVE 相位（ACTION）忽略（幂等）', () => {
+      manager.startMatch();
+
+      manager.applyRemoteTurnEnd('P2', 2);
+
+      expect(state.phase).toBe(TurnPhase.ACTION);
+      expect(state.turnId).toBe(1);
+      expect(state.currentPlayerId).toBe('P1');
+      expect(state.players.P2.moveRemaining).toBe(
+        GAME_CONFIG.player.maxMovePerTurn
+      );
+    });
+
+    it('nextTurnId 异常（+5 而非 +1）：仍应用 Host 值并仅 console.warn', () => {
+      manager.startMatch();
+      manager.notifyProjectileLaunched();
+      manager.notifyProjectileResolved(null);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      manager.applyRemoteTurnEnd('P2', 5);
+
+      expect(state.turnId).toBe(5);
+      expect(state.phase).toBe(TurnPhase.END);
+      expect(state.currentPlayerId).toBe('P2');
+      expect(state.players.P2.hasFired).toBe(false);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
     });
   });
 });

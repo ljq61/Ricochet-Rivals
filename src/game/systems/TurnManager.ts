@@ -128,6 +128,30 @@ export class TurnManager {
     this.state.phase = TurnPhase.END;
   }
 
+  /**
+   * Online Guest 专用：应用 Host 授权的回合切换（TURN_END 值）。
+   * 语义与 endTurn() 相同，但 nextPlayerId / nextTurnId 来自 Host 而非本地推导：
+   * turnId = nextTurnId（不是自增）、切换 currentPlayerId、resetForTurn、phase = END。
+   * 防御：gameOver 或 phase !== RESOLVE 时忽略（幂等）；nextTurnId !== turnId + 1
+   * 时仍应用 Host 值但 console.warn（协议异常，Host 是权威）。
+   */
+  applyRemoteTurnEnd(nextPlayerId: PlayerId, nextTurnId: number): void {
+    if (this.state.gameOver || this.state.phase !== TurnPhase.RESOLVE) {
+      return;
+    }
+    if (nextTurnId !== this.state.turnId + 1) {
+      console.warn(
+        `[TurnManager] applyRemoteTurnEnd 协议异常：期望 turnId ${
+          this.state.turnId + 1
+        }，Host 下发 ${nextTurnId}，仍按 Host 权威值应用`
+      );
+    }
+    this.state.turnId = nextTurnId;
+    this.state.currentPlayerId = nextPlayerId;
+    this.resetForTurn(nextPlayerId);
+    this.state.phase = TurnPhase.END;
+  }
+
   /** 相机 TURN_TRANSITION 到达新玩家：END → ACTION */
   notifyTurnTransitionComplete(): void {
     if (this.state.phase !== TurnPhase.END) {

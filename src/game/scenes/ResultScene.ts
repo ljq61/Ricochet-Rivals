@@ -15,21 +15,28 @@ const TITLE_FONT = 46;
 export interface ResultSceneData {
   setup: MatchSetup;
   winnerId: PlayerId | null;
+  /** Phase 14 联机：本地玩家 ID（YOU WIN / YOU LOSE 视角）；离线不传 */
+  localPlayerId?: PlayerId;
 }
 
 /**
- * 结果场景（Phase 11 基础版）：
+ * 结果场景（Phase 11 基础版；Phase 14 起支持 Online）：
  * - Single Player：YOU WIN / YOU LOSE（P1 视角）
  * - Local 2P：PLAYER 1 WINS / PLAYER 2 WINS；平局（同归于尽）→ DRAW
+ * - Online（Phase 14）：本地视角 YOU WIN / YOU LOSE；无 REMATCH
+ *   （Online Rematch 是 Phase 16 —— 本阶段仅 MAIN MENU，会话已随
+ *   BattleScene 关闭而销毁）
  * - REMATCH：以同一 MatchSetup 重新 scene.start(BattleScene) ——
  *   create 重建全新 GameState，旧局污染（HP / 位置 / 相位 / AI / 相机）
- *   随场景重建一并清除；Online 模式本阶段不到达此场景（防御：只留 MAIN MENU）
+ *   随场景重建一并清除
  */
 export class ResultScene extends Phaser.Scene {
   static readonly KEY = 'ResultScene';
 
   private setup!: MatchSetup;
   private winnerId!: PlayerId | null;
+  /** Phase 14 联机本地视角（离线 null） */
+  private localPlayerId: PlayerId | null = null;
   private viewport!: ViewportService;
   private inputRouter!: InputRouter;
   private titleText!: Phaser.GameObjects.Text;
@@ -44,6 +51,7 @@ export class ResultScene extends Phaser.Scene {
   init(data: ResultSceneData): void {
     this.setup = data.setup;
     this.winnerId = data.winnerId;
+    this.localPlayerId = data.localPlayerId ?? null;
   }
 
   create(): void {
@@ -92,6 +100,10 @@ export class ResultScene extends Phaser.Scene {
     if (this.setup.mode === 'single_player') {
       return this.winnerId === 'P1' ? 'YOU WIN' : 'YOU LOSE';
     }
+    if (this.setup.mode === 'online') {
+      // Phase 14：本地视角（P1=Host / P2=Guest，经 localPlayerId 判断）
+      return this.winnerId === this.localPlayerId ? 'YOU WIN' : 'YOU LOSE';
+    }
     return this.winnerId === 'P1' ? 'PLAYER 1 WINS' : 'PLAYER 2 WINS';
   }
 
@@ -99,8 +111,15 @@ export class ResultScene extends Phaser.Scene {
     if (this.winnerId === null) {
       return '#ffd24a';
     }
-    if (this.setup.mode === 'single_player') {
-      return this.winnerId === 'P1' ? '#3f8cff' : '#ff5063';
+    if (
+      this.setup.mode === 'single_player' ||
+      this.setup.mode === 'online'
+    ) {
+      const won =
+        this.setup.mode === 'online'
+          ? this.winnerId === this.localPlayerId
+          : this.winnerId === 'P1';
+      return won ? '#3f8cff' : '#ff5063';
     }
     return toCssColor(playerColor(this.winnerId));
   }

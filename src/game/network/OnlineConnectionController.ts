@@ -68,6 +68,12 @@ export class OnlineConnectionController {
   private hostSessionPromise: Promise<{ connectionCode: string }> | null = null;
   private guestAnswerPromise: Promise<{ responseCode: string }> | null = null;
   private disposed = false;
+  /**
+   * Phase 14 交接态：会话已移交给 BattleScene（SessionManager + coordinator
+   * 接管）。detach 后 dispose 一律禁止 —— 会话的所有权已不在本 controller，
+   * destroySession 会把已交接的 transport / NetworkManager 就地销毁。
+   */
+  private detached = false;
 
   private readonly stateHandlers = new Set<StateHandler>();
   private readonly failureHandlers = new Set<FailureHandler>();
@@ -309,7 +315,7 @@ export class OnlineConnectionController {
 
   /** Controller 生命周期终了（Scene shutdown 等）；幂等 */
   dispose(): void {
-    if (this.disposed) {
+    if (this.disposed || this.detached) {
       return;
     }
     this.disposed = true;
@@ -318,6 +324,27 @@ export class OnlineConnectionController {
     this.failureHandlers.clear();
     this.sessionHandlers.clear();
     this.state = OnlineConnectionState.CLOSED;
+  }
+
+  /**
+   * Phase 14 交接：会话已移交给 BattleScene（OnlineSessionManager /
+   * OnlineGameCoordinator 接管）。只清理本场景的 handler 与计时器，
+   * **禁止销毁已交接的 transport / NetworkManager**（那属于对局生命
+   * 周期，由 BattleScene.onShutdown → disposeSession 收口）。manager 上
+   * 的 VERIFIED / 断线订阅保留（均幂等：VERIFIED 终态短路 + fail 的
+   * state!==VERIFIED 守卫），随对局结束的 nm.dispose 一并消失。
+   */
+  detach(): void {
+    if (this.detached || this.disposed) {
+      return;
+    }
+    this.detached = true;
+    this.clearTimers();
+    this.stateHandlers.clear();
+    this.failureHandlers.clear();
+    this.sessionHandlers.clear();
+    this.hostSessionPromise = null;
+    this.guestAnswerPromise = null;
   }
 
   // ---- 内部 -----------------------------------------------------------------

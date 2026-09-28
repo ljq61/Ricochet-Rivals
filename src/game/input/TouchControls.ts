@@ -154,8 +154,10 @@ export class TouchControls implements InputSource {
    * - ◀ / ▶ 移动按钮仅 ACTION 相位显示（Phase 9 Review Gate：
    *   点击瞄准按钮后位置锁定 —— MovementSystem 同步拒绝 RETURN_HOME /
    *   AIM 移动；按钮隐藏 + zone 失活，取消瞄准回 ACTION 自动恢复）
+   * - moveAllowed（Phase 14 联机）：对手回合 = false → 移动按钮隐藏
+   *   （聚焦按钮保留 —— 对手回合仍允许 Free View 观察）；离线不传不变。
    */
-  refresh(cameraMode: CameraMode): void {
+  refresh(cameraMode: CameraMode, moveAllowed = true): void {
     const focusEnabled = cameraMode === CameraMode.FREE_VIEW;
     for (const button of [this.focusSelfButton, this.focusEnemyButton]) {
       if (button.enabled !== focusEnabled) {
@@ -164,7 +166,8 @@ export class TouchControls implements InputSource {
       }
     }
 
-    const moveVisible = this.deps.getState().phase === TurnPhase.ACTION;
+    const moveVisible =
+      this.deps.getState().phase === TurnPhase.ACTION && moveAllowed;
     if (moveVisible !== this.moveButtonsVisible) {
       this.moveButtonsVisible = moveVisible;
       for (const button of [this.leftButton, this.rightButton]) {

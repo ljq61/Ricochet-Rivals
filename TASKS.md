@@ -1,6 +1,6 @@
 # Ricochet Rivals — Development Tasks
 
-> 状态：**Phase 0 ～ Phase 13 已完成（2026-09-28，Phase 13 经 test-reviewer PASS WITH ISSUES 验收 + 补强修复）**
+> 状态：**Phase 0 ～ Phase 14 已完成（2026-09-29，Phase 14 经 test-reviewer PASS WITH ISSUES 验收 —— 联机 P2P Gameplay Sync 全量落地）**
 > 验证：`npm run typecheck` / `npm run test` / `npm run build` / `npm run e2e` 全部通过。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
@@ -1369,63 +1369,118 @@ Host：Paste Answer → Connected ✅
 
 ---
 
-# Phase 14 — P2P Commands
+# Phase 14 — P2P Gameplay Synchronization ✅
 
-同步：
+**目标**：把现有 Gameplay 接入 P2P——两台浏览器完成一局基础 Online Battle。
+Host = P1 = 权威；Guest = P2 = Input Client + Local Presentation Client。
+双方共用同一套 GameState / GameCommand / TurnManager / Movement / Aim /
+Projectile / Damage / Camera（禁止 Online 专用 Gameplay）。
 
-PLAYER_READY
+## 实现落地
 
-GAME_START
+- **契约层（Main Agent）**：`online/OnlineTypes.ts`（全部 payload +
+  OnlineGameCoordinatorApi 公共契约）+ `CommandRejectedReason.ts`（8 值）+
+  `NetworkMessageType.COMMAND_REJECTED` 新增（NetworkContracts 锁定同步）。
+- **Gameplay 契约钩子（gameplay-engineer 委托）**：`GameLogic.onOutcome`
+  （accepted/rejected 双发 + destroy 清订阅 —— Host 广播唯一汇聚源）；
+  `TurnManager.applyRemoteTurnEnd`（Guest 消费 Host 授权值，gameplay 层
+  零网络 import）。
+- **数据层（network-engineer 定稿，Main Agent 照稿落地）**：
+  `OnlinePayloads.ts`（全 payload 形状守卫 + hasOwnProperty 防原型链）；
+  `AuthoritativeState.ts`（buildSnapshot / stateFromSnapshot /
+  buildTurnResultPayload / applyTurnResult / computeStateHash FNV-1a /
+  synthesizeAuthoritativeDamage）；`GuestIntentBus.ts`（Guest 输入拦截：
+  本地命令 → *_REQUEST，不本地执行）；`NetworkManager.matchId` getter。
+- **Coordinator（Main Agent 实现，三文件 <400 行）**：
+  `OnlineGameCoordinator.ts`（生命周期壳：lobby 握手 + PLAYER_READY
+  1.5s 低频重发直到 GAME_START（订阅时序防线）/ attach / guardInbound
+  入站三防线（payload → matchId → senderId → per-type sequence 幂等）/
+  sendOut 统一出站 / debugInfo 诊断 / dispose）；`OnlineHostChannel.ts`
+  （请求级守卫 verdict 纯函数（sender/turnId/存活 + FIRE 专属：速度
+  ∈[550,2400]、起点距炮塔≤5px、seed 一致）+ outcome 广播 —— 重入红线：
+  handler 只 send 不 dispatch）；`OnlineGuestChannel.ts`（MOVE 绝对覆写 /
+  FIRE 经真实总线播放 / TURN_RESULT reconcile / Turn Barrier 双条件
+  （本地 dwell ✓ + TURN_END ✓ 两种到达序均处理）/ calculate-only
+  伤害系统 GuestAuthoritativeDamage）。
+- **单一 validate+execute 路径**：Host 本地命令与 Guest 请求重建命令
+  走同一条 CommandBus → GameLogic → Systems；语义校验（phase/预算/
+  hasFired/clamp）全在系统层，coordinator 不重复；拒因映射
+  `OnlineReasonMap.ts` → COMMAND_REJECTED（不 disconnect）。
+- **Scene 接线（Main Agent）**：OnlineSessionManager 上提 game.registry
+  （main.ts 组合根）；OnlineConnectionScene VERIFIED → ENTER BATTLE →
+  PLAYER_READY → GAME_START → BattleScene（bootstrap 携带同一 coordinator
+  实例；handedOff 交接 + `controller.detach()` 交接语义 —— onShutdown 不
+  再销毁已移交会话）；BattleScene 联机接线（stateFromSnapshot 状态源 /
+  attach / inputBus 三处 / 输入锁 isRemoteControlledTurn / YOUR TURN·
+  OPPONENT'S TURN 横幅 / 伤害数字 Host 直显 vs Guest 权威展示 /
+  OPPONENT DISCONNECTED overlay + BACK TO MENU / DEBUG_NETWORK 段）；
+  ResultScene 联机 YOU WIN/YOU LOSE 视角（无 REMATCH，Phase 16）。
+- **修复循环（E2E 实测驱动）**：① PLAYER_READY 订阅时序缺陷（对端先点
+  ENTER → 消息在订阅前投递丢失 → 死锁）→ 低频重发防线；② 连接场景
+  SHUTDOWN 无条件 controller.dispose() 杀死已交接会话（manager disposed
+  + transport CLOSED）→ detach() 分流；③ Guest 'proceed' 双驱动转场
+  （applyRemoteTurnEnd→resumeNextTurn 已发起 + 场景层再 beginTransition
+  → 首个 tween 被提前 resolve，相机滞留 TURN_TRANSITION、aimFlow 静默
+  拒绝瞄准）→ 场景层禁止二次发起（相机事件环形日志定位）。
 
-MOVE
+## 测试（Phase 14 新增 135 个，总 440 / 38 文件）
 
-FIRE
+- 单测：OnlinePayloads 62（守卫逐字段腐蚀 + 原型链键拒绝）；AuthoritativeState
+  12（往返全等 / 深独立 / hash 确定性·敏感性·键序无关）；GuestIntentBus 16；
+  OnlineGameCoordinator 27（①~㉒：握手同源 / attach 守卫 / Host 权威 MOVE /
+  越界 clamp / 预算 / 伪造 playerId / stale+future turn / 重复 sequence 重放 /
+  FIRE 全防线 / TURN_RESULT 覆写预测 / Barrier A·B 双序 / TURN_END 异常 /
+  断线双向 + gameOver 抑制 / dispose 幂等静默 / damageSystem 语义）；
+  OnlineLoopbackBattle 2（**P1→P2→P1 完整循环 + 双端 computeStateHash 全等**）；
+  OnlineConnectionController +2（detach 不杀会话 / 未 detach dispose 语义）；
+  GameLogic 8（outcome）；TurnManager +4（applyRemoteTurnEnd）；
+  MatchFactory +2（host/guest 角色组合）。
+- E2E（118/118）：新增 `RR_E2E_ONLY=battle` runOnlineBattle 17 项 —— 双页
+  真实 WebRTC（手动配对→ENTER BATTLE→GAME_START 同源→Host Move 双端可见
+  →Host Fire 双端发射→P1→P2 切换→Guest Barrier→HP 一致→Guest Move 经
+  Host 验证→Guest Fire 双端→本地结算→Host 授权→**P1→P2→P1 完整循环**→
+  双端 HP/位置一致→**stateHash 一致**→优雅关闭断线感知）。既有
+  desktop/mobile/sp/online 四场景零改动全过。
 
-TURN_RESULT
+## 验收
 
-TURN_END
+- `npm run typecheck` ✓ / `npm run test` 440/440 ✓ / `npm run build` ✓ /
+  `npm run e2e` 118/118 ✓。
+- **test-reviewer：PASS WITH ISSUES**（无 Critical/Major；验收重点十项
+  全过：Host authority / Guest intent-only / 命令验证 / 幂等防重放 /
+  stale turn / coordinator boundary / 零 RTC 入 gameplay / 零逐帧同步 /
+  TURN_RESULT reconcile / 离线与移动端回归 / E2E 证据逐路径核验）。
 
-REMATCH
+## Known Issues（非阻塞）
 
-DISCONNECT
+- **[Low→Phase 15]** Lobby 期断线后 ENTER BATTLE 仍可点击（controller 停
+  VERIFIED 终态）；再点击基于死 session 抛 TransportError 未捕获 —— 无
+  状态损坏，BACK TO MENU 可恢复；Phase 15 一并做输入面冻结 + 统一吞错。
+- **[Low→Phase 15]** per-type sequence 幂等不约束跨消息类型乱序 —— 当前
+  依赖 RTCDataChannel ordered:true（正确）；引入非 ordered 通道需重审。
+- **[Info]** stateHash Phase 14 仅计算/携带/诊断（lastHashMatch 只读），
+  不回滚不恢复 —— Phase 15 Desync Protection 消费。
+- **[Info]** 对端进程异常崩溃（非优雅关闭）只到 ICE disconnected（瞬态，
+  Phase 12 防误杀设计）→ failed 终局需数十秒；优雅关闭（关标签页 /
+  Channel.close）即时感知。恢复策略归 Phase 15。
+- **[Info]** Guest 发炮请求→FIRE 广播返回的 RTT 窗口内可再次拖拽开火 →
+  Host ALREADY_FIRED 回执（幂等覆盖，体验噪声）。
+- **[Info]** Guest 移动无本地预测（等权威 MOVE 返回才更新位置）—— 权威
+  覆写设计；局域网 RTT 下感知轻微，Phase 15+ 可评估预测。
+- **[Info]** BattleScene 742 行（Phase 14 前 533，组合根既有超限先例，
+  记录为债）；Online Rematch 未实现（Phase 16）；SP seed=1 既有已知问题
+  —— **联机 seed 为 Host 随机生成（已解决联机侧）**。
+- **[验证债]** INTERNET P2P NOT VERIFIED（E2E 为同机双标签页 host
+  candidates 直连；PC Wi-Fi ↔ 手机 4G/5G 外网 NAT 穿越未测）。
 
-Host：
+## Phase 15 就绪
 
-authoritative。
-
-Guest：
-
-input client。
-
-Guest FIRE：
-
-Guest
-
-↓
-
-FIRE_REQUEST
-
-↓
-
-Host validates
-
-↓
-
-Host FIRE
-
-↓
-
-Broadcast FIRE
-
-两边播放。
-
-最终：
-
-Host 计算：
-
-TURN_RESULT
-
-并广播 Snapshot。
+- stateHash 已在 TURN_RESULT 双端计算与比对（lastHashMatch 诊断字段），
+  Phase 15 直接消费做 desync 防护。
+- Sequence 基础设施（NetworkManager.lastRemoteSequence / per-type 去重）
+  已就绪，支持 STATE_SNAPSHOT 对账协议。
+- Reviewer 建议 Phase 15 backlog：lobby 断线输入面冻结、网络层统一吞
+  TransportError、Guest 移动预测、非 ordered 通道重审。
 
 ---
 

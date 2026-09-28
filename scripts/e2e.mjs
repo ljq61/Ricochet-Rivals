@@ -1269,6 +1269,296 @@ async function runOnlineP2P(browser) {
   await pageGuest.close();
 }
 
+// ---- Online Battle 场景（Phase 14：双页真实 WebRTC 完整对战 smoke） ------
+
+/**
+ * Phase 14 E2E：真实 RTCPeerConnection 配对后完成 P1 → P2 → P1 完整回合循环。
+ * 关键机制（Phase 13 实测）：headless 后台页 rAF 冻结（flags 无效），但
+ * DataChannel 消息经事件循环照常投递、evaluate 照常可读 —— 谁的本地模拟
+ * 需要推进（炮弹飞行 / 爆炸 / 转场 tween），谁就必须处于前台；后台页只做
+ * 消息接收与状态写入。因此按"前台舞蹈"推进：Host 回合 host 前台 →
+ * Guest 回合 guest 前台（FIRE_REQUEST 经事件循环在 Host 后台完成校验广播）→
+ * Host 前台结算（TURN_RESULT + TURN_END）→ Guest 前台完成应用。
+ * 断言全部以"双端一致性（Host 权威）"为准，不依赖具体命中数值。
+ */
+async function runOnlineBattle(browser) {
+  section('Online Battle — P2P Gameplay Sync（真实 WebRTC 双页对战）');
+
+  // —— 手动配对（与 Phase 13 相同流程）——
+  const pageHost = await browser.newPage();
+  pageHost.on('pageerror', (e) => console.log('[HOST PAGEERROR]', e.message));
+  pageHost.on('console', (m) => console.log(`[HOST console.${m.type()}]`, m.text().slice(0, 200)));
+  await pageHost.setViewport({ width: 1280, height: 800 });
+  await pageHost.goto(URL, { waitUntil: 'load' });
+  await waitForScene(pageHost, 'MainMenuScene', 15000);
+  await clickMenuButton(pageHost, 'online');
+  await waitForScene(pageHost, 'OnlineConnectionScene', 5000);
+
+  const pageGuest = await browser.newPage();
+  pageGuest.on('pageerror', (e) => console.log('[GUEST PAGEERROR]', e.message));
+  pageGuest.on('console', (m) => console.log(`[GUEST console.${m.type()}]`, m.text().slice(0, 200)));
+  await pageGuest.setViewport({ width: 1280, height: 800 });
+  await pageGuest.goto(URL, { waitUntil: 'load' });
+  await waitForScene(pageGuest, 'MainMenuScene', 15000);
+  await clickMenuButton(pageGuest, 'online');
+  await waitForScene(pageGuest, 'OnlineConnectionScene', 5000);
+
+  await clickMenuButton(pageHost, 'create');
+  const hostCode = await waitFor(
+    pageHost,
+    async () => (await dbg(pageHost)).connectionCode,
+    15000,
+    'Host Offer Code'
+  );
+  await clickMenuButton(pageGuest, 'join');
+  await waitFor(
+    pageGuest,
+    async () => (await dbg(pageGuest)).state === 'GUEST_WAITING_FOR_OFFER',
+    5000,
+    'Guest 等待输入'
+  );
+  await pageGuest.evaluate((code) => window.__RR_DEBUG__.setInputText(code), hostCode);
+  await clickMenuButton(pageGuest, 'createResponse');
+  const responseCode = await waitFor(
+    pageGuest,
+    async () => (await dbg(pageGuest)).connectionCode,
+    15000,
+    'Guest Response Code'
+  );
+  await pageHost.evaluate((code) => window.__RR_DEBUG__.setInputText(code), responseCode);
+  await clickMenuButton(pageHost, 'connect');
+  await waitFor(pageHost, async () => (await dbg(pageHost)).state === 'VERIFIED', 30000, 'Host VERIFIED');
+  await waitFor(pageGuest, async () => (await dbg(pageGuest)).state === 'VERIFIED', 30000, 'Guest VERIFIED');
+  check('双页配对 VERIFIED（真实 WebRTC DataChannel）', true);
+
+  // —— ENTER BATTLE：各自前台点击（PLAYER_READY 经事件循环对端即时可收）——
+  await pageGuest.bringToFront();
+  await clickMenuButton(pageGuest, 'enterBattle');
+  await waitFor(
+    pageGuest,
+    async () => (await dbg(pageGuest)).lobbyPhase === 'waiting',
+    5000,
+    'Guest PLAYER_READY'
+  );
+  await pageHost.bringToFront();
+  await clickMenuButton(pageHost, 'enterBattle');
+  // Host 汇齐双方 Ready → GAME_START → 双方转场（转场需 rAF —— 各自前台化）
+  await waitForScene(pageHost, 'BattleScene', 15000);
+  await pageGuest.bringToFront();
+  await waitForScene(pageGuest, 'BattleScene', 15000);
+
+  const hostD = () => dbg(pageHost);
+  const guestD = () => dbg(pageGuest);
+
+  const h0 = await hostD();
+  const g0 = await guestD();
+  check(
+    'Host=P1 / Guest=P2 角色正确',
+    h0.onlineRole === 'host' && h0.localPlayerId === 'P1' && g0.onlineRole === 'guest' && g0.localPlayerId === 'P2'
+  );
+  check(
+    'GAME_START 双端同源（HP / 回合 / 位置一致）',
+    h0.hp.P1 === g0.hp.P1 && h0.hp.P2 === g0.hp.P2 && h0.turnId === g0.turnId && h0.players.P1 === g0.players.P1 && h0.players.P2 === g0.players.P2
+  );
+
+  // —— P1 Turn 1（Host 回合；host 前台推进）——
+  await pageHost.bringToFront();
+  await pageHost.keyboard.down('d');
+  await sleep(350);
+  await pageHost.keyboard.up('d');
+  const hostMoved = await waitFor(
+    pageHost,
+    async () => (await hostD()).players.P1 > 460,
+    5000,
+    'Host P1 移动生效'
+  );
+  const guestSyncMove = await waitFor(
+    pageGuest,
+    async () => (await guestD()).players.P1 > 460,
+    5000,
+    'Guest 同步 Host 移动（后台事件循环应用）'
+  ).catch(async (error) => {
+    const gh = await hostD();
+    const gg = await guestD();
+    console.log(
+      '[MOVE DIAG]',
+      JSON.stringify({
+        hostPlayers: gh.players,
+        guestPlayers: gg.players,
+        guestLastRx: gg.online?.lastRxType,
+        guestNetState: gg.online?.netState,
+        guestMatchId: gg.online?.matchId,
+        guestTurn: gg.turnId,
+        guestCurrent: gg.currentPlayerId,
+        guestPhase: gg.phase,
+      })
+    );
+    throw error;
+  });
+  check('Host Move 双方可见（权威 MOVE 广播）', hostMoved && guestSyncMove);
+
+  // Host 发炮：45° 求解瞄向 P2
+  const hostP2x = (await hostD()).players.P2;
+  await fireFortyFiveShot(pageHost, 1280, 800, hostP2x);
+  // Guest（后台）收到 FIRE 广播并本地发射 —— DataChannel 事件循环，无需前台
+  const guestFired = await waitFor(
+    pageGuest,
+    async () => (await guestD()).hasFired === true,
+    5000,
+    'Guest 收到 FIRE 广播'
+  );
+  check('Host Fire 双方发射（广播 → 双端本地模拟）', guestFired);
+
+  // Host 前台：炮弹飞行 → 爆炸 → TURN_RESULT → dwell → TURN_END → P2 回合
+  const hostToP2 = await waitFor(
+    pageHost,
+    async () => {
+      const d = await hostD();
+      return d.currentPlayerId === 'P2' && d.phase === 'ACTION' && d.turnId === 2;
+    },
+    25000,
+    'Host 进入 P2 回合'
+  );
+  check('Host 回合切换 P1→P2（Host 权威 TURN_END）', hostToP2);
+
+  // Guest 前台恢复 rAF：本地炮弹落地结算 → dwell → pending TURN_END → P2 回合
+  await pageGuest.bringToFront();
+  const guestToP2 = await waitFor(
+    pageGuest,
+    async () => {
+      const d = await guestD();
+      return d.currentPlayerId === 'P2' && d.phase === 'ACTION' && d.turnId === 2;
+    },
+    25000,
+    'Guest 进入 P2 回合'
+  );
+  check('Guest 经 Turn Barrier 进入 P2 回合（不超前 Host）', guestToP2);
+
+  const hAfterT1 = await hostD();
+  const gAfterT1 = await guestD();
+  check(
+    'Turn 1 权威结算后双端 HP 一致',
+    JSON.stringify(hAfterT1.hp) === JSON.stringify(gAfterT1.hp)
+  );
+
+  // —— P2 Turn 2（Guest 回合；guest 前台）——
+  await pageGuest.keyboard.down('a');
+  await sleep(350);
+  await pageGuest.keyboard.up('a');
+  const guestMoved = await waitFor(
+    pageGuest,
+    async () => (await guestD()).players.P2 < 4500,
+    5000,
+    'Guest P2 移动生效'
+  );
+  const hostSyncMove2 = await waitFor(
+    pageHost,
+    async () => (await hostD()).players.P2 < 4500,
+    5000,
+    'Host 同步 Guest 移动（后台校验 + 广播）'
+  );
+  check('Guest Move 经 Host 验证后双方可见（MOVE_REQUEST → 权威 MOVE）', guestMoved && hostSyncMove2);
+
+  const hostP1x = (await hostD()).players.P1;
+  try {
+    await fireFortyFiveShot(pageGuest, 1280, 800, hostP1x);
+  } catch (error) {
+    const gg = await guestD();
+    console.log(
+      '[GUEST AIM DIAG]',
+      JSON.stringify({
+        cameraMode: gg.cameraMode,
+        phase: gg.phase,
+        current: gg.currentPlayerId,
+        local: gg.localPlayerId,
+        hasFired: gg.hasFired,
+        lost: gg.connectionLost,
+        rejected: gg.online?.rejectedCount,
+        turnId: gg.turnId,
+        cameraEventLog: gg.cameraEventLog,
+      })
+    );
+    throw error;
+  }
+  const guestFired2 = (await guestD()).hasFired === true;
+  const hostFiredEcho = await waitFor(
+    pageHost,
+    async () => (await hostD()).hasFired === true,
+    5000,
+    'Host 收到 FIRE 广播（后台事件循环）'
+  );
+  check('Guest Fire 经 Host 验证广播（双端发射）', guestFired2 && hostFiredEcho);
+
+  // Guest 前台：本地炮弹结算 → RESOLVE → dwell（'waiting'，等 Host TURN_END）
+  const guestResolved = await waitFor(
+    pageGuest,
+    async () => (await guestD()).phase === 'RESOLVE',
+    25000,
+    'Guest 本地结算 RESOLVE'
+  );
+  check('Guest 本地模拟完成结算（表现层，不碰权威 HP）', guestResolved);
+
+  // Host 前台：其炮弹（冻结恢复后）飞行结算 → TURN_RESULT → TURN_END → P1 Turn 3
+  await pageHost.bringToFront();
+  const hostToP1 = await waitFor(
+    pageHost,
+    async () => {
+      const d = await hostD();
+      return d.currentPlayerId === 'P1' && d.phase === 'ACTION' && d.turnId === 3;
+    },
+    25000,
+    'Host 进入 P1 Turn 3'
+  );
+  check('Host 结算并授权 → P1 回合（Host 权威）', hostToP1);
+
+  // Guest 前台：应用 buffered TURN_RESULT + TURN_END → P1 Turn 3
+  await pageGuest.bringToFront();
+  const guestToP1 = await waitFor(
+    pageGuest,
+    async () => {
+      const d = await guestD();
+      return d.currentPlayerId === 'P1' && d.phase === 'ACTION' && d.turnId === 3;
+    },
+    25000,
+    'Guest 进入 P1 Turn 3'
+  );
+  check('P1 → P2 → P1 完整循环（双端回合一致）', guestToP1);
+
+  const hFinal = await hostD();
+  const gFinal = await guestD();
+  check('循环后双端 HP 一致', JSON.stringify(hFinal.hp) === JSON.stringify(gFinal.hp));
+  check('循环后双端位置一致', JSON.stringify(hFinal.players) === JSON.stringify(gFinal.players));
+  check(
+    'stateHash 双端一致（基础 desync 探针，Guest 视角）',
+    gFinal?.online?.lastHashMatch === true
+  );
+
+  // —— Disconnect：Guest 优雅关闭通道（真实关标签页路径）→ Host 感知 ——
+  // 进程异常崩溃只到 ICE 'disconnected'（瞬态，Phase 12 防误杀设计），
+  // 'failed' 终局需数十秒 —— E2E 走确定性优雅关闭路径。
+  await pageGuest.evaluate(() => window.__RR_DEBUG__.closeOnlineChannel());
+  await pageGuest.close();
+  const hostLost = await waitFor(
+    pageHost,
+    async () => (await hostD()).connectionLost === true,
+    15000,
+    'Host 感知断线'
+  );
+  await pageHost.bringToFront();
+  const lostBanner = await waitFor(
+    pageHost,
+    async () => ((await hostD()).lastBannerText ?? '').includes('OPPONENT DISCONNECTED'),
+    5000,
+    '断线横幅'
+  ).catch(() => null);
+  check(
+    'Disconnect 基本处理：冻结输入 + OPPONENT DISCONNECTED 横幅',
+    hostLost && lostBanner !== null
+  );
+
+  await pageHost.close();
+}
+
 // ---- 主流程 --------------------------------------------------------------
 
 async function main() {
@@ -1303,6 +1593,7 @@ async function main() {
     if (!only || only === 'mobile') await runMobile(browser);
     if (!only || only === 'sp') await runSinglePlayer(browser);
     if (!only || only === 'online') await runOnlineP2P(browser);
+    if (!only || only === 'battle') await runOnlineBattle(browser);
   } catch (error) {
     failed++;
     failures.push(`场景异常: ${error.message}`);
