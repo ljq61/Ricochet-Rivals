@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Phase 6.5 Mobile：
+      - viewport-fit=cover：全屏延伸到刘海 / 手势条之下，
+        safe-area insets 由 ViewportService 通过 env() 探测供 HUD 布局
+      - user-scalable=no + touch-action:none：禁浏览器捏合 / 双击缩放
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Ricochet Rivals</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        /* 移动端真机修复：不用 width/height:100% 百分比链（部分手机浏览器
+           对 fixed 元素的百分比高度解析与可见视口不一致），改用四边拉伸 */
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        overflow: hidden;
+        background: #0b0e14;
+        /* 拖动 Camera 时禁止选中文本 */
+        -webkit-user-select: none;
+        user-select: none;
+        /* 防止移动端橡皮筋滚动 / 下拉刷新与游戏手势冲突 */
+        overscroll-behavior: none;
+      }
+      #game-root {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        touch-action: none;
+      }
+      canvas {
+        display: block;
+        /* 长按不弹出系统 callout（移动端长按菜单） */
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      /* 竖屏门禁：触屏设备竖屏时提示旋转（OrientationGate 切换 is-visible） */
+      #rotate-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        background: #0b0e14;
+        color: #e8eef7;
+        font-family: monospace;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        text-align: center;
+      }
+      #rotate-overlay.is-visible {
+        display: flex;
+      }
+      #rotate-overlay .rotate-icon {
+        font-size: 64px;
+        animation: rotate-hint 1.6s ease-in-out infinite;
+      }
+      @keyframes rotate-hint {
+        0%,
+        20% {
+          transform: rotate(0deg);
+        }
+        55%,
+        100% {
+          transform: rotate(-90deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game-root"></div>
+    <div id="rotate-overlay">
+      <div class="rotate-icon">📱</div>
+      <div>请将设备横过来游玩</div>
+      <div style="font-size: 13px; color: #63769b">Ricochet Rivals 仅支持横屏</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

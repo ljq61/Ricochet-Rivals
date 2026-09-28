@@ -1,0 +1,26 @@
+{
+  "name": "ricochet-rivals",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "横版 2D 回合制弹道对战网页游戏 (Side-scrolling turn-based artillery PvP web game)",
+  "scripts": {
+    "dev": "vite",
+    "dev:host": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "node scripts/e2e.mjs"
+  },
+  "dependencies": {
+    "phaser": "^4.2.1"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.12.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.3.0",
+    "vitest": "^3.2.4"
+  }
+}

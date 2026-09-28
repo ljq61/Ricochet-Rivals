@@ -1,0 +1,1327 @@
+/**
+ * Phase 6.5 E2E 验证脚本（Desktop Mouse+Keyboard 与 Mobile Touch 两套操作）。
+ * Phase 9：Desktop 场景升级为自然完整对局（满血互射到自然击杀，
+ * 无 HP 注入）+ 回合横幅 / 胜负横幅断言。
+ * Phase 10：新增 Single Player 冒烟场景（AI 自动开火、人类输入
+ * 静默 / 恢复、回合循环 P1→AI→P1）。
+ * Phase 11：入口改为 Main Menu（scene 流：Menu→Battle→Result→
+ * Rematch/Menu）；按钮坐标来自各场景 debug 句柄（CSS 口径）。
+ *
+ * 运行前置：npm run build（脚本用 vite preview 服务 dist 产物）。
+ * 运行方式：npm run e2e（node scripts/e2e.mjs）
+ *
+ * 使用 puppeteer-core + 系统 Chrome/Edge（无浏览器下载）。
+ * 断言数据来自 window.__RR_DEBUG__（DebugConfig.DEBUG_GAME=true 时安装）。
+ *
+ * 屏幕坐标换算（相机 zoom 围绕视口中心缩放）：
+ *   screenX = (worldX − centerX) · zoom + viewportWidth / 2
+ *   centerX = scrollX + viewportWidth / 2
+ */
+
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import puppeteer from 'puppeteer-core';
+
+const PORT_CANDIDATES = [4319, 4321, 4322, 4323];
+let PORT = 4319;
+let URL = '';
+
+const BROWSER_CANDIDATES = [
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+];
+
+const GROUND_TOP_Y = 960;
+const LAUNCHER_OFFSET_Y = -48;
+
+// ---- 微型断言工具 --------------------------------------------------------
+
+let passed = 0;
+let failed = 0;
+const failures = [];
+
+function check(name, condition, detail = '') {
+  if (condition) {
+    passed++;
+    console.log(`  ✔ ${name}`);
+  } else {
+    failed++;
+    failures.push(`${name}${detail ? ` — ${detail}` : ''}`);
+    console.log(`  ✘ ${name}${detail ? ` — ${detail}` : ''}`);
+  }
+}
+
+function section(name) {
+  console.log(`\n=== ${name} ===`);
+}
+
+async function waitFor(page, fn, timeoutMs = 10000, label = 'condition') {
+  const start = Date.now();
+  let last;
+  while (Date.now() - start < timeoutMs) {
+    last = await fn();
+    if (last) {
+      return last;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`waitFor 超时: ${label} (last=${JSON.stringify(last)})`);
+}
+
+const dbg = (page) => page.evaluate(() => window.__RR_DEBUG__);
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---- Phase 11 场景流 helpers --------------------------------------------
+
+/** 等待某个活动场景（各场景 installDebugHandles 提供 scene 字段）；
+ *  超时信息携带实际 scene 值便于诊断 */
+async function waitForScene(page, name, timeoutMs = 15000) {
+  const start = Date.now();
+  for (;;) {
+    const d = await dbg(page);
+    if (d?.scene === name) {
+      return true;
+    }
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(
+        `waitFor 超时: scene=${name} (last=${d ? String(d.scene) : 'no-handle'})`
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/** 鼠标点击当前场景 debug 句柄里的按钮（坐标为 CSS 口径） */
+async function clickMenuButton(page, key) {
+  const rect = (await dbg(page)).buttons[key];
+  if (!rect) {
+    throw new Error(`menu button not found: ${key}`);
+  }
+  await page.mouse.click(rect.x, rect.y);
+}
+
+/** 触摸点击当前场景 debug 句柄里的按钮 */
+async function tapMenuButton(page, key) {
+  const rect = (await dbg(page)).buttons[key];
+  if (!rect) {
+    throw new Error(`menu button not found: ${key}`);
+  }
+  await page.touchscreen.touchStart(rect.x, rect.y);
+  await page.touchscreen.touchEnd();
+}
+
+/**
+ * 世界坐标 → 屏幕坐标（CSS px，可直接注入 pointer 事件）。
+ * 游戏坐标空间 = 物理像素（gameSize = CSS × DPR）：
+ * 相机 scroll/zoom 均为物理口径，输出除以 uiScale 回到 CSS px。
+ * DPR 1（桌面）时为恒等变换。
+ */
+function worldToScreen(world, viewportCssW, viewportCssH, d) {
+  const ui = d.uiScale;
+  const gameW = viewportCssW * ui;
+  const gameH = viewportCssH * ui;
+  const centerX = d.cameraScrollX + gameW / 2;
+  const centerY = d.cameraScrollY + gameH / 2;
+  return {
+    x: ((world.x - centerX) * d.cameraZoom + gameW / 2) / ui,
+    y: ((world.y - centerY) * d.cameraZoom + gameH / 2) / ui,
+  };
+}
+
+async function launchOriginScreen(page, viewportCssW, viewportCssH) {
+  const d = await dbg(page);
+  const playerX = d.players[d.currentPlayerId];
+  return worldToScreen(
+    { x: playerX, y: GROUND_TOP_Y + LAUNCHER_OFFSET_Y },
+    viewportCssW,
+    viewportCssH,
+    d
+  );
+}
+
+/**
+ * 弹道求解（45°，方向自适应）：
+ * 45° 射程 R = v²/g → v = √(R·g)；power = (v − min)/range；
+ * 反向拖拽终点 = 炮塔 + 目标反方向 45° 屏幕分量（世界拖拽 × zoom / √2，
+ * 再 ÷ uiScale 回 CSS px）。
+ * 命中点会因 Matter 半隐式积分轻微过冲（<1%），仍在直伤半径内。
+ */
+function solveFortyFiveRelease(origin, d, targetWorldX) {
+  const GRAVITY = 1000;
+  const MIN_SPEED = 550;
+  const MAX_SPEED = 2400;
+  const MAX_DRAG = 180;
+  const shooterX = d.players[d.currentPlayerId];
+  const direction = Math.sign(targetWorldX - shooterX); // +1 右 / −1 左
+  const range = Math.abs(targetWorldX - shooterX);
+  const speed = Math.sqrt(Math.max(1, range * GRAVITY));
+  const power = Math.min(
+    1,
+    Math.max(0, (speed - MIN_SPEED) / (MAX_SPEED - MIN_SPEED))
+  );
+  // 游戏像素口径的拖拽分量 → CSS px 注入
+  const dragCss = (MAX_DRAG * power * d.cameraZoom) / Math.SQRT2 / d.uiScale;
+  // Angry Birds 反向拖拽：向目标反方向拖拽
+  return { x: origin.x - dragCss * direction, y: origin.y + dragCss };
+}
+
+/**
+ * 完整开火流程（Phase 9 自然对局循环用）：
+ * Space 瞄准 → 45° 求解反向拖拽 → 释放 → 等待 FireCommand 生效。
+ * 拖拽起点上移 60 CSS px：炮手靠近视口左边界时相机中心被 clamp（864），
+ * 炮塔屏幕位置可能与 AimButton zone 重叠 —— 起点偏移避开按钮，
+ * 仍在 180 世界 px 起始半径内；瞄准向量按「指针 − 炮塔」计算，
+ * 起点偏移不影响力度 / 方向（与 Mobile 流程同一套防御）。
+ */
+async function fireFortyFiveShot(page, viewportCssW, viewportCssH, targetWorldX) {
+  await page.keyboard.press('Space');
+  await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'AIMING',
+    1500,
+    'AIMING'
+  );
+  const origin = await launchOriginScreen(page, viewportCssW, viewportCssH);
+  const shot = solveFortyFiveRelease(origin, await dbg(page), targetWorldX);
+  await page.mouse.move(origin.x, origin.y - 60);
+  await page.mouse.down();
+  await page.mouse.move(shot.x, shot.y, { steps: 6 });
+  await page.mouse.up();
+  await waitFor(
+    page,
+    async () => (await dbg(page)).hasFired,
+    3000,
+    'hasFired'
+  );
+}
+
+// ---- 服务器 --------------------------------------------------------------
+
+/** 端口占用探测：连接失败 = 空闲 */
+async function isPortFree(port) {
+  try {
+    await fetch(`http://127.0.0.1:${port}/`);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+async function startPreview() {
+  if (!existsSync('dist/index.html')) {
+    console.error('dist/ 不存在 —— 请先运行 npm run build');
+    process.exit(1);
+  }
+  PORT = -1;
+  for (const candidate of PORT_CANDIDATES) {
+    if (await isPortFree(candidate)) {
+      PORT = candidate;
+      break;
+    }
+  }
+  if (PORT < 0) {
+    throw new Error(`候选端口 ${PORT_CANDIDATES.join('/')} 均被占用`);
+  }
+  URL = `http://127.0.0.1:${PORT}/`;
+
+  const child = spawn(
+    'npx',
+    [
+      'vite', 'preview',
+      '--port', String(PORT),
+      '--strictPort',
+      // 显式绑定 IPv4：Windows 上默认 localhost 可能只绑 ::1，
+      // 导致 127.0.0.1 连接被拒
+      '--host', '127.0.0.1',
+    ],
+    { shell: true, stdio: ['ignore', 'ignore', 'ignore'] }
+  );
+  const stop = () => {
+    if (process.platform === 'win32' && child.pid) {
+      // shell:true 时 kill 只杀 cmd 包装层；同步按进程树杀干净
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { shell: true });
+    } else {
+      child.kill();
+    }
+  };
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const started = Date.now();
+    const probe = async () => {
+      try {
+        const response = await fetch(URL);
+        if (response.ok) {
+          settled = true;
+          resolve(stop);
+          return;
+        }
+      } catch {
+        // 未就绪，继续探测
+      }
+      if (Date.now() - started > 20000) {
+        settled = true;
+        reject(new Error('vite preview 就绪探测超时'));
+        return;
+      }
+      setTimeout(probe, 300);
+    };
+    // exit 处理必须在 promise 作用域内（reject 捕获正确）
+    child.on('exit', () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('vite preview 意外退出'));
+      }
+    });
+    probe();
+  });
+}
+
+// ---- Desktop 场景 --------------------------------------------------------
+
+async function runDesktop(browser) {
+  section('Desktop — Mouse + Keyboard（1280×800，无触摸）');
+
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 800 });
+  await page.goto(URL, { waitUntil: 'load' });
+
+  // Phase 11：主菜单入口（Boot → MainMenu）
+  await waitForScene(page, 'MainMenuScene', 15000);
+  const menu = await dbg(page);
+  check(
+    '主菜单：三模式 + Sound 按钮就绪',
+    menu.buttons.singlePlayer &&
+      menu.buttons.local2p &&
+      menu.buttons.online &&
+      menu.buttons.sound,
+    `buttons=${Object.keys(menu.buttons).join(',')}`
+  );
+
+  // Sound 开关（UserSettings 翻转，Scene 切换间保持）
+  await clickMenuButton(page, 'sound');
+  check('Sound 开关：点击后 OFF', (await dbg(page)).soundEnabled === false);
+  await clickMenuButton(page, 'sound');
+  check('Sound 开关：再次点击 ON', (await dbg(page)).soundEnabled === true);
+
+  // ONLINE → 连接场景（Phase 13 手动配对 UI）→ BACK 回菜单
+  // （真实双页 WebRTC 配对见 runOnlineP2P 场景）
+  await clickMenuButton(page, 'online');
+  await waitForScene(page, 'OnlineConnectionScene', 5000);
+  check('ONLINE → OnlineConnectionScene（CREATE / JOIN / BACK）', true);
+  await clickMenuButton(page, 'back');
+  await waitForScene(page, 'MainMenuScene', 5000);
+  check('BACK → 返回主菜单', true);
+
+  // LOCAL 2 PLAYER → BattleScene
+  await clickMenuButton(page, 'local2p');
+  await waitForScene(page, 'BattleScene', 10000);
+  const d0 = await dbg(page);
+
+  check('控制档位 = desktop（fine pointer + hover，无 UA 判断）', d0.controlProfile === 'desktop');
+  check('初始模式 FREE_VIEW', d0.cameraMode === 'FREE_VIEW');
+  const cssSize = await page.evaluate(() => ({
+    w: document.querySelector('canvas').clientWidth,
+    h: document.querySelector('canvas').clientHeight,
+  }));
+  check(
+    '画布 CSS 尺寸 = 视口（手动布局写入，防样式滞留压扁）',
+    cssSize.w === 1280 && cssSize.h === 800,
+    `css=${cssSize.w}x${cssSize.h}`
+  );
+  check(
+    '动态 zoom = viewportHeight/1080 ≈ 0.741（纵向构图稳定）',
+    Math.abs(d0.cameraZoom - 800 / 1080) < 0.01,
+    `zoom=${d0.cameraZoom}`
+  );
+
+  // Phase 9：开局回合横幅（真人热座可见，不再只有 DebugOverlay）
+  const banner0 = await waitFor(
+    page,
+    async () => (await dbg(page)).turnBanner.visible === true,
+    3000,
+    '开局横幅可见'
+  );
+  const banner0Text = (await dbg(page)).lastBannerText;
+  check(
+    '开局横幅：P1 · 第 1 回合',
+    banner0 === true && banner0Text === 'P1 · 第 1 回合',
+    `text="${banner0Text}"`
+  );
+
+  // 1. 鼠标拖动相机（反向拖拽惯例：鼠标向左 → 画面向右）
+  const beforeDrag = d0.cameraScrollX;
+  await page.mouse.move(640, 400);
+  await page.mouse.down();
+  await page.mouse.move(440, 400, { steps: 4 });
+  await page.mouse.up();
+  await sleep(150);
+  const afterDrag = (await dbg(page)).cameraScrollX;
+  const expectedDelta = (200 * d0.uiScale) / d0.cameraZoom;
+  check(
+    '鼠标拖动平移相机（Δ ≈ clientΔ × DPR / zoom ≈ +270）',
+    Math.abs(afterDrag - beforeDrag - expectedDelta) < 15,
+    `Δ=${(afterDrag - beforeDrag).toFixed(1)}`
+  );
+
+  // 2. 键盘 A/D 移动
+  const xBefore = (await dbg(page)).players.P1;
+  await page.keyboard.down('d');
+  await sleep(400);
+  await page.keyboard.up('d');
+  const xAfter = (await dbg(page)).players.P1;
+  check('按住 D 向右移动（Gameplay 世界坐标不变）', xAfter - xBefore > 80, `Δx=${(xAfter - xBefore).toFixed(1)}`);
+
+  // 3. Space 发起瞄准：FREE_VIEW → RETURN_HOME → AIMING
+  await page.keyboard.press('Space');
+  await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'AIMING',
+    1500,
+    'AIMING'
+  );
+  check('Space → RETURN_HOME → AIMING', true);
+
+  // 4. Escape 取消瞄准
+  await page.keyboard.press('Escape');
+  await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'FREE_VIEW',
+    1000,
+    'FREE_VIEW'
+  );
+  check('Escape 取消 → FREE_VIEW', true);
+
+  // 4.5 Phase 9 Review Gate：点击瞄准按钮后位置锁定（AIMING 中 A/D 无效），
+  //     取消瞄准回 ACTION 后移动恢复（剩余预算继续可用）
+  await page.keyboard.press('Space');
+  await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'AIMING',
+    1500,
+    'AIMING'
+  );
+  const lockBefore = (await dbg(page)).players.P1;
+  await page.keyboard.down('d');
+  await sleep(400);
+  await page.keyboard.up('d');
+  const lockAfter = (await dbg(page)).players.P1;
+  check(
+    'AIMING 中位置锁定（按住 D 不动）',
+    lockAfter === lockBefore,
+    `x: ${lockBefore.toFixed(1)} → ${lockAfter.toFixed(1)}`
+  );
+  await page.keyboard.press('Escape');
+  await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'FREE_VIEW',
+    1000,
+    'FREE_VIEW'
+  );
+  const restoreBefore = (await dbg(page)).players.P1;
+  await page.keyboard.down('d');
+  await sleep(400);
+  await page.keyboard.up('d');
+  const restoreAfter = (await dbg(page)).players.P1;
+  check(
+    '取消瞄准回 ACTION，移动恢复',
+    restoreAfter - restoreBefore > 80,
+    `Δx=${(restoreAfter - restoreBefore).toFixed(1)}`
+  );
+
+  // 5. 鼠标 Angry Birds 拖拽 → 发射 → PROJECTILE_FOLLOW → IMPACT → FREE_VIEW
+  //    拖拽经 45° 弹道求解，直接命中 P2（验证完整伤害链路）
+  check(
+    '发射前双方 HP 满血',
+    d0.hp.P1 === 10 && d0.hp.P2 === 10 && d0.gameOver === false
+  );
+  await page.keyboard.press('Space');
+  await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'AIMING',
+    1500,
+    'AIMING'
+  );
+
+  const origin = await launchOriginScreen(page, 1280, 800);
+  const shot = solveFortyFiveRelease(origin, await dbg(page), 4550);
+  // 起点上移 60px 避开 AimButton zone（见 fireFortyFiveShot 注释）
+  await page.mouse.move(origin.x, origin.y - 60);
+  await page.mouse.down();
+  await page.mouse.move(shot.x, shot.y, { steps: 6 });
+  await page.mouse.up();
+
+  const fired = await waitFor(
+    page,
+    async () => (await dbg(page)).hasFired,
+    3000,
+    'hasFired'
+  );
+  check('拖拽释放 → FireCommand（hasFired）', fired);
+  const inFlight = await dbg(page);
+  check('发射后相机 PROJECTILE_FOLLOW', inFlight.cameraMode === 'PROJECTILE_FOLLOW', `mode=${inFlight.cameraMode}`);
+  check('炮弹已生成', inFlight.projectileCount >= 1);
+
+  const resolved = await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'FREE_VIEW',
+    12000,
+    '攻击结束回 FREE_VIEW'
+  );
+  check('命中 → IMPACT 停留 → 攻击结束回 FREE_VIEW', resolved === true);
+
+  // Phase 7：DamageSystem 结算验证（ExplosionEvent → DamageResult → GameState）
+  const endState = await dbg(page);
+  check(
+    '命中结算：P2 直伤 2 点（10 → 8，伤害链路完整）',
+    endState.hp.P2 === 8,
+    `P2 hp=${endState.hp.P2}`
+  );
+  check('P1 未受伤（远离爆炸）', endState.hp.P1 === 10, `P1 hp=${endState.hp.P1}`);
+  check(
+    'P2 存活、游戏未结束',
+    endState.gameOver === false && endState.hp.P2 > 0
+  );
+
+  // Phase 8：回合切换（P1 → P2，相机 TURN_TRANSITION 完成后回 FREE_VIEW）
+  const turn2 = await dbg(page);
+  check(
+    '回合切换：turnId 1→2、当前玩家 P2、phase ACTION',
+    turn2.turnId === 2 &&
+      turn2.currentPlayerId === 'P2' &&
+      turn2.phase === 'ACTION',
+    `turn=${turn2.turnId} player=${turn2.currentPlayerId} phase=${turn2.phase}`
+  );
+  // Phase 9：回合切换横幅（waitFor 消除一帧竞态：FREE_VIEW 先于 banner 一帧）
+  const turn2Banner = await waitFor(
+    page,
+    async () => {
+      const t = (await dbg(page)).lastBannerText;
+      return t === 'P2 · 第 2 回合' ? t : null;
+    },
+    3000,
+    'P2 回合横幅'
+  );
+  check('回合切换横幅：P2 · 第 2 回合', turn2Banner === 'P2 · 第 2 回合');
+
+  // 热座：键盘输入跟随当前玩家 —— 按住 D 移动的是 P2
+  const p2Before = (await dbg(page)).players.P2;
+  await page.keyboard.down('d');
+  await sleep(400);
+  await page.keyboard.up('d');
+  const p2After = (await dbg(page)).players.P2;
+  check(
+    '热座输入跟随：P2 回合键盘控制 P2 移动',
+    p2After - p2Before > 80,
+    `Δx=${(p2After - p2Before).toFixed(1)}`
+  );
+
+  // P2 开火回击 P1（45° 左向求解 → 命中 P1）
+  await page.keyboard.press('Space');
+  await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'AIMING',
+    1500,
+    'AIMING'
+  );
+  const origin2 = await launchOriginScreen(page, 1280, 800);
+  const targetP1 = (await dbg(page)).players.P1;
+  const shot2 = solveFortyFiveRelease(origin2, await dbg(page), targetP1);
+  // 起点上移 60px 避开 AimButton zone（见 fireFortyFiveShot 注释）
+  await page.mouse.move(origin2.x, origin2.y - 60);
+  await page.mouse.down();
+  await page.mouse.move(shot2.x, shot2.y, { steps: 6 });
+  await page.mouse.up();
+  await waitFor(
+    page,
+    async () => (await dbg(page)).hasFired,
+    3000,
+    'hasFired(P2)'
+  );
+  await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'FREE_VIEW',
+    12000,
+    'P2 攻击结束'
+  );
+  const afterP2Shot = await dbg(page);
+  check(
+    'P2 回击命中：P1 直伤 2 点（10 → 8）',
+    afterP2Shot.hp.P1 === 8,
+    `P1 hp=${afterP2Shot.hp.P1}`
+  );
+  check(
+    '回合再次切换：turnId 3、回到 P1、phase ACTION',
+    afterP2Shot.turnId === 3 &&
+      afterP2Shot.currentPlayerId === 'P1' &&
+      afterP2Shot.phase === 'ACTION',
+    `turn=${afterP2Shot.turnId} player=${afterP2Shot.currentPlayerId}`
+  );
+
+  // Phase 9 Gate：自然完整对局 —— 移除 HP 注入，双方 45° 互射直到自然击杀。
+  // 直伤 2 点/发：P1 10→8→6→4→2（吃 4 发）；P2 10→8→6→4→2→0（第 9 回合完成击杀）。
+  const expectedHp = { P1: 8, P2: 8 };
+  for (let shot = 3; shot <= 9; shot++) {
+    const before = await dbg(page);
+    const shooter = before.currentPlayerId;
+    const enemy = shooter === 'P1' ? 'P2' : 'P1';
+    const next = shooter === 'P1' ? 'P2' : 'P1';
+    await fireFortyFiveShot(page, 1280, 800, before.players[enemy]);
+
+    // 等待攻击结算 + 回合推进 + 新回合横幅（击杀发则等待 GAME_OVER + FREE_VIEW）
+    const after = await waitFor(
+      page,
+      async () => {
+        const s = await dbg(page);
+        if (s.cameraMode !== 'FREE_VIEW') {
+          return null;
+        }
+        if (s.gameOver) {
+          return s;
+        }
+        return s.turnId === shot + 1 &&
+          s.currentPlayerId === next &&
+          s.lastBannerText === `${next} · 第 ${shot + 1} 回合`
+          ? s
+          : null;
+      },
+      15000,
+      `第 ${shot} 发结算 + 回合推进`
+    );
+
+    expectedHp[enemy] -= 2;
+    check(
+      `第 ${shot} 回合 ${shooter} 直伤命中：${enemy} HP → ${expectedHp[enemy]}`,
+      after.hp[enemy] === expectedHp[enemy],
+      `${enemy} hp=${after.hp[enemy]}`
+    );
+    if (after.gameOver) {
+      break;
+    }
+    check(
+      `循环推进：turn ${shot} → ${after.turnId}、当前玩家 ${next}、横幅「${next} · 第 ${shot + 1} 回合」`,
+      after.turnId === shot + 1 && after.currentPlayerId === next,
+      `turn=${after.turnId} player=${after.currentPlayerId}`
+    );
+  }
+
+  // 自然击杀收口：P1 以 2 HP 获胜
+  const gameOverState = await dbg(page);
+  check(
+    '自然击杀 → 游戏结束（gameOver + GAME_OVER + winnerId P1）',
+    gameOverState.gameOver === true &&
+      gameOverState.phase === 'GAME_OVER' &&
+      gameOverState.winnerId === 'P1',
+    `gameOver=${gameOverState.gameOver} phase=${gameOverState.phase} winner=${gameOverState.winnerId}`
+  );
+  check(
+    '终局血量：P2 = 0、P1 = 2（全程无注入）',
+    gameOverState.hp.P2 === 0 && gameOverState.hp.P1 === 2,
+    `P1=${gameOverState.hp.P1} P2=${gameOverState.hp.P2}`
+  );
+  check(
+    '游戏结束不切换回合（仍为 P1 / turn 9）',
+    gameOverState.currentPlayerId === 'P1' && gameOverState.turnId === 9,
+    `player=${gameOverState.currentPlayerId} turn=${gameOverState.turnId}`
+  );
+  const winnerBanner = await waitFor(
+    page,
+    async () => {
+      const s = await dbg(page);
+      return s.turnBanner.visible && s.lastBannerText === 'P1 获胜！'
+        ? s
+        : null;
+    },
+    3000,
+    '胜负横幅'
+  );
+  check(
+    '胜负横幅持久显示：P1 获胜！',
+    winnerBanner !== null,
+    `text="${(await dbg(page)).lastBannerText}"`
+  );
+
+  // Phase 11：对局结束 → ResultScene（胜负横幅停留 ~1.6s 后淡出转场）
+  await waitForScene(page, 'ResultScene', 8000);
+  const result = await dbg(page);
+  check(
+    'ResultScene：PLAYER 1 WINS（Local 2P 文案）',
+    result.resultText === 'PLAYER 1 WINS',
+    `text="${result.resultText}"`
+  );
+  await clickMenuButton(page, 'mainMenu');
+  await waitForScene(page, 'MainMenuScene', 5000);
+  check('Result → MAIN MENU 返回主菜单', true);
+
+  await page.close();
+}
+
+// ---- Mobile 场景 --------------------------------------------------------
+
+async function runMobile(browser) {
+  section('Mobile — Touch（844×390 landscape，触摸模拟）');
+
+  const page = await browser.newPage();
+  await page.setViewport({
+    width: 844,
+    height: 390,
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+  });
+  await page.goto(URL, { waitUntil: 'load' });
+
+  // Phase 11：触屏菜单入口（按钮坐标 = debug 句柄 CSS 口径 ÷ DPR 换算后）
+  await waitForScene(page, 'MainMenuScene', 15000);
+  check(
+    '触屏主菜单：按钮为 CSS 口径坐标（句柄已 ÷uiScale）',
+    (await dbg(page)).buttons.local2p.width >= 56,
+    `w=${(await dbg(page)).buttons.local2p.width}`
+  );
+  await tapMenuButton(page, 'local2p');
+  await waitForScene(page, 'BattleScene', 10000);
+  const d0 = await dbg(page);
+  check('控制档位 = touch（coarse pointer / 不可悬停）', d0.controlProfile === 'touch');
+  check(
+    `UI 缩放 = DPR 2（游戏坐标 = 物理像素）`,
+    d0.uiScale === 2,
+    `uiScale=${d0.uiScale}`
+  );
+  check(
+    '画布位图 = CSS × DPR（高分屏清晰渲染，不再被浏览器拉伸）',
+    (await page.evaluate(() => document.querySelector('canvas').width)) ===
+      844 * 2,
+  );
+  const cssSize = await page.evaluate(() => ({
+    w: document.querySelector('canvas').clientWidth,
+    h: document.querySelector('canvas').clientHeight,
+  }));
+  check(
+    '画布 CSS 尺寸 = 视口（手动布局写入）',
+    cssSize.w === 844 && cssSize.h === 390,
+    `css=${cssSize.w}x${cssSize.h}`
+  );
+  check(
+    '动态 zoom = (390×DPR)/1080 ≈ 0.722（物理像素口径，构图恒定）',
+    Math.abs(d0.cameraZoom - (390 * d0.uiScale) / 1080) < 0.005,
+    `zoom=${d0.cameraZoom}`
+  );
+  check('方向判定 landscape', d0.orientation === 'landscape');
+  const overlayHidden = await page.evaluate(
+    () => !document.getElementById('rotate-overlay').classList.contains('is-visible')
+  );
+  check('横屏时旋转提示隐藏', overlayHidden);
+
+  // Phase 9：开局回合横幅（触屏档位同样对真人可见）
+  const mBanner0 = await waitFor(
+    page,
+    async () => (await dbg(page)).turnBanner.visible === true,
+    3000,
+    '开局横幅可见'
+  );
+  const mBanner0Text = (await dbg(page)).lastBannerText;
+  check(
+    '开局横幅：P1 · 第 1 回合',
+    mBanner0 === true && mBanner0Text === 'P1 · 第 1 回合',
+    `text="${mBanner0Text}"`
+  );
+
+  // 1. 单指拖动相机
+  const beforeCam = d0.cameraScrollX;
+  await page.touchscreen.touchStart(600, 200);
+  await page.touchscreen.touchMove(500, 200);
+  await page.touchscreen.touchEnd();
+  await sleep(150);
+  const afterCam = (await dbg(page)).cameraScrollX;
+  // 世界位移 = client Δ × uiScale / zoom（游戏坐标 = 物理像素）
+  const expectedCam = (100 * d0.uiScale) / d0.cameraZoom;
+  check(
+    '单指拖动平移相机（Δ ≈ clientΔ × DPR / zoom）',
+    Math.abs(afterCam - beforeCam - expectedCam) < 15,
+    `Δ=${(afterCam - beforeCam).toFixed(1)}`
+  );
+
+  // 2. 按住 ◀ 移动按钮（大号触控，位于左下）
+  const xBefore = (await dbg(page)).players.P1;
+  await page.touchscreen.touchStart(64, 326);
+  await sleep(500);
+  await page.touchscreen.touchEnd();
+  await sleep(100);
+  const xReleased = (await dbg(page)).players.P1;
+  check('按住 ◀ 向左移动', xReleased < xBefore - 60, `x: ${xBefore.toFixed(0)} → ${xReleased.toFixed(0)}`);
+  // 松开后：等待一轮再比较，排除释放指令的往返延迟
+  await sleep(300);
+  const xAfter = (await dbg(page)).players.P1;
+  check('松开立即停止（无惯性）', Math.abs(xAfter - xReleased) < 0.5, `xReleased=${xReleased.toFixed(2)}, xAfter=${xAfter.toFixed(2)}`);
+
+  // 3. 点击瞄准按钮 → AIMING；再次点击 = 取消
+  //    Phase 9 反馈 ②：AimButton = 右侧垂直居中准星 icon（844×390 → (792,195)）
+  await page.touchscreen.touchStart(792, 195);
+  await page.touchscreen.touchEnd();
+  await waitFor(page, async () => (await dbg(page)).cameraMode === 'AIMING', 1500, 'AIMING');
+  check('点击 AimButton → RETURN_HOME → AIMING', true);
+  check(
+    'Phase 9：AIMING 中 ◀/▶ 移动按钮隐藏（点击瞄准即位置锁定）',
+    (await dbg(page)).moveButtonsVisible === false
+  );
+
+  await page.touchscreen.touchStart(792, 195);
+  await page.touchscreen.touchEnd();
+  await waitFor(page, async () => (await dbg(page)).cameraMode === 'FREE_VIEW', 1000, 'FREE_VIEW');
+  check('AIMING 时点击按钮 = 取消瞄准（触屏无 Esc）', true);
+  check(
+    '取消瞄准后 ◀/▶ 移动按钮恢复显示',
+    (await dbg(page)).moveButtonsVisible === true
+  );
+
+  // 3.5 真机错位回归：画布被浏览器偏移后，点击"视觉位置"仍命中 zone
+  //     （InputRouter 把 client 坐标换算到画布空间，输入与画面永远同空间；
+  //     负向偏移：按钮移到视口左侧仍有完整画布覆盖，正向会把 icon 推出 844 视口）
+  await page.evaluate(() => {
+    const c = document.querySelector('canvas');
+    c.style.position = 'fixed';
+    c.style.left = '-100px';
+    c.style.top = '-50px';
+  });
+  await sleep(300);
+  await page.touchscreen.touchStart(692, 145); // 游戏坐标 (792,195) 的视觉偏移位置
+  await page.touchscreen.touchEnd();
+  const offsetAiming = await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'AIMING',
+    1500,
+    '偏移画布下仍可点击'
+  );
+  check('画布被偏移时点击视觉位置仍命中（坐标归一化）', offsetAiming === true);
+  await page.evaluate(() => {
+    const c = document.querySelector('canvas');
+    c.style.position = '';
+    c.style.left = '';
+    c.style.top = '';
+  });
+  await sleep(300);
+  await page.touchscreen.touchStart(792, 195); // 复原后取消瞄准
+  await page.touchscreen.touchEnd();
+  await waitFor(page, async () => (await dbg(page)).cameraMode === 'FREE_VIEW', 1000, 'FREE_VIEW');
+
+  // 4. 触摸瞄准拖拽（放大起始区 + 死区）→ 发射
+  await page.touchscreen.touchStart(792, 195);
+  await page.touchscreen.touchEnd();
+  await waitFor(page, async () => (await dbg(page)).cameraMode === 'AIMING', 1500, 'AIMING');
+
+  const origin = await launchOriginScreen(page, 844, 390);
+  // 起点在炮塔上方 60px：避开底部按钮行，仍在 150px 触摸起始半径内
+  const startY = origin.y - 60;
+  await page.touchscreen.touchStart(origin.x, startY);
+  // 先在死区内小挪（不应激活）
+  await page.touchscreen.touchMove(origin.x + 5, startY + 5);
+  const pendingAim = await page.evaluate(() => window.__RR_DEBUG__.hasFired);
+  // 超过死区（14px）激活并拖出力度：45° 弹道求解，直接命中 P2
+  const shot = solveFortyFiveRelease(origin, await dbg(page), 4550);
+  await page.touchscreen.touchMove(shot.x, shot.y);
+  await page.touchscreen.touchEnd();
+  check('死区内拖动不发射', pendingAim === false);
+
+  const fired = await waitFor(
+    page,
+    async () => (await dbg(page)).hasFired,
+    3000,
+    'hasFired'
+  );
+  check('触摸拖拽（>死区）释放 → FireCommand', fired);
+  const flight = await dbg(page);
+  check('发射后相机 PROJECTILE_FOLLOW（与桌面同链路）', flight.cameraMode === 'PROJECTILE_FOLLOW');
+
+  const resolved = await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'FREE_VIEW',
+    12000,
+    '攻击结束'
+  );
+  check('攻击结束回 FREE_VIEW', resolved === true);
+
+  // Phase 7：触屏命中结算（与桌面同一条 DamageSystem 链路）
+  const endState = await dbg(page);
+  check(
+    '触摸命中结算：P2 HP 下降（与桌面同一伤害链路）',
+    endState.hp.P2 < 10,
+    `P2 hp=${endState.hp.P2}`
+  );
+  check('P1 未受伤', endState.hp.P1 === 10, `P1 hp=${endState.hp.P1}`);
+  check('游戏未结束', endState.gameOver === false);
+
+  // Phase 8：回合切换（相机已 TURN_TRANSITION 到 P2）
+  const turn2 = await dbg(page);
+  check(
+    '回合切换：turnId 2、当前玩家 P2、phase ACTION',
+    turn2.turnId === 2 &&
+      turn2.currentPlayerId === 'P2' &&
+      turn2.phase === 'ACTION',
+    `turn=${turn2.turnId} player=${turn2.currentPlayerId} phase=${turn2.phase}`
+  );
+
+  // Phase 9：回合切换横幅（相机到位后 P2 回合开始时展示）
+  const mBanner2 = await waitFor(
+    page,
+    async () =>
+      (await dbg(page)).lastBannerText === 'P2 · 第 2 回合' ? true : null,
+    3000,
+    'P2 回合横幅'
+  );
+  check('回合切换横幅：P2 · 第 2 回合', mBanner2 === true);
+
+  // 5. 快捷聚焦按钮（FREE_VIEW 激活）：当前玩家为 P2、相机已在其阵地，
+  //    先点「敌方」平移到 P1，再点「己方」回来，双向验证 panToX
+  const beforeFocus = (await dbg(page)).cameraScrollX;
+  await page.touchscreen.touchStart(438, 358); // 「敌方」（底部居中，Phase 9 反馈 ②）
+  await page.touchscreen.touchEnd();
+  await sleep(900);
+  const afterEnemy = (await dbg(page)).cameraScrollX;
+  check(
+    '点击「敌方」→ 相机平移到对方阵地',
+    Math.abs(afterEnemy - beforeFocus) > 1000,
+    `scroll ${beforeFocus.toFixed(0)} → ${afterEnemy.toFixed(0)}`
+  );
+
+  await page.touchscreen.touchStart(406, 358); // 「己方」
+  await page.touchscreen.touchEnd();
+  await sleep(900);
+  const afterSelf = (await dbg(page)).cameraScrollX;
+  check(
+    '点击「己方」→ 相机平移回己方阵地',
+    Math.abs(afterSelf - afterEnemy) > 1000,
+    `scroll ${afterEnemy.toFixed(0)} → ${afterSelf.toFixed(0)}`
+  );
+
+  // 6. 竖屏门禁：显示旋转提示 + 手势被覆盖层拦截
+  await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+  await sleep(400);
+  const overlayShown = await page.evaluate(() =>
+    document.getElementById('rotate-overlay').classList.contains('is-visible')
+  );
+  check('竖屏显示「请横过来」覆盖层', overlayShown);
+
+  const scrollBeforeBlock = (await dbg(page)).cameraScrollX;
+  const client = await page.createCDPSession();
+  await client.send('Input.dispatchTouchEvent', {
+    type: 'touchStart',
+    touchPoints: [{ x: 195, y: 400 }],
+  });
+  await client.send('Input.dispatchTouchEvent', {
+    type: 'touchMove',
+    touchPoints: [{ x: 95, y: 400 }],
+  });
+  await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await sleep(150);
+  const scrollAfterBlock = (await dbg(page)).cameraScrollX;
+  check(
+    '竖屏覆盖层拦截游戏手势（相机不动）',
+    Math.abs(scrollAfterBlock - scrollBeforeBlock) < 1,
+    `Δ=${(scrollAfterBlock - scrollBeforeBlock).toFixed(2)}`
+  );
+
+  // 7. 转回横屏：覆盖层消失
+  await page.setViewport({ width: 844, height: 390, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  await sleep(400);
+  const overlayGone = await page.evaluate(() =>
+    !document.getElementById('rotate-overlay').classList.contains('is-visible')
+  );
+  check('转回横屏覆盖层消失（resize/orientation 处理）', overlayGone);
+
+  await page.close();
+}
+
+// ---- Single Player 场景（Phase 10 冒烟 + Phase 11 Result/Rematch） -------
+
+async function runSinglePlayer(browser) {
+  section('Single Player — AI（菜单进入 → 对战 → Result → Rematch/Menu）');
+
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 800 });
+  await page.goto(URL, { waitUntil: 'load' });
+
+  // Phase 11：菜单 → SINGLE PLAYER → BattleScene
+  await waitForScene(page, 'MainMenuScene', 15000);
+  await clickMenuButton(page, 'singlePlayer');
+  await waitForScene(page, 'BattleScene', 10000);
+  const d0 = await dbg(page);
+  check('SP 模式激活（菜单进入，aiEnabled）', d0.aiEnabled === true);
+  check('开局为 P1 人类回合', d0.currentPlayerId === 'P1' && d0.phase === 'ACTION');
+
+  // 1. 人类回合输入可用（P1 移动）
+  const xBefore = d0.players.P1;
+  await page.keyboard.down('d');
+  await sleep(400);
+  await page.keyboard.up('d');
+  const xAfter = (await dbg(page)).players.P1;
+  check('人类回合：键盘控制 P1 移动正常', xAfter - xBefore > 80, `Δx=${(xAfter - xBefore).toFixed(1)}`);
+
+  // 2. 人类开火（45° 求解）→ 回合切到 AI
+  await fireFortyFiveShot(page, 1280, 800, 4550);
+  await waitFor(
+    page,
+    async () => (await dbg(page)).cameraMode === 'FREE_VIEW',
+    12000,
+    '人类攻击结束'
+  );
+  const turn2 = await dbg(page);
+  check(
+    '回合切换到 P2（AI）',
+    turn2.turnId === 2 && turn2.currentPlayerId === 'P2' && turn2.phase === 'ACTION',
+    `turn=${turn2.turnId} player=${turn2.currentPlayerId}`
+  );
+
+  // 3. AI 回合：人类瞄准热键静默（Space 不得驱动 AI 的瞄准相机流程；
+  //    AI 自身的 PROJECTILE_FOLLOW 属合法状态，不在此断言范围）
+  await page.keyboard.press('Space');
+  await sleep(300);
+  const afterSpace = await dbg(page);
+  check(
+    'AI 回合人类热键静默（Space 未触发 RETURN_HOME/AIMING）',
+    afterSpace.cameraMode !== 'RETURN_HOME' && afterSpace.cameraMode !== 'AIMING',
+    `mode=${afterSpace.cameraMode}`
+  );
+
+  // 4. AI 自动完成回合：思考 →（可能 MOVE）→ FIRE → 结算 → 切回人类
+  const backToHuman = await waitFor(
+    page,
+    async () => {
+      const s = await dbg(page);
+      return s.currentPlayerId === 'P1' && s.turnId === 3 && s.phase === 'ACTION'
+        ? s
+        : null;
+    },
+    20000,
+    'AI 完成回合并切回人类'
+  );
+  check(
+    'AI 自动开火并切回人类（turn 3 = P1）',
+    backToHuman !== null && backToHuman.gameOver === false,
+    `turn=${backToHuman?.turnId} player=${backToHuman?.currentPlayerId}`
+  );
+  check(
+    'AI 未对人类造成致命伤（游戏未结束）',
+    backToHuman.hp.P1 > 0,
+    `P1 hp=${backToHuman.hp.P1}`
+  );
+
+  // 5. 人类输入恢复（回合归属切回）
+  const p1Before = (await dbg(page)).players.P1;
+  await page.keyboard.down('a');
+  await sleep(400);
+  await page.keyboard.up('a');
+  const p1Moved = (await dbg(page)).players.P1;
+  check(
+    '切回人类后输入恢复（A/D 可用）',
+    Math.abs(p1Moved - p1Before) > 60,
+    `Δx=${(p1Moved - p1Before).toFixed(1)}`
+  );
+
+  // 6. Phase 11：击杀（注入残血）→ ResultScene（YOU WIN）
+  await page.evaluate(() => window.__RR_DEBUG__.setHp('P2', 2));
+  const targetP2 = (await dbg(page)).players.P2;
+  await fireFortyFiveShot(page, 1280, 800, targetP2);
+  await waitForScene(page, 'ResultScene', 15000);
+  const result1 = await dbg(page);
+  check(
+    'ResultScene：YOU WIN（Single Player 文案）',
+    result1.resultText === 'YOU WIN',
+    `text="${result1.resultText}"`
+  );
+
+  // 7. REMATCH：以同一 MatchSetup 重建全新对局（旧局污染全清）
+  await clickMenuButton(page, 'rematch');
+  await waitForScene(page, 'BattleScene', 10000);
+  const fresh = await dbg(page);
+  check(
+    'Rematch：全新对局（HP 10/10、turn 1、P1 回合、AI 保持）',
+    fresh.hp.P1 === 10 &&
+      fresh.hp.P2 === 10 &&
+      fresh.turnId === 1 &&
+      fresh.currentPlayerId === 'P1' &&
+      fresh.aiEnabled === true,
+    `hp=${fresh.hp.P1}/${fresh.hp.P2} turn=${fresh.turnId} player=${fresh.currentPlayerId}`
+  );
+
+  // 8. 再杀一局 → MAIN MENU 返回
+  await page.evaluate(() => window.__RR_DEBUG__.setHp('P2', 2));
+  const targetP2b = (await dbg(page)).players.P2;
+  await fireFortyFiveShot(page, 1280, 800, targetP2b);
+  await waitForScene(page, 'ResultScene', 15000);
+  const result2 = await dbg(page);
+  check(
+    '第二局 ResultScene：YOU WIN',
+    result2.resultText === 'YOU WIN',
+    `text="${result2.resultText}"`
+  );
+  await clickMenuButton(page, 'mainMenu');
+  await waitForScene(page, 'MainMenuScene', 5000);
+  check('Result → MAIN MENU 返回主菜单（SP）', true);
+
+  // 9. Phase 11 C1 回归：同会话跨模式切换 —— SP 完赛后进入 LOCAL 2P，
+  //    幽灵 AI 不得残留（aiEnabled=false、P2 回合人类热座可控、无自动开火）
+  await clickMenuButton(page, 'local2p');
+  await waitForScene(page, 'BattleScene', 10000);
+  const l2p = await dbg(page);
+  check(
+    '跨模式：LOCAL 2P 无残留 AI（aiEnabled=false）',
+    l2p.aiEnabled === false,
+    `aiEnabled=${l2p.aiEnabled}`
+  );
+
+  // P1 人类开火 → 回合切到 P2（此时人类热座应控制 P2）
+  await fireFortyFiveShot(page, 1280, 800, 4550);
+  await waitFor(
+    page,
+    async () => {
+      const s = await dbg(page);
+      return s.currentPlayerId === 'P2' && s.turnId === 2 && s.phase === 'ACTION'
+        ? s
+        : null;
+    },
+    15000,
+    'P2 人类回合开始'
+  );
+  const p2Turn = await dbg(page);
+  check('跨模式：回合切到 P2（Local 2P 热座）', p2Turn.currentPlayerId === 'P2');
+
+  const p2Before = p2Turn.players.P2;
+  await page.keyboard.down('d');
+  await sleep(400);
+  await page.keyboard.up('d');
+  const p2After = (await dbg(page)).players.P2;
+  check(
+    '跨模式：P2 回合人类键盘可控（热座未被禁用）',
+    p2After - p2Before > 80,
+    `Δx=${(p2After - p2Before).toFixed(1)}`
+  );
+
+  // 幽灵 AI 若残留会在 think(500~900ms)+停顿内自动开火
+  await sleep(1500);
+  const noGhost = await dbg(page);
+  check(
+    '跨模式：幽灵 AI 未接管（P2 未自动开火）',
+    noGhost.hasFired === false && noGhost.phase === 'ACTION',
+    `hasFired=${noGhost.hasFired} phase=${noGhost.phase}`
+  );
+
+  await page.close();
+}
+
+// ---- Online P2P 场景（Phase 13：双页真实 WebRTC 手动配对 smoke） ----------
+
+/**
+ * 两个独立 page（同一 headless Chrome 的两个标签页，真实 RTCPeerConnection /
+ * RTCDataChannel / 本机 host candidates 直连）执行完整手动配对：
+ * Host CREATE GAME → 复制 Offer Code → Guest JOIN + 粘贴 → CREATE RESPONSE
+ * → 复制 Answer → Host 粘贴 → CONNECT → 双方 VERIFIED（PING/PONG RTT）。
+ */
+async function runOnlineP2P(browser) {
+  section('Online P2P — Manual Pairing（真实 WebRTC 双页 smoke）');
+
+  // 串行初始化两页（避免双 newPage 并存时序）：Host 先完整进入连接场景
+  const pageHost = await browser.newPage();
+  pageHost.on('pageerror', (e) => console.log('[HOST PAGEERROR]', e.message));
+  pageHost.on('console', (m) => console.log(`[HOST console.${m.type()}]`, m.text().slice(0, 200)));
+  await pageHost.setViewport({ width: 1280, height: 800 });
+  await pageHost.goto(URL, { waitUntil: 'load' });
+  await this?.noop; // (占位防误删)
+  try {
+    await waitForScene(pageHost, 'MainMenuScene', 15000);
+  } catch (error) {
+    const dump = await pageHost
+      .evaluate(() => ({
+        url: location.href,
+        readyState: document.readyState,
+        title: document.title,
+        scripts: [...document.scripts].map((s) => s.src),
+        hasCanvas: !!document.querySelector('canvas'),
+        phaserBooted: typeof window.Phaser,
+      }))
+      .catch((e) => String(e));
+    console.log('[P2P DIAG]', JSON.stringify(dump));
+    throw error;
+  }
+  await clickMenuButton(pageHost, 'online');
+  await waitForScene(pageHost, 'OnlineConnectionScene', 5000);
+
+  const pageGuest = await browser.newPage();
+  pageGuest.on('pageerror', (e) => console.log('[GUEST PAGEERROR]', e.message));
+  pageGuest.on('console', (m) => console.log(`[GUEST console.${m.type()}]`, m.text().slice(0, 200)));
+  await pageGuest.setViewport({ width: 1280, height: 800 });
+  await pageGuest.goto(URL, { waitUntil: 'load' });
+  await waitForScene(pageGuest, 'MainMenuScene', 15000);
+  await clickMenuButton(pageGuest, 'online');
+  await waitForScene(pageGuest, 'OnlineConnectionScene', 5000);
+
+  // Host：CREATE GAME → Offer Code
+  await clickMenuButton(pageHost, 'create');
+  const hostCode = await waitFor(
+    pageHost,
+    async () => (await dbg(pageHost)).connectionCode,
+    15000,
+    'Host Offer Code'
+  );
+  check(
+    'Host 生成 Offer Code（RR1-OFFER- 前缀，含完整 ICE SDP）',
+    typeof hostCode === 'string' && hostCode.startsWith('RR1-OFFER-'),
+    `${String(hostCode).slice(0, 24)}…`
+  );
+
+  // Guest：JOIN GAME → 粘贴 Offer → CREATE RESPONSE
+  await clickMenuButton(pageGuest, 'join');
+  await waitFor(
+    pageGuest,
+    async () => (await dbg(pageGuest)).state === 'GUEST_WAITING_FOR_OFFER',
+    5000,
+    'Guest 等待输入'
+  );
+  await pageGuest.evaluate((code) => window.__RR_DEBUG__.setInputText(code), hostCode);
+  await clickMenuButton(pageGuest, 'createResponse');
+  const responseCode = await waitFor(
+    pageGuest,
+    async () => (await dbg(pageGuest)).connectionCode,
+    15000,
+    'Guest Response Code'
+  );
+  check(
+    'Guest 生成 Response Code（RR1-ANSWER-）',
+    typeof responseCode === 'string' && responseCode.startsWith('RR1-ANSWER-'),
+    `${String(responseCode).slice(0, 24)}…`
+  );
+
+  // Host：粘贴 Response → CONNECT
+  await pageHost.evaluate((code) => window.__RR_DEBUG__.setInputText(code), responseCode);
+  await clickMenuButton(pageHost, 'connect');
+
+  // 双方 VERIFIED（真实 DataChannel + PING/PONG）
+  const verifiedHost = await waitFor(
+    pageHost,
+    async () => (await dbg(pageHost)).state === 'VERIFIED',
+    30000,
+    'Host VERIFIED'
+  );
+  const verifiedGuest = await waitFor(
+    pageGuest,
+    async () => (await dbg(pageGuest)).state === 'VERIFIED',
+    30000,
+    'Guest VERIFIED'
+  );
+  check('双方 VERIFIED（真实 WebRTC DataChannel 建立成功）', verifiedHost && verifiedGuest);
+
+  await sleep(2500); // 等一轮持续 PING → RTT 刷新
+  const hostState = await dbg(pageHost);
+  const guestState = await dbg(pageGuest);
+  // Host RTT 轮询(10s 窗口内 interval ping 必达;仍无值则 dump 诊断)
+  const hostRtt = await waitFor(
+    pageHost,
+    async () => {
+      const d = await dbg(pageHost);
+      return typeof d.lastRttMs === 'number' ? d.lastRttMs : null;
+    },
+    10_000,
+    'Host RTT'
+  ).catch(async () => {
+    const d = await dbg(pageHost);
+    console.log('[RTT DIAG]', JSON.stringify({ state: d.state, rtt: d.lastRttMs, sessionStored: d.sessionStored }));
+    return null;
+  });
+  check(
+    'Host 显示 RTT（PING/PONG 真实通过 DataChannel）',
+    hostRtt !== null,
+    `rtt=${hostRtt}ms sessionStored=${hostState.sessionStored}`
+  );
+  check(
+    'Guest 显示 RTT',
+    typeof guestState.lastRttMs === 'number' && guestState.lastRttMs >= 0,
+    `rtt=${guestState.lastRttMs}ms`
+  );
+
+  // 收尾：双方回菜单（backToMenu），连接彻底释放。
+  // headless 后台 page 的 rAF 冻结（visibilityState=hidden，实测 flags 无效）
+  // 会卡住 fade/scene.start —— 收尾前 bringToFront 轮转前台
+  console.log('[P2P] before back:', JSON.stringify({ host: (await dbg(pageHost)).state, guest: (await dbg(pageGuest)).state }));
+  await pageHost.bringToFront();
+  await clickMenuButton(pageHost, 'backToMenu');
+  try {
+    await waitForScene(pageHost, 'MainMenuScene', 5000);
+    console.log('[P2P] host back OK');
+  } catch (e) {
+    const d = await dbg(pageHost);
+    console.log('[P2P] host back FAIL:', e.message, 'state=', d.state, 'scenes=', JSON.stringify(d.phaserSceneStates));
+    throw e;
+  }
+  await pageGuest.bringToFront();
+  await clickMenuButton(pageGuest, 'backToMenu');
+  try {
+    await waitForScene(pageGuest, 'MainMenuScene', 5000);
+    console.log('[P2P] guest back OK');
+  } catch (e) {
+    console.log('[P2P] guest back FAIL:', e.message, 'state=', (await dbg(pageGuest)).state);
+    throw e;
+  }
+  check('双方 BACK TO MENU 返回（连接彻底释放，无残留）', true);
+
+  await pageHost.close();
+  await pageGuest.close();
+}
+
+// ---- 主流程 --------------------------------------------------------------
+
+async function main() {
+  const executablePath = BROWSER_CANDIDATES.find((p) => existsSync(p));
+  if (!executablePath) {
+    console.error('未找到系统 Chrome / Edge，E2E 中止');
+    process.exit(1);
+  }
+  console.log(`浏览器: ${executablePath}`);
+
+  const stopServer = await startPreview();
+  const browser = await puppeteer.launch({
+    executablePath,
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--mute-audio',
+      // 双页 P2P 测试：后台 page 的 rAF/timer 节流会冻结 Phaser 场景
+      // 启动链与 fade 完成（实测 Host 后台化后 MainMenuScene 停留 pending），
+      // 强制禁用后台节流保证两页同时活跃
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+    ],
+  });
+
+  let exitCode = 0;
+  const only = process.env.RR_E2E_ONLY; // 调试：RR_E2E_ONLY=online npm run e2e
+  try {
+    if (!only || only === 'desktop') await runDesktop(browser);
+    if (!only || only === 'mobile') await runMobile(browser);
+    if (!only || only === 'sp') await runSinglePlayer(browser);
+    if (!only || only === 'online') await runOnlineP2P(browser);
+  } catch (error) {
+    failed++;
+    failures.push(`场景异常: ${error.message}`);
+    console.error(`\n✘ 场景异常: ${error.message}`);
+    exitCode = 1;
+  } finally {
+    await browser.close().catch(() => {});
+    stopServer();
+  }
+
+  console.log(`\n========== E2E 结果: ${passed} passed, ${failed} failed ==========`);
+  if (failures.length > 0) {
+    console.log('失败项:');
+    for (const f of failures) {
+      console.log(`  - ${f}`);
+    }
+    exitCode = 1;
+  }
+  process.exit(exitCode);
+}
+
+main();

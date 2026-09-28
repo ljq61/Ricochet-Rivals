@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.local
+.DS_Store
+Thumbs.db
+
+# Codely CLI local artifacts (chat backups & local env; agents/ stays tracked)
+.codely-cli/auto-saves/
+.codely-cli/settings.json
