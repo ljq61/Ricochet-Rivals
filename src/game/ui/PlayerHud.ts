@@ -12,6 +12,8 @@ const HP_TWEEN_MS = 350;
 interface HudEntry {
   container: Phaser.GameObjects.Container;
   plate: Phaser.GameObjects.Graphics;
+  /** 头像框内衬底（从下往上渐变，画在头像之下、框之内） */
+  portraitFill: Phaser.GameObjects.Graphics;
   avatar: Phaser.GameObjects.Image | null;
   hpText: Phaser.GameObjects.Text;
   name: Phaser.GameObjects.Text;
@@ -74,6 +76,12 @@ export class PlayerHud {
     const container = this.scene.add.container(0, 0).setScrollFactor(0).setDepth(950);
     const plate = this.scene.add.graphics();
     container.add(plate);
+    // 头像框内衬底：从下往上渐变（底部队色 → 顶部深色，衬出头像层次；
+    // 画在头像之下，头像透明边距透出渐变）
+    const portraitFill = this.scene.add.graphics();
+    portraitFill.fillGradientStyle(0x0d1520, 0x0d1520, playerColor(id), playerColor(id), 1);
+    portraitFill.fillRoundedRect(portraitX - 28, -30, 56, 56, 6);
+    container.add(portraitFill);
     const key = right ? ART.avatarP2 : ART.avatarP1;
     const avatar = this.scene.textures.exists(key)
       ? this.scene.add.image(portraitX, -2, key).setDisplaySize(50, 50).setFlipX(right) : null;
@@ -94,7 +102,7 @@ export class PlayerHud {
       stroke: '#321815', strokeThickness: 3,
     }).setOrigin(0.5);
     container.add([name, hpText]);
-    return { container, plate, avatar, hpText, name, displayedHp: null,
+    return { container, plate, portraitFill, avatar, hpText, name, displayedHp: null,
       shownHp: GAME_CONFIG.player.maxHp, tween: null };
   }
 

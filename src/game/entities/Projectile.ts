@@ -137,12 +137,14 @@ export class Projectile {
         this.visual.rotation = this.body.angle;
       }
 
-      // 引信：离开发射点后激活玩家碰撞（激活后保持）
+      // 引信：离开发射点后激活玩家 / 触手碰撞（激活后保持）
       if (!this.armed && isProjectileArmed(this.state, this.spawnX, this.spawnY, GAME_CONFIG.projectile.playerCollisionArmDistance)) {
         this.armed = true;
         this.body.collisionFilter = {
           category: COLLISION_CATEGORY.PROJECTILE,
-          mask: COLLISION_CATEGORY.GROUND | COLLISION_CATEGORY.PLAYER,
+          mask: COLLISION_CATEGORY.GROUND
+            | COLLISION_CATEGORY.PLAYER
+            | COLLISION_CATEGORY.OBSTACLE,
           group: 0,
         };
       }

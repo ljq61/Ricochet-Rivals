@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { MainMenuScene } from './MainMenuScene';
-import { ART, ART_FILES, AIM_POSE_FILES } from '../config/ArtAssets';
+import { ART, ART_FILES, AIM_POSE_FILES, SHEET_GRID } from '../config/ArtAssets';
 import { SFX_FILES } from '../audio/SfxBus';
 
 /**
@@ -42,6 +42,25 @@ export class BootScene extends Phaser.Scene {
     }
     if (this.textures.exists(ART.platform)) {
       this.textures.get(ART.platform).add('deck', 0, 25, 263, 2128, 241);
+    }
+    // Phase 17 Juice：序列 sheet 运行时切帧（4×4 → 编号 0…15，逐帧循环动画）
+    const frameCount = SHEET_GRID.cols * SHEET_GRID.rows;
+    for (const key of [ART.baseFire, ART.octopus]) {
+      if (!this.textures.exists(key)) continue;
+      const texture = this.textures.get(key);
+      const source = texture.getSourceImage();
+      const frameWidth = Math.floor(source.width / SHEET_GRID.cols);
+      const frameHeight = Math.floor(source.height / SHEET_GRID.rows);
+      for (let i = 0; i < frameCount; i++) {
+        texture.add(
+          i,
+          0,
+          (i % SHEET_GRID.cols) * frameWidth,
+          Math.floor(i / SHEET_GRID.cols) * frameHeight,
+          frameWidth,
+          frameHeight
+        );
+      }
     }
     this.scene.start(MainMenuScene.KEY);
   }

@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
-> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验）；Phase 17 进行中：首屏美术样片 + 修复/音效/美术批次/真机反馈各轮 + 概念对齐与特效重制（hit stop / 粒子 / 角色反应 / UI transitions 全落地）+ 相机顶界 clamp 完成（含 desync 恢复遗留相机滞留的产品级 bug 修复）；剩余：用户视觉验收、真机性能验收、独立视差层与逐帧角色动画。**
-> 当前验证：`npm run typecheck` / `npm run test`（487）/ `npm run build` 已通过；美术批次 + 反馈修复轮后 `npm run e2e` 全量 **130 passed / 0 failed** 复验全绿（desync 恢复清炮弹修复前曾同点连续三次 123/124）。
+> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验）；Phase 17 进行中：首屏美术样片 + 修复/音效/美术批次/真机反馈各轮 + 概念对齐与特效重制（hit stop / 粒子 / 角色反应 / UI transitions 全落地）+ 相机顶界 clamp + 基地受损烟/火分档（火焰 16 帧序列）+ 静态前景水面（配色匹配背景海）+ HUD 头像框渐变 + Rematch 等待提示强化 + 中央章鱼触手玩法特性（任一方 HP ≤ 4 升起、阻挡中低弹道逼高抛物线）完成（含 desync 恢复遗留相机滞留的产品级 bug 修复）；剩余：用户视觉验收、真机性能验收、独立视差层与逐帧角色动画、AI 感知触手。**
+> 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；章鱼触手轮后 `npm run e2e` 全量 **130 passed / 0 failed** 复验全绿（desync 恢复清炮弹修复前曾同点连续三次 123/124）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
 ---
@@ -1990,6 +1990,96 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 - [ ] 整个 Phase 17 的用户视觉验收和真实手机性能验收；独立视差层与逐帧角色动画仍保留为后续精制项，不冒充已生成。
 
 制作记录、提示词和验证边界：`docs/ArtDesign/PHASE17_POLISH_REWORK.md`。
+
+### 基地受损表现轮（2026-09-29，用户需求：HP 越低火烟越重）
+
+- [x] **分档冒烟/起火**：HP 10–9 完好 → ≤8 轻烟 → ≤6 浓烟 → ≤4 烟+小火
+      → ≤2 大火大烟（死亡同档 4）；阈值在 `GameConfig.baseDamageFx`
+      （hpToBaseDamageTier 纯函数，tests/systems 5 项单测：边界 + 全 HP
+      表 + 单调不回退）
+- [x] **BaseDamageEffects 系统**（State 驱动纯视觉，同 PlayerHud 每帧幂等
+      刷新模式）：每方基地烟/火双发射器，换档时重建（每局至多 8 次）；
+      烟自结构上部升腾渐大渐淡，火苗 fx-spark 橙红短命窜动；发射点几何
+      与铺图同源（WorldBuilder 导出 baseDockGeometry，消除公式重复）；
+      调参集中在 TIER_PARAMS 表
+- [x] debug 句柄新增 baseDamageTier（P1/P2 档位观测口，供 E2E/调试）
+- [x] 验证：typecheck / test（496，42→43 files）/ build + 全量 E2E 复跑
+      **130 passed / 0 failed** 全绿
+- [ ] 真机视觉验收 + TIER_PARAMS 手感调参（烟量/火势/升速按反馈微调）
+
+### 火焰序列与水波轮（2026-09-29，真机反馈）
+
+- [x] **火焰换 16 帧循环 sheet**（用户需求：替换粒子火苗）：全能耀斑生成
+      `base-fire.png`（4×4 网格、原生透明、多模态复核连贯循环可用）；
+      BootScene 运行时切帧编号 0…15（沿用 platform/aimControls 模式，
+      `SHEET_GRID` 常量）；BaseDamageEffects 档 3 两处 / 档 4 四处
+      火焰精灵（错帧 + 随机翻转移除同拍），fx-spark 粒子降级为
+      缺素材回退
+- [x] **码头前景水**（真机反馈：支腿底边"齐根切断"无近景水面衔接，
+      腾空感）：首版两排 16 帧动画水波真机否定——用户拍板**静态图层**
+      ——seedream 生成 8:1 宽幅水面条带 `water-strip.png`（6144×768，
+      JPEG 顶区 Pillow 泛洪抠图转透明：泡沫剪影顶缘 + 不透明水体；
+      多模态 + 程序双重校验：顶区零残留、水体零咬穿）；
+      `buildForegroundWater` 与场景底图同宽镜向循环平铺（同远景板
+      模式，天然无缝），水面线 ~1030 世界 px——走道下 70px 不挡
+      角色、水体盖死支腿切边；水波 sheet 与精灵逻辑整体移除。
+      截图复核：横铺连续、腾空消除、泡沫线自然、零遮挡；
+      后续反馈轮：水体 HSV 色相 +19°（190°→209°）调至与背景海
+      一致（HSV 采样驱动，白泡沫低饱和不受影响）
+- [x] 验证：typecheck / test（496）/ build + 全量 E2E **130 passed /
+      0 failed**（⚠️ 首跑 113/1 失败为 E2E 期间并行 vite build 触发
+      puppeteer "detached Frame" CDP 竞态——E2E 与任何写 dist 的任务
+      禁止并行；干净串行重跑全绿，静态水面版复跑亦全绿）
+- [ ] 真机视觉验收（火焰动画观感 / 静态水面观感）
+
+### HUD 头像框渐变填色（2026-09-29，真机反馈）
+
+- [x] **头像框内加从下往上渐变填色**：Graphics `fillGradientStyle`
+      四角顶点色——底部队色（P1 0x3f8cff / P2 0xff5063）→ 顶部深色
+      0x0d1520；56×56 圆角恰嵌 78×78 金属框内窗（下留铭牌带），
+      画在头像之下（plate → fill → avatar → frame），头像透明边距
+      透出渐变；零新素材纯程序绘制。截图复核：双框生效、下亮上暗
+      方向正确、不溢出不遮铭牌血条、头像清晰、幅度克制
+- [x] 验证：typecheck / test（496）/ build + 全量 E2E
+      **130 passed / 0 failed** 全绿
+
+### Rematch 等待提示强化（2026-09-29，真机反馈）
+
+- [x] **「WAITING FOR OPPONENT…」醒目化**：16px 灰蓝 → **24px 粗体
+      暖金 #ffe19a + 深描边 + 650ms 呼吸脉冲**（1↔0.5，同瞄准按钮
+      节奏语义）；状态分色——等待=金色脉冲 / 对方已准备=金色常亮 /
+      对方已离开=警示红 #ff8b7a 常亮；脉冲随状态机启停 + alpha
+      复位，statusPulse 进 init 复位清单（Phase 11 场景复用防御）
+- [x] 验证：typecheck / test（496）/ build + 全量 E2E
+      **130 passed / 0 failed** 全绿（Phase 16 Rematch 流程断言走
+      rematchPhase debug 句柄，不受文案样式影响）
+
+### 中央章鱼触手（2026-09-29，用户新玩法特性）
+
+- [x] **出现条件**：任一方 HP ≤ 4（`GameConfig.octopus.hpThreshold`，
+      `shouldOctopusEmerge` 纯函数 + 4 项单测：边界/双端/死亡兜底/单调
+      翻转）——与基地档 3 起火同阈值，终局叙事：双方起火 + 海怪升起
+- [x] **阻挡玩法**：静态 Matter 碰撞体（450×0.5 宽 × 750×0.92 高 @
+      x=2500），新增 `COLLISION_CATEGORY.OBSTACLE` + 炮弹引信激活后
+      掩码并入——撞上即爆；中央爆炸距双方基地 >2000px = 零伤害，
+      被挡 = 浪费回合 → 逼双方改打高抛物线（贴边擦过/擦顶可过 =
+      "一定程度"阻挡）
+- [x] **联机确定性**：出现条件只由 PlayerState HP 驱动，HP 只在回合
+      结算更新 → 炮弹飞行期间触手状态恒定，双端本地模拟一致不破坏
+      stateHash；碰撞体激活即时生效（升起 900ms 动画纯表现层）
+- [x] **待机表现**：16 帧序列 sheet（两轮生成：首版帧间轮廓跳变会
+      抽动 → 重生成剪影恒定版；生命感由程序补——底枢 ±1.4° 慢摆，
+      剪影恒定 = 视觉与碰撞体永远匹配）+ 自海中升起渐显；
+      素材缺失时特性整体关闭（不造隐形墙）
+- [x] debug 句柄新增 octopus（E2E/调试观测口）
+- [x] 验证：typecheck / test（**500**，+4）/ build + 全量 E2E
+      **130 passed / 0 failed** 全绿——数学预验证最短基地对射
+      （850↔4150）45° 精确解顶点恰在 x=2500、y≈6，高于碰撞体顶
+      344px，终局击杀弹全数越过
+- [ ] 真机验收（触手观感 / 摆幅 / 阻挡手感）
+- [ ] **Known Issue**：SP AI 不感知触手（TrajectorySolver 无障碍
+      规避），低血量局 AI 平射可能被挡浪费回合——V0.1 AI「陪打完」
+      标准下可接受，后续 AI 升级时处理
 
 ---
 

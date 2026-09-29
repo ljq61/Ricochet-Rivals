@@ -21,6 +21,12 @@ export const ART = {
   /** 真机反馈轮：菜单按钮 9-slice 无字底板（金=主操作 / 钢=次要） */
   buttonGold: 'art-button-gold',
   buttonSteel: 'art-button-steel',
+  /** 基地受损轮：火焰 16 帧循环（4×4 sheet，BootScene 运行时切帧） */
+  baseFire: 'art-base-fire',
+  /** 基地水线轮：静态前景水面条带（与场景同宽镜向循环，压住基地浮空部分） */
+  foregroundWater: 'art-foreground-water',
+  /** Phase 17 玩法特性：中央章鱼触手 16 帧待机循环（任一方 HP ≤ 4 升起） */
+  octopus: 'art-octopus',
 } as const;
 
 export const ART_FILES = [
@@ -41,7 +47,16 @@ export const ART_FILES = [
   [ART.logo, 'logo.png'],
   [ART.buttonGold, 'button-gold.png'],
   [ART.buttonSteel, 'button-steel.png'],
+  [ART.baseFire, 'base-fire.png'],
+  [ART.foregroundWater, 'water-strip.png'],
+  [ART.octopus, 'octopus.png'],
 ] as const;
+
+/**
+ * 精灵序列 sheet 网格（4×4 = 16 帧循环动画；帧尺寸 = 源尺寸 ÷ 网格，
+ * BootScene create 运行时切帧编号 0…15；素材实测 1024² → 256² 帧）
+ */
+export const SHEET_GRID = { cols: 4, rows: 4 } as const;
 
 /** Opaque top and sole positions measured from the generated 1254px sprites. */
 export const PLAYER_ART_BOUNDS = {

@@ -68,6 +68,8 @@ export class ResultScene extends Phaser.Scene {
   private inputRouter!: InputRouter;
   private titleText!: Phaser.GameObjects.Text;
   private statusLine!: Phaser.GameObjects.Text;
+  /** 等待对方确认时的呼吸脉冲（醒目提示；离开等待态即停） */
+  private statusPulse: Phaser.Tweens.Tween | null = null;
   private rematchButton: MenuButton | null = null;
   private mainMenuButton!: MenuButton;
   private transitioning = false;
@@ -86,6 +88,7 @@ export class ResultScene extends Phaser.Scene {
     this.rematchCancel = null;
     this.rematchPhase = 'idle';
     this.transitioning = false;
+    this.statusPulse = null;
   }
 
   create(): void {
@@ -104,7 +107,13 @@ export class ResultScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(900);
     this.statusLine = this.add
-      .text(0, 0, '', { fontFamily: 'monospace', color: '#8fa3c7' })
+      .text(0, 0, '', {
+        fontFamily: 'monospace',
+        fontStyle: 'bold',
+        color: '#ffe19a',
+        stroke: '#151c22',
+        strokeThickness: 4,
+      })
       .setOrigin(0.5)
       .setDepth(900);
 
@@ -215,15 +224,42 @@ export class ResultScene extends Phaser.Scene {
   private refreshRematchStatus(): void {
     const el = this.rematchCoordinator;
     if (this.rematchPhase === 'opponent-left') {
+      this.stopStatusPulse();
+      this.statusLine.setColor('#ff8b7a');
       this.statusLine.setText('OPPONENT LEFT — BACK TO MENU');
       this.rematchButton?.setVisible(false);
       return;
     }
     if (el !== null && el.opponentReady) {
+      this.stopStatusPulse();
+      this.statusLine.setColor('#ffe19a');
       this.statusLine.setText('OPPONENT READY — WAITING FOR GAME…');
       return;
     }
+    // 等待对方确认：呼吸脉冲强调"进行中"（同瞄准按钮节奏语义）
+    this.statusLine.setColor('#ffe19a');
     this.statusLine.setText('WAITING FOR OPPONENT…');
+    this.startStatusPulse();
+  }
+
+  private startStatusPulse(): void {
+    if (this.statusPulse !== null) {
+      return;
+    }
+    this.statusPulse = this.tweens.add({
+      targets: this.statusLine,
+      alpha: { from: 1, to: 0.5 },
+      duration: 650,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    });
+  }
+
+  private stopStatusPulse(): void {
+    this.statusPulse?.stop();
+    this.statusPulse = null;
+    this.statusLine.setAlpha(1);
   }
 
   update(_time: number, _delta: number): void {
@@ -301,7 +337,7 @@ export class ResultScene extends Phaser.Scene {
 
     this.titleText.setFontSize(TITLE_FONT * uiScale);
     this.titleText.setPosition(width / 2, height * 0.34);
-    this.statusLine.setFontSize(16 * uiScale);
+    this.statusLine.setFontSize(24 * uiScale);
     this.statusLine.setPosition(width / 2, height * 0.46);
 
     const buttonH = 64 * uiScale;

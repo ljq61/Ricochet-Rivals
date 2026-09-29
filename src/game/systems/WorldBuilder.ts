@@ -25,6 +25,20 @@ const ALPHA = {
  * （与相机垂直 clamp 上界同源）。
  */
 
+/**
+ * 基地甲板几何（世界坐标）：阵地 bounds 居中 + 两侧外伸。
+ * WorldBuilder 铺图与 BaseDamageEffects 烟/火发射点同源取此函数。
+ */
+export function baseDockGeometry(id: PlayerId): { center: number; dockWidth: number } {
+  const bounds = id === 'P1'
+    ? GAME_CONFIG.player.leftBounds
+    : GAME_CONFIG.player.rightBounds;
+  return {
+    center: (bounds.minX + bounds.maxX) / 2,
+    dockWidth: bounds.maxX - bounds.minX + GAME_CONFIG.world.platformOverhang * 2,
+  };
+}
+
 export class WorldBuilder {
   constructor(private readonly scene: Phaser.Scene) {}
 
@@ -67,9 +81,7 @@ export class WorldBuilder {
     // Independent docks: leave the harbor open between the two bases.
     for (const id of ['P1', 'P2'] as const) {
       const left = id === 'P1';
-      const bounds = left ? GAME_CONFIG.player.leftBounds : GAME_CONFIG.player.rightBounds;
-      const center = (bounds.minX + bounds.maxX) / 2;
-      const dockWidth = bounds.maxX - bounds.minX + GAME_CONFIG.world.platformOverhang * 2;
+      const { center, dockWidth } = baseDockGeometry(id);
       const baseKey = left ? ART.baseP1 : ART.baseP2;
       if (this.scene.textures.exists(baseKey)) {
         // Measured source deck heights differ: blue 88%, red 76.5%.
@@ -83,6 +95,35 @@ export class WorldBuilder {
         const deck = this.scene.add.graphics().setDepth(-10);
         deck.fillStyle(0x947145).fillRect(center - dockWidth / 2, top, dockWidth, 24);
       }
+    }
+    this.buildForegroundWater();
+  }
+
+  /**
+   * 静态前景水面（真机反馈：基地/码头支腿底边"齐根切断"无近景水面
+   * 衔接，有腾空感）——与场景底图同宽的水面条带镜向相邻循环铺满
+   * （同远景板模式，镜向天然无缝），压住基地入水线以下的浮空部分。
+   * 水面线在走道面以下，不遮挡角色站位；素材缺失保持原样（纯增饰）。
+   */
+  private buildForegroundWater(): void {
+    if (!this.scene.textures.exists(ART.foregroundWater)) {
+      return;
+    }
+    const { width } = GAME_CONFIG.world;
+    const waterTopY = GAME_CONFIG.world.groundTopY + 25;
+    // 条带按源比例等比显示：高度 ~100 世界 px 定 tile 宽，镜向循环铺满全场景宽；
+    // 素材顶区已泛洪抠除为透明天（泡沫剪影自然起伏，后景透出远景海面），
+    // 泡沫线以下水体不透明 —— 足以盖住基地支腿"齐根切断"的浮空部分
+    const source = this.scene.textures.get(ART.foregroundWater).getSourceImage();
+    const targetHeight = 100;
+    const tileWidth = targetHeight * source.width / source.height;
+    const tileCount = Math.ceil(width / tileWidth);
+    for (let i = 0; i < tileCount; i++) {
+      this.scene.add.image(i * tileWidth, waterTopY, ART.foregroundWater)
+        .setOrigin(0, 0)
+        .setDisplaySize(tileWidth, targetHeight)
+        .setFlipX(i % 2 === 1)
+        .setDepth(-5);
     }
   }
 

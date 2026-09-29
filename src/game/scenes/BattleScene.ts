@@ -12,6 +12,8 @@ import { ConcreteDamageSystem } from '../systems/DamageSystem';
 import { ExplosionSystem } from '../systems/ExplosionSystem';
 import { TurnManager } from '../systems/TurnManager';
 import { WorldBuilder } from '../systems/WorldBuilder';
+import { BaseDamageEffects } from '../systems/BaseDamageEffects';
+import { OctopusTentacle } from '../systems/OctopusTentacle';
 import { Player } from '../entities/Player';
 import { detectDeviceProfile, type DeviceProfile } from '../platform/DeviceProfile';
 import { ViewportService } from '../platform/ViewportService';
@@ -110,6 +112,10 @@ export class BattleScene extends Phaser.Scene {
   private playerHud!: PlayerHud;
   private turnBanner!: TurnBanner;
   private damageNumbers!: DamageNumbers;
+  /** Phase 17 Juice：基地受损表现（烟/火随 HP 分档，State 驱动纯视觉） */
+  private baseDamageEffects!: BaseDamageEffects;
+  /** Phase 17 玩法特性：中央章鱼触手（任一方 HP ≤ 4 升起，阻挡中低弹道） */
+  private octopusTentacle!: OctopusTentacle;
   private debugOverlay!: DebugOverlay;
   /** Phase 9 横幅状态检测（同 PlayerHud displayedHp 模式：State 唯一数据源） */
   private bannerTurnKey: string | null = null;
@@ -198,6 +204,13 @@ export class BattleScene extends Phaser.Scene {
       P1: new Player(this, this.state.players.P1),
       P2: new Player(this, this.state.players.P2),
     };
+
+    // Phase 17 Juice：基地受损表现（HP 越低烟/火越重；create 无条件重建，
+    // scene 复用安全 —— Phase 11 init/create 复位清单约定）
+    this.baseDamageEffects = new BaseDamageEffects(this);
+
+    // Phase 17 玩法特性：中央章鱼触手（任一方 HP ≤ 4 升起；create 无条件重建）
+    this.octopusTentacle = new OctopusTentacle(this);
 
     // 4. 系统初始化：CommandBus → GameLogic → Systems
     this.projectileSystem = new ProjectileSystem(this);
@@ -443,6 +456,8 @@ export class BattleScene extends Phaser.Scene {
     this.aimButton.refresh(this.cameraController.currentMode, localControls);
     this.touchControls?.refresh(this.cameraController.currentMode, localControls);
     this.playerHud.refresh(this.state.players);
+    this.baseDamageEffects.refresh(this.state.players);
+    this.octopusTentacle.refresh(this.state.players);
 
     // Phase 9：回合横幅 —— 新回合进入 ACTION 时短暂提示轮到谁
     // （开场与每次 TURN_TRANSITION 完成后各触发一次；取消瞄准回到
@@ -875,6 +890,17 @@ export class BattleScene extends Phaser.Scene {
           P1: self.state.players.P1.hp,
           P2: self.state.players.P2.hp,
         };
+      },
+      /** Phase 17 Juice：基地受损档位（0=完好…4=大火大烟；E2E/调试观测口） */
+      get baseDamageTier(): { P1: number; P2: number } {
+        return {
+          P1: self.baseDamageEffects.tierOf('P1'),
+          P2: self.baseDamageEffects.tierOf('P2'),
+        };
+      },
+      /** Phase 17 玩法特性：中央章鱼触手是否已升起（E2E/调试观测口） */
+      get octopus(): boolean {
+        return self.octopusTentacle.isActive;
       },
       get phase(): string {
         return self.state.phase;
