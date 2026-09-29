@@ -4,6 +4,7 @@ import type { PlayerState } from '../state/PlayerState';
 import type { PlayerId } from '../state/ids';
 import {
   ART,
+  WALK_ART,
   PLAYER_ART_BOUNDS,
   AIM_POSE_BOUNDS,
   aimPoseKey,
@@ -16,7 +17,7 @@ import { GAME_CONFIG } from '../config/GameConfig';
  * 玩家视觉实体（渲染层）。
  *
  * - 不持有任何规则逻辑；位置完全由 PlayerState 驱动（每帧同步）
- * - 占位走动动画：移动时上下轻微起伏
+ * - 按实际位移播放 8 帧走路序列；缺素材时回退轻微起伏
  * - 朝向随移动方向翻转，初始朝向战场中央
  * - Phase 17 修复轮：瞄准姿态序列（15–75° 抬枪图，setAimPose 按
  *   仰角分桶切换纹理；素材缺失自动回退 idle，Graphics 占位不受影响）
@@ -34,6 +35,8 @@ export class Player {
   private facing: 1 | -1;
   private lastX: number;
   private bobPhase = 0;
+  private walking = false;
+  private walkDistance = 0;
   private reactionHoldMs = 0;
   private idleTimeMs = 0;
   private hitTween: Phaser.Tweens.Tween | null = null;
@@ -89,7 +92,7 @@ export class Player {
     this.redrawBarrel();
   }
 
-  /** 每帧从 PlayerState 同步视觉（含占位走动动画） */
+  /** 每帧从 PlayerState 同步视觉（位移驱动走路序列） */
   update(playerState: PlayerState, deltaMs: number): void {
     // Local visual hold only. State and collision bodies continue to update normally.
     if (this.reactionHoldMs > 0) {
@@ -105,8 +108,23 @@ export class Player {
       this.redrawBarrel();
     }
 
+    const walk = WALK_ART[this.playerId];
+    this.walking = moving && this.sprite !== null && this.scene.textures.exists(walk.key);
+    if (this.walking && this.sprite) {
+      // Distance-driven cadence also works for AI and remote authoritative movement.
+      this.walkDistance += Math.min(Math.abs(deltaX), 16);
+      const frame = Math.floor(this.walkDistance / 12) % 8;
+      this.sprite.setTexture(walk.key, frame)
+        .setScale(GAME_CONFIG.player.collision.height / walk.visibleHeight)
+        .setOrigin(0.5, walk.soles[frame]! / this.sprite.frame.height);
+      this.currentPoseKey = walk.key;
+    } else if (this.currentPoseKey === walk.key) {
+      this.walkDistance = 0;
+      this.setAimPose(null);
+    }
+
     let bob = 0;
-    if (moving) {
+    if (moving && !this.walking) {
       this.bobPhase += (deltaMs / 1000) * 24;
       bob = Math.sin(this.bobPhase) * 3;
     } else {
@@ -115,7 +133,7 @@ export class Player {
 
     this.idleTimeMs += deltaMs;
     if (this.hitTween === null) {
-      const breath = Math.sin(this.idleTimeMs / 320) * 0.012;
+      const breath = this.walking ? 0 : Math.sin(this.idleTimeMs / 320) * 0.012;
       this.container.setScale(1 - breath * 0.4, 1 + breath)
         .setAngle(moving ? Math.sin(this.bobPhase) * 2 : 0);
     }
@@ -171,6 +189,7 @@ export class Player {
     if (this.sprite === null) {
       return; // 无美术（Graphics 占位路径）：姿态序列不可用
     }
+    if (elevationDeg === null && this.walking) return;
     const pose = elevationDeg === null ? null : bucketAimPoseAngle(elevationDeg);
     const key = pose === null
       ? ART[this.playerId]

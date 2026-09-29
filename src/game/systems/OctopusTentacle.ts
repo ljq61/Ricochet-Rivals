@@ -48,31 +48,51 @@ export class OctopusTentacle {
     this.active = true;
     const cfg = GAME_CONFIG.octopus;
     this.ensureAnim();
-    // 自海中升起（起始浸没 + 渐显；碰撞体已即刻生效，双端一致）
+    // 自海底向上平移揭露；碰撞体仍即刻生效，保持已有双端确定性。
     const sprite = this.scene.add
-      .sprite(cfg.x, cfg.baseY + 300, ART.octopus)
+      .sprite(cfg.x, cfg.baseY + cfg.height + 100, ART.octopus, 0)
       .setOrigin(0.5, 1)
       .setDisplaySize(cfg.width, cfg.height)
-      .setDepth(-6) // 前景水面(-5)之后：底部没入水带，如自海里长出
-      .setAlpha(0);
+      .setDepth(-6)
+      .setName('octopus-visual');
+    // Phaser 4 WebGL supports texture cropping, not legacy GeometryMask.
+    const cropAtSea = (): void => {
+      const visible = Phaser.Math.Clamp((cfg.baseY - sprite.y + cfg.height) / cfg.height, 0, 1);
+      sprite.setCrop(0, 0, sprite.frame.width, sprite.frame.height * visible);
+    };
+    cropAtSea();
     sprite.play({
       key: OCTOPUS_ANIM_KEY,
-      startFrame: Math.floor(Math.random() * FRAME_COUNT), // 纯视觉错帧（§16）
+      startFrame: 0,
     });
     this.scene.tweens.add({
       targets: sprite,
       y: cfg.baseY,
-      alpha: 1,
-      duration: 900,
+      duration: 1500,
       ease: 'Sine.easeOut',
+      onUpdate: cropAtSea,
+      onComplete: () => { sprite.setCrop(); },
     });
-    // 待机摇摆：素材 sheet 剪影恒定（保证与碰撞体始终匹配），生命感由
+    // Local foam around the root softens its cut edge without an opaque sea strip.
+    const ripple = this.scene.add.graphics().setPosition(cfg.x, cfg.baseY - 12).setDepth(-5);
+    ripple.fillStyle(0x176c94, 0.8).fillEllipse(0, 0, 190, 24);
+    ripple.lineStyle(4, 0x9bdfed, 0.8).strokeEllipse(0, 0, 205, 28);
+    ripple.lineStyle(2, 0xd8f7f7, 0.65).strokeEllipse(0, -2, 158, 16);
+    ripple.setScale(0.55).setAlpha(0);
+    this.scene.tweens.add({ targets: ripple, alpha: 0.85, scaleX: 1.15, scaleY: 1,
+      delay: 180, duration: 1200, ease: 'Sine.easeOut',
+      onComplete: () => {
+        this.scene.tweens.add({ targets: ripple, alpha: 0.5, scaleX: 0.95, scaleY: 0.75,
+          duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+      },
+    });
+    // 待机：16 帧细微卷曲叠加慢摆，下部主体保持稳定
     // 程序补 —— 底枢 ±1.4° 慢摆（origin(0.5,1) = 底部锚定，顶部 ±~19px）
     this.scene.tweens.add({
       targets: sprite,
       rotation: { from: -0.025, to: 0.025 },
       duration: 2600,
-      delay: 900,
+      delay: 1500,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut',

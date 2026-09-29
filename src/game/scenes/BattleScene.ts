@@ -911,6 +911,18 @@ export class BattleScene extends Phaser.Scene {
           P2: self.baseDamageEffects.tierOf('P2'),
         };
       },
+      /** Read-only rendered frames for animation QA (including nested player images). */
+      get artAnimation(): object[] {
+        const objects = self.children.list.flatMap((item) =>
+          item instanceof Phaser.GameObjects.Container ? item.list : [item]);
+        return objects.filter((item): item is Phaser.GameObjects.Image | Phaser.GameObjects.Sprite =>
+          item instanceof Phaser.GameObjects.Image || item instanceof Phaser.GameObjects.Sprite)
+          .filter((item) => /art-(blue|red|base-fire|octopus)/.test(item.texture.key))
+          .map((item) => ({ key: item.texture.key, frame: item.frame.name,
+            x: item.x, y: item.y, width: item.displayWidth, height: item.displayHeight,
+            flipX: item.flipX, alpha: item.alpha,
+            animation: item instanceof Phaser.GameObjects.Sprite ? item.anims.currentAnim?.key : null }));
+      },
       /** Phase 17 玩法特性：中央章鱼触手是否已升起（E2E/调试观测口） */
       get octopus(): boolean {
         return self.octopusTentacle.isActive;

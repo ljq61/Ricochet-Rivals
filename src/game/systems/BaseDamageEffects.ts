@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { ART, SHEET_GRID } from '../config/ArtAssets';
+import { ART } from '../config/ArtAssets';
 import { GAME_CONFIG } from '../config/GameConfig';
 import { hpToBaseDamageTier } from './baseDamageTier';
 import { baseDockGeometry } from './WorldBuilder';
@@ -12,7 +12,7 @@ import type { PlayerState } from '../state/PlayerState';
  *
  * 场景级反馈系统（同 PlayerHud 模式）：每帧从 PlayerState 刷新，
  * 幂等换档（档位不变时零开销；换档时按新档重建烟发射器/火精灵，
- * 每局至多 8 次）。火焰 = 生成 16 帧循环 sheet 的逐帧动画精灵
+ * 每局至多 8 次）。火焰 = 大小火各 8 帧循环 sheet 的逐帧动画精灵
  * （错帧 + 随机翻转移除同拍感；sheet 缺失回退 fx-spark 粒子火苗）。
  * 纯视觉：不改任何 GameState，不感知网络；粒子/精灵由 Phaser 随场景
  * SHUTDOWN 自动销毁（同 ProjectileEffects 约定）。
@@ -22,6 +22,8 @@ import type { PlayerState } from '../state/PlayerState';
 interface FlameSpec {
   readonly offset: number;
   readonly heightRatio: number;
+  readonly rise: number;
+  readonly size: 'small' | 'large';
 }
 
 /** 每档发射调参（纯视觉；索引 = 档位 0~4） */
@@ -42,24 +44,27 @@ const TIER_PARAMS: readonly TierParams[] = [
   {
     smokeEveryMs: 360, smokeScaleStart: 0.05, smokeScaleEnd: 0.16, smokeAlpha: 0.5,
     flames: [
-      { offset: -0.12, heightRatio: 0.11 },
-      { offset: 0.14, heightRatio: 0.09 },
+      { offset: -0.19, rise: 0.24, heightRatio: 0.14, size: 'small' },
+      { offset: 0.12, rise: 0.43, heightRatio: 0.12, size: 'small' },
+      { offset: -0.04, rise: 0.52, heightRatio: 0.1, size: 'small' },
     ],
   },
   {
     smokeEveryMs: 220, smokeScaleStart: 0.06, smokeScaleEnd: 0.2, smokeAlpha: 0.58,
     flames: [
-      { offset: -0.26, heightRatio: 0.19 },
-      { offset: -0.08, heightRatio: 0.14 },
-      { offset: 0.1, heightRatio: 0.21 },
-      { offset: 0.27, heightRatio: 0.15 },
+      { offset: -0.19, rise: 0.24, heightRatio: 0.25, size: 'large' },
+      { offset: 0.12, rise: 0.43, heightRatio: 0.23, size: 'large' },
+      { offset: -0.04, rise: 0.52, heightRatio: 0.18, size: 'small' },
+      { offset: 0.28, rise: 0.15, heightRatio: 0.21, size: 'large' },
+      { offset: -0.3, rise: 0.1, heightRatio: 0.12, size: 'small' },
+      { offset: 0.02, rise: 0.08, heightRatio: 0.14, size: 'small' },
     ],
   },
 ];
 
-/** 基地火焰动画（16 帧循环；anims 全局注册，场景重启不重复建） */
+/** 基地火焰动画（大小火各 8 帧循环；anims 全局注册，场景重启不重复建） */
 const FIRE_ANIM_KEY = 'fx-base-fire-loop';
-const SHEET_FRAME_COUNT = SHEET_GRID.cols * SHEET_GRID.rows;
+const LOOP_FRAME_COUNT = 8;
 
 type Emitter = Phaser.GameObjects.Particles.ParticleEmitter;
 
@@ -129,7 +134,7 @@ export class BaseDamageEffects {
       scale: { start: params.smokeScaleStart, end: params.smokeScaleEnd },
       alpha: { start: params.smokeAlpha, end: 0 },
       rotate: { min: 0, max: 360 },
-    }).setDepth(2);
+    }).setDepth(-16);
 
     if (params.flames) {
       if (this.ensureFireAnim()) {
@@ -145,14 +150,14 @@ export class BaseDamageEffects {
     if (!this.scene.textures.exists(ART.baseFire)) {
       return false;
     }
-    if (!this.scene.anims.exists(FIRE_ANIM_KEY)) {
+    for (const size of ['small', 'large'] as const) {
+      const key = `${FIRE_ANIM_KEY}-${size}`;
+      if (this.scene.anims.exists(key)) continue;
+      const start = size === 'small' ? 0 : 8;
       this.scene.anims.create({
-        key: FIRE_ANIM_KEY,
-        frames: this.scene.anims.generateFrameNumbers(ART.baseFire, {
-          start: 0,
-          end: SHEET_FRAME_COUNT - 1,
-        }),
-        frameRate: 16,
+        key,
+        frames: this.scene.anims.generateFrameNumbers(ART.baseFire, { start, end: start + 7 }),
+        frameRate: size === 'small' ? 12 : 10,
         repeat: -1,
       });
     }
@@ -167,24 +172,25 @@ export class BaseDamageEffects {
     flames: ReadonlyArray<FlameSpec>
   ): void {
     const deckTopY = GAME_CONFIG.world.groundTopY;
-    this.fireSprites[id] = flames.map((flame) => {
+    this.fireSprites[id] = flames.map((flame, index) => {
       const height = dockWidth * flame.heightRatio;
       const sprite = this.scene.add
         .sprite(
           center + flame.offset * dockWidth,
-          deckTopY - dockWidth * 0.3 + (Math.random() * 24 - 12),
-          ART.baseFire
+          deckTopY - dockWidth * flame.rise,
+          ART.baseFire, flame.size === 'small' ? 0 : 8
         )
-        .setOrigin(0.5, 0.85)
+        .setOrigin(0.5, flame.size === 'small' ? 0.9 : 0.94)
         .setDisplaySize(height, height)
-        .setDepth(3);
+        .setDepth(-15);
       if (Math.random() < 0.3) {
         sprite.setFlipX(true);
       }
       sprite.play({
-        key: FIRE_ANIM_KEY,
-        startFrame: Math.floor(Math.random() * SHEET_FRAME_COUNT),
+        key: `${FIRE_ANIM_KEY}-${flame.size}`,
+        startFrame: (index * 3) % LOOP_FRAME_COUNT,
       });
+      sprite.anims.timeScale = 0.9 + (index % 3) * 0.12;
       return sprite;
     });
   }
@@ -204,6 +210,6 @@ export class BaseDamageEffects {
       scale: { start: 1.8, end: 0.15 },
       alpha: { start: 0.95, end: 0 },
       color: [0xfff8cc, 0xffd14a, 0xff792b, 0xa83924],
-    }).setDepth(3);
+    }).setDepth(-15);
   }
 }

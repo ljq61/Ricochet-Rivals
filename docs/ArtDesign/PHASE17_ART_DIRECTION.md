@@ -1,6 +1,6 @@
 # Phase 17 美术方向与制作清单
 
-最新已落地批次：[长支架与标题菜单精修](DOCK_MENU_REFINEMENT.md)；前批次为[概念对齐与特效重制](PHASE17_POLISH_REWORK.md)。下文素材帧数为初始建议，当前角色反馈采用程序动画。
+最新已落地批次：[走路、火焰与触角动画](ANIMATION_REFINEMENT.md)；此前为[长支架与标题菜单精修](DOCK_MENU_REFINEMENT.md)和[概念对齐与特效重制](PHASE17_POLISH_REWORK.md)。下文素材帧数为初始建议，当前走路采用双角色各 8 帧序列，受击与后坐仍采用程序动画。
 
 日期：2026-09-29。用户随后确认执行首屏样片；已生成并接入海港远景、双角色静态姿态和塔楼。实际交付见 [FIRST_LOOK_ASSETS.md](FIRST_LOOK_ASSETS.md)。本文尺寸和帧数仍是完整素材批次的建议，未全部制作。
 

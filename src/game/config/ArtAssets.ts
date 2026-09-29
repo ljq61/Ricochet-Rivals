@@ -8,6 +8,8 @@ export const ART = {
   tower: 'art-tower',
   P1: 'art-blue',
   P2: 'art-red',
+  walkP1: 'art-blue-walk',
+  walkP2: 'art-red-walk',
   projectile: 'art-projectile',
   explosion: 'art-explosion',
   /** 真机反馈轮：双方基地（concept01 §05，底部平整甲板=走线） */
@@ -21,7 +23,7 @@ export const ART = {
   /** 真机反馈轮：菜单按钮 9-slice 无字底板（金=主操作 / 钢=次要） */
   buttonGold: 'art-button-gold',
   buttonSteel: 'art-button-steel',
-  /** 基地受损轮：火焰 16 帧循环（4×4 sheet，BootScene 运行时切帧） */
+  /** 基地受损轮：大小火各 8 帧循环（4×4 sheet，BootScene 运行时切帧） */
   baseFire: 'art-base-fire',
   /** Phase 17 玩法特性：中央章鱼触手 16 帧待机循环（任一方 HP ≤ 4 升起） */
   octopus: 'art-octopus',
@@ -36,6 +38,8 @@ export const ART_FILES = [
   [ART.tower, 'harbor-tower.png'],
   [ART.P1, 'blue-chibi.png'],
   [ART.P2, 'red-chibi.png'],
+  [ART.walkP1, 'blue-walk.png'],
+  [ART.walkP2, 'red-walk.png'],
   [ART.projectile, 'normal-projectile.png'],
   [ART.explosion, 'explosion-impact.png'],
   [ART.baseP1, 'base-blue.png'],
@@ -45,8 +49,8 @@ export const ART_FILES = [
   [ART.logo, 'logo.png'],
   [ART.buttonGold, 'button-gold.png'],
   [ART.buttonSteel, 'button-steel.png'],
-  [ART.baseFire, 'base-fire.png'],
-  [ART.octopus, 'octopus.png'],
+  [ART.baseFire, 'base-fire-varied.png'],
+  [ART.octopus, 'octopus-flex.png'],
 ] as const;
 
 /** Long-piling dock, measured alpha bounds; world and menu share the same aspect ratio. */
@@ -54,7 +58,7 @@ export const DOCK_ART_FRAME = { x: 17, y: 65, width: 1739, height: 759 } as cons
 
 /**
  * 精灵序列 sheet 网格（4×4 = 16 帧循环动画；帧尺寸 = 源尺寸 ÷ 网格，
- * BootScene create 运行时切帧编号 0…15；素材实测 1024² → 256² 帧）
+ * BootScene create 运行时切帧编号 0…15；当前素材实测 1254² → 313² 帧，边缘余数忽略）
  */
 export const SHEET_GRID = { cols: 4, rows: 4 } as const;
 
@@ -125,3 +129,9 @@ export const AIM_POSE_BOUNDS: Record<ArtPlayerKey, Record<AimPoseAngle, ArtBound
     75: { top: 13, bottom: 1009, sourceHeight: 1024 },
   },
 };
+
+/** 4×2 walk sheets: measured planted soles, fixed scale preserves intentional head bob. */
+export const WALK_ART = {
+  P1: { key: ART.walkP1, visibleHeight: 420, soles: [436, 435, 435, 436, 431, 431, 430, 431] },
+  P2: { key: ART.walkP2, visibleHeight: 416, soles: [431, 429, 436, 435, 425, 425, 429, 424] },
+} as const;

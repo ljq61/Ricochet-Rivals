@@ -63,6 +63,13 @@ export class BootScene extends Phaser.Scene {
         );
       }
     }
+    for (const key of [ART.walkP1, ART.walkP2]) {
+      if (!this.textures.exists(key)) continue;
+      const texture = this.textures.get(key);
+      const source = texture.getSourceImage();
+      const w = Math.floor(source.width / 4), h = Math.floor(source.height / 2);
+      for (let i = 0; i < 8; i++) texture.add(i, 0, (i % 4) * w, Math.floor(i / 4) * h, w, h);
+    }
     this.scene.start(MainMenuScene.KEY);
   }
 }

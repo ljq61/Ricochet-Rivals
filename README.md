@@ -5,7 +5,7 @@ Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
 当前进度：**Phase 0～16 完成；Phase 17 美术持续精修；Phase 18 代码侧加固已落地，真实设备 QA 待完成**（见 `TASKS.md`）。已包含 WebRTC P2P 对战、Desync 恢复与联机再战；海港场景、二头身角色、炮弹火焰拖尾与爆炸、分档基地火烟、低血量章鱼障碍和音效已接入。
 
-最新美术调整：基地与标题页共用长支架码头，移除遮挡支腿的前景海水条带；放大标题、缩小模式按钮，声音与全屏改为右下角图标。见 [制作与验证记录](docs/ArtDesign/DOCK_MENU_REFINEMENT.md)。独立视差层、逐帧角色动画仍为后续精制项，真机验收见 [设备 QA 清单](docs/PHASE18_DEVICE_QA.md)。
+最新美术调整：蓝红角色各 8 帧走路循环；基地大小火各 8 帧，按血量分层布点；章鱼触角 16 帧卷曲，从海面下方完整升起。见 [动画制作与验证记录](docs/ArtDesign/ANIMATION_REFINEMENT.md)。此前的 [长支架与标题菜单](docs/ArtDesign/DOCK_MENU_REFINEMENT.md) 保持。独立视差层及走路以外的完整角色动作仍为后续精制项，真机验收见 [设备 QA 清单](docs/PHASE18_DEVICE_QA.md)。
 
 ## 技术栈
 
@@ -60,7 +60,8 @@ npm run e2e        # 全量 E2E（desktop / mobile / sp / online 配对 / online
 - `CODELY.md` — 项目长期架构与开发约束（顶层规则）
 - `docs/ARCHITECTURE.md` — 分层架构与关键决策（含联机协议与 Phase 14 落地架构）
 - `docs/GAMEPLAY.md` — 玩法规则与参数表
-- `docs/ArtDesign/DOCK_MENU_REFINEMENT.md` — 最新长支架与标题菜单精修记录
+- `docs/ArtDesign/ANIMATION_REFINEMENT.md` — 走路、大小火和触角动画制作与验证
+- `docs/ArtDesign/DOCK_MENU_REFINEMENT.md` — 长支架与标题菜单精修记录
 - `TASKS.md` — Phase 开发计划与完成状态（Phase 0～18）
 - `docs/横版回合制弹道对战网页游戏 V0.1 PRD.md` — 产品需求
 - `docs/TASKS.md + Core TypeScript Contracts.md` — 原始规划草稿
