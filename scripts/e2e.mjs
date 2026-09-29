@@ -1619,6 +1619,143 @@ async function runOnlineBattle(browser) {
     typeof gPost.lastSyncReason === 'string' && gPost.lastSyncReason.length > 0
   );
 
+  // —— Phase 16：Online Rematch（自然终局 → Result → 双方 REMATCH → 新局）——
+  // P2 Turn 4：Guest 开火（瞄 P1，不追求命中），回合回 P1 Turn 5 后注入
+  // P2 hp=1，Host 精确命中 → gameOver → Result → Rematch。
+  // 前台轮换纪律：先让 Host 前台完成 Turn 4 的相机转场（phase END →
+  // ACTION —— 后台页 rAF 冻结会让 Host 卡 END，Guest 的 FIRE_REQUEST
+  // 将被 phase 门禁拒绝），再切 Guest 发射。
+  await pageHost.bringToFront();
+  const hostReadyT4 = await waitFor(
+    pageHost,
+    async () => {
+      const d = await hostD();
+      return d.currentPlayerId === 'P2' && d.phase === 'ACTION' && d.turnId === 4;
+    },
+    15000,
+    'Host Turn 4 进入 ACTION（转场完成）'
+  );
+  check('Phase 16 Rematch 前置：Host Turn 4 就绪', hostReadyT4);
+  await pageGuest.bringToFront();
+  await waitFor(
+    pageGuest,
+    async () => (await guestD()).cameraMode === 'FREE_VIEW',
+    5000,
+    'Guest 相机回 FREE_VIEW（转场完成，瞄准入口就绪）'
+  );
+  await fireFortyFiveShot(pageGuest, 1280, 800, (await hostD()).players.P1).catch((e) => {
+    console.log('[rematch-guest-fire-diag]', String(e).slice(0, 150));
+    return null;
+  });
+  const guestFiredT4 = await waitFor(
+    pageGuest,
+    async () => (await guestD()).hasFired === true,
+    10000,
+    'Guest P2 Turn 4 已发射'
+  ).catch(async () => {
+    const d = await guestD();
+    console.log(
+      '[rematch-fired-diag]',
+      JSON.stringify({ cam: d.cameraMode, phase: d.phase, fired: d.hasFired, cur: d.currentPlayerId, turn: d.turnId })
+    );
+    return false;
+  });
+  check('Phase 16 Rematch 前置：Guest Turn 4 发射', guestFiredT4);
+  // 炮弹飞行/结算双端都要前台 rAF —— Host 切前台推进 Turn 4 收口
+  await pageHost.bringToFront();
+  const backToP1 = await waitFor(
+    pageHost,
+    async () => {
+      const d = await hostD();
+      return d.currentPlayerId === 'P1' && d.phase === 'ACTION' && d.turnId === 5;
+    },
+    25000,
+    'Host 回到 P1 Turn 5'
+  );
+  check('Phase 16 Rematch 前置：Turn 4 收口回 P1', backToP1);
+  await pageHost.evaluate(() => window.__RR_DEBUG__.setHp('P2', 1));
+  await fireFortyFiveShot(pageHost, 1280, 800, (await hostD()).players.P2);
+  const hostGameOver = await waitFor(
+    pageHost,
+    async () => (await hostD()).gameOver === true,
+    25000,
+    'Host gameOver'
+  );
+  await pageHost.bringToFront();
+  const hostAtResult = await waitFor(
+    pageHost,
+    async () => (await dbg(pageHost)).scene === 'ResultScene',
+    15000,
+    'Host 进 ResultScene'
+  );
+  check('Phase 16 终局：Host 自然击杀 → ResultScene', hostGameOver && hostAtResult);
+  await pageGuest.bringToFront();
+  const guestAtResult = await waitFor(
+    pageGuest,
+    async () => (await dbg(pageGuest)).scene === 'ResultScene',
+    15000,
+    'Guest 进 ResultScene（gameOver hash gate 放行）'
+  );
+  check('Phase 16 终局：Guest 同步进 ResultScene', guestAtResult);
+  const hostResultText = (await dbg(pageHost)).resultText ?? '';
+  const guestResultText = (await dbg(pageGuest)).resultText ?? '';
+  check(
+    'Phase 16 终局视角：Host WIN / Guest LOSE',
+    hostResultText.includes('YOU WIN') && guestResultText.includes('YOU LOSE')
+  );
+
+  // 双方点 REMATCH → 新 GAME_START → 新对局（HP 重置 / 新 matchId）
+  await pageHost.bringToFront();
+  const hostRematchBtn = (await dbg(pageHost)).buttons.rematch;
+  await pageHost.mouse.click(
+    hostRematchBtn.x + hostRematchBtn.width / 2,
+    hostRematchBtn.y + hostRematchBtn.height / 2
+  );
+  await pageGuest.bringToFront();
+  const guestRematchBtn = (await dbg(pageGuest)).buttons.rematch;
+  await pageGuest.mouse.click(
+    guestRematchBtn.x + guestRematchBtn.width / 2,
+    guestRematchBtn.y + guestRematchBtn.height / 2
+  );
+  // Host 立即回前台：Guest 的 PLAYER_READY 会触发 Host 的 startGame →
+  // scene.start(Battle) —— Phaser 场景启动需要 rAF tick，后台页冻结会
+  // 让 Host 永远停在 Result（真人场景面前页面自然前台，不受影响）
+  await pageHost.bringToFront();
+  const hostInNewBattle = await waitFor(
+    pageHost,
+    async () => {
+      const d = await dbg(pageHost);
+      return d.scene === 'BattleScene' && d.hp && d.hp.P1 === 10 && d.hp.P2 === 10 && d.turnId === 1;
+    },
+    15000,
+    'Host 进新对局（全新 HP / Turn 1）'
+  ).catch(async () => {
+    const hd = await dbg(pageHost);
+    const gd = await dbg(pageGuest);
+    console.log(
+      '[rematch-newgame-diag]',
+      JSON.stringify({
+        hostScene: hd.scene, hostPhase: hd.rematchPhase, hostBusy: hd.busy, hostInfo: hd.rematchInfo,
+        guestScene: gd.scene, guestPhase: gd.rematchPhase,
+      })
+    );
+    return false;
+  });
+  await pageGuest.bringToFront();
+  const guestInNewBattle = await waitFor(
+    pageGuest,
+    async () => {
+      const d = await dbg(pageGuest);
+      return d.scene === 'BattleScene' && d.hp && d.hp.P1 === 10 && d.hp.P2 === 10 && d.turnId === 1;
+    },
+    15000,
+    'Guest 进新对局（全新 HP / Turn 1）'
+  );
+  check(
+    'Phase 16 Rematch：同一 WebRTC 连接复用 → 双方全新对局（HP 10/10、Turn 1）',
+    hostInNewBattle && guestInNewBattle
+  );
+
   // —— Disconnect：Guest 优雅关闭通道（真实关标签页路径）→ Host 感知 ——
   // 进程异常崩溃只到 ICE 'disconnected'（瞬态，Phase 12 防误杀设计），
   // 'failed' 终局需数十秒 —— E2E 走确定性优雅关闭路径。

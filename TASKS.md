@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
-> 状态：**Phase 0 ～ Phase 15 已完成（2026-09-29，Phase 15 Desync Detection & State Recovery 落地——Guest 状态偏差自动检测 → 快照恢复 → 对局继续；待 test-reviewer 独立验收）**
-> 验证：`npm run typecheck` / `npm run test`（475）/ `npm run build` / `npm run e2e`（123）全部通过。
+> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验；Phase 17 未启动）**
+> 验证：`npm run typecheck` / `npm run test`（480）/ `npm run build` / `npm run e2e`（130）全部通过。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
 ---
@@ -1686,29 +1686,126 @@ Guest 永远对齐 Host**（不平均、不比时间戳、不信任 Guest 的 HP
 
 ---
 
-# Phase 16 — Disconnect / Rematch
+# Phase 16 — Disconnect / Rematch ✅
 
-支持：
+**目标**：Opponent disconnected 提示（Phase 14 已有）+ Return Menu（已有）+
+**Online Rematch**：重新 gameSeed / GameState / Turn State，且复用同一
+WebRTC 连接（不重新配对）。
 
-Opponent disconnected
+## 实现落地（2026-09-29）
 
-显示提示。
+- **架构决策：零新 wire 协议**。Rematch 握手复用 PLAYER_READY → Host
+  汇齐 → GAME_START（与 Lobby 进局完全同构）—— REMATCH 枚举保留
+  不启用（V0.2 再评估显式"再来一局"邀请 UX）。
+- **连接复用**：ResultScene 创建**新 OnlineGameCoordinator 实例共享同
+  一 OnlineSession**（WebRTC 不重建）；channel / sync / hash / barrier
+  状态随新实例天然重置（Phase 15 基建直接受益）；Host 的
+  createMatchIdentity 每局生成全新 matchId + seed。
+- **场景交接链**：BattleScene.transitionToResult 联机时把旧协调器经
+  ResultSceneData.onlineCoordinator 交接（handedToResult 置位后
+  Battle onShutdown 不销毁 session —— 与 Phase 14 handedOff 同防御
+  模式）；ResultScene 负责旧协调器 dispose；回菜单 / 未交接时彻底
+  清理（sessionManager.disposeSession → transport CLOSED）。
+- **ResultScene 联机 Rematch**：REMATCH 按钮（联机分支创建）→
+  onOnlineRematch（旧协调器 dispose → 新协调器 enterLobby +
+  sendPlayerReady）→ Host 汇齐 → 新 GAME_START → startRematchBattle
+  → 全新 BattleScene；WAITING FOR OPPONENT… / OPPONENT READY 提示
+  行（update 轮询刷新，事件驱动到达 + 回前台补渲染）；对端 Result
+  期离开 → OPPONENT LEFT — BACK TO MENU（按钮隐藏）；MAIN MENU 彻底
+  清理（dispose + session 销毁 → 对端经断线提示得知）。
+- **Coordinator 对称 ready**（Phase 16）：Guest 侧同样记录 Host 的
+  PLAYER_READY（hostReady 字段）；`opponentReady` 公共 API（Host 视角
+  = guestReady，Guest 视角 = hostReady）；handlePlayerReady 改为双方
+  消费（started 后幂等）。
+- **修复**：connectAndVerify 连接成功后未清 connectTimer（预算与验证
+  窗口同税制 120s 后实测暴露——已连接会话会被误判 timedOut）；
+  OnlineDebugInfo 新增 selfReady / started 诊断字段。
+- **Rematch 重置契约验证**：新局 initialState 为全新权威状态
+  （HP 10/10 / turn 1 / P1 先手 / hasFired=false / 预算 250），
+  GameState 经 stateFromSnapshot 重建，TurnState 随 BattleScene
+  create 全新实例 —— 满足"重新 gameSeed / GameState / Turn State"。
 
-支持：
+## 测试（Phase 16 新增 6 单测 + 7 E2E）
 
-Return Menu
+- Phase16Rematch.test.ts（loopback 双端）6 项：① 旧局结束 → 新协调
+  器（同 session）→ 双方 Ready → 新 GAME_START（新 matchId/seed ≠
+  旧局）→ 双方 onStart 同源 + 全新初始状态；② 对称 ready +
+  started 后重复 Ready 双向幂等短路（不二次开局，验收修复轮强化）；
+  ③ Result 期对端离开（dispose + close → 本端 onDisconnected；注释
+  归因修正：感知来自 transport close 而非 DISCONNECT 消息）；
+  ④ 新局 GameState 重置契约；⑤ 单方等待不超时（open-ended，真人
+  节奏）；⑥ 对端先离开后点 REMATCH —— transport.connected 守卫
+  依据 + sendPlayerReady 对死通道抛 TransportError（验收修复轮新增）
+- E2E 123 → **130**：真实 WebRTC 自然终局链（Guest Turn 4 发射 →
+  Turn 5 注入残血 → Host 精确击杀 → gameOver hash gate 放行双端
+  ResultScene → Host WIN / Guest LOSE 视角）+ REMATCH（双方点击 →
+  同一 WebRTC 连接复用 → 双方全新对局 HP 10/10 / Turn 1）+ 既有
+  123 全绿
+- E2E 时序修复（实测）：Turn 4 收口需双端前台轮换（Host 切后台炮弹
+  物理冻结 → Guest FIRE_REQUEST 被 phase 门禁拒绝）；Host 的
+  scene.start(Battle) 在后台页 rAF 冻结下永不启动 —— Guest 点击后
+  必须立即 bringToFront(Host)（真人场景不受影响，面前页面自然前台）
 
-支持：
+## 验收
 
-Rematch
+- [x] npm run typecheck
+- [x] npm run test（41 files / 481 tests，含验收修复轮新增）
+- [x] npm run build
+- [x] npm run e2e（130 项：Offline 95 + Online 35，含自然终局 + Rematch）
+- [x] Single Player / Local 2P 无回归（Offline 95 全绿；SP/L2P 的
+      离线 REMATCH 路径未动）
+- [x] Rematch 重新 gameSeed / GameState / Turn State（单测 ①④ + E2E
+      新局断言）
+- [x] test-reviewer 独立验收：**PASS WITH ISSUES**（见下节记录）；
+      Medium×2 验收后修复并复验三命令全绿
 
-Rematch 必须重新：
+## test-reviewer 验收记录（2026-09-29）
 
-gameSeed
+**判定：PASS WITH ISSUES**。reviewer 三命令亲跑全绿（typecheck /
+480 tests / build；E2E 按指示未运行，代码与记录核验自洽）。
+11 项验收：重置契约 / 连接复用 / 交接生命周期 / Host authority /
+对称 ready / Result 期断线 / 离线隔离 / connectTimer 修复 / 场景
+复用防御 / 测试质量 / 无过度设计 —— 无 Critical / High，Medium×2 +
+Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
+离线隔离、connectTimer、实例复用防御）全部达标。
 
-GameState
+**Medium×2 —— Main Agent 亲修（场景/网络边缘路径，改动 < 10 行，
+不值得再委托）+ 单测补充：**
 
-Turn State
+- **ISSUE-1（孤儿 keepAlive timer）**：online Result 直接 MAIN MENU
+  （未点 REMATCH）路径 oldCoordinator 永不 dispose —— Battle 期
+  startKeepAlive 的 2s interval 仅经 dispose 清理，每退一次泄一个
+  setInterval + 协调器对象图。修复：transitionTo online 分支补
+  oldCoordinator 收口。
+- **ISSUE-2（对端先离开 → REMATCH 死按钮）**：对端在本地点 REMATCH
+  前离开 —— 旧协调器 gameOver 抑制断线提示，session 残留但通道已
+  死；sendPlayerReady 向死通道发送抛 TransportError（tap 未捕获 =
+  无响应无提示）。修复：onOnlineRematch 守卫
+  `session === null || !session.transport.connected` → 直接
+  OPPONENT LEFT（tap 回调整段同步执行，无 TOCTOU 窗口）。
+- **复验（修复轮）**：typecheck ✅ / test 481（Phase16Rematch 6/6）✅ /
+  build ✅。
+
+**Low×3 处置**：② started 幂等补直接覆盖（②强化）；③ 注释归因修正
+（transport close 而非 DISCONNECT 消息）；DISCONNECT 死信（Phase 14
+遗留）与 E2E 静态 check 计数疑点 → Known Issues 记录。
+
+## Known Issues（非阻塞）
+
+- [ ] **[UX]** Rematch 无显式"邀请/拒绝"—— 双方都点才开局（与 Lobby
+      同构的最简握手）；对端不点可无限等（可随时 MAIN MENU 退出）。
+      REMATCH 消息枚举保留，V0.2 评估邀请 UX
+- [ ] **[Info]** Result 期对端离开的感知依赖 transport close 事件
+      （优雅关闭即时；进程崩溃走 ICE disconnected 瞬态 → 数十秒
+      failed —— Phase 12 既有设计）
+- [ ] **[Phase 15 遗留 → 已修]** connectTimer 连接成功后未清（同税制
+      改动暴露的隐患，Phase 16 修复）
+- [ ] **[Phase 14 遗留]** NetworkMessageType.DISCONNECT 死信：全 src
+      仅 OnlineGameCoordinator.dispose 发送一处、零接收方（对端感知
+      实际靠 transport close 事件触发）—— V0.2 清理枚举或补消费方
+- [ ] **[Info]** E2E 静态 `check(` 计数 120 vs 运行记录 130（reviewer
+      未运行 E2E 无法静态确证；记录来自实跑 130/130 绿，疑循环/动态
+      计数差 —— 下次 E2E 运行顺带核对一次即闭环）
 
 ---
 

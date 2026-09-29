@@ -448,7 +448,7 @@ GAME_OVER：回合冻结（不切换、输入与命令全拒）
   gameOver / winnerId（Phase 7），本状态机只消费该标志；
 - **GAME_OVER 后续**：Phase 11 菜单 / Phase 16 Rematch 在此接续。
 
-## 6. 联机（Phase 12 Transport + Phase 13 Connection + Phase 14 Gameplay Sync 已落地）
+## 6. 联机（Phase 12 Transport + Phase 13 Connection + Phase 14 Gameplay Sync + Phase 16 Online Rematch 已落地）
 
 ### 分层
 
@@ -546,6 +546,33 @@ BattleScene（只经 OnlineGameCoordinatorApi 交互）
   依赖 ICE failed 终局判定（瞬态 disconnected 不误杀，Phase 12 设计），
   完整恢复策略归 Phase 15。
 
+### Phase 16 落地架构（Online Rematch —— 同连接重开局）
+
+```
+ResultScene：双方点 REMATCH → 新 OnlineGameCoordinator（共享同一 OnlineSession，
+  WebRTC 不重建）→ PLAYER_READY（双向）→ Host 汇齐 → 新 GAME_START
+  （全新 matchId + seed + 权威初始快照）→ startRematchBattle → 全新 BattleScene
+```
+
+- **零新 wire 协议**：Rematch 握手复用 PLAYER_READY → Host 汇齐 →
+  GAME_START（与 Lobby 进局完全同构）；REMATCH 枚举保留未启用
+  （V0.2 再评估显式邀请 UX）。
+- **协调器重置即状态重置**：channel / sync / hash / barrier 状态随新
+  OnlineGameCoordinator 实例天然重置（Phase 15 基建直接受益）；
+  GameState 经 `stateFromSnapshot` 重建，TurnState 随 BattleScene
+  create 全新实例。
+- **场景交接链（防孤儿资源）**：BattleScene.transitionToResult 交接旧
+  协调器（`handedToResult` 守卫 —— Battle onShutdown 不销 session）；
+  ResultScene dispose 旧协调器；回菜单路径 `transitionTo` 同步收口
+  oldCoordinator（防 keepAlive interval 孤儿 timer —— test-reviewer
+  验收修复）；startRematchBattle 把新协调器交接给下局 Battle。
+- **对称 ready**：`coordinator.opponentReady`（Host 视角=guestReady，
+  Guest 视角=hostReady）；started 后重复 Ready 幂等短路。
+- **Result 期断线边缘防线**：旧协调器 gameOver 抑制断线提示 → 点
+  REMATCH 时以 `session === null || !session.transport.connected` 守卫
+  （tap 同步执行无 TOCTOU）→ 直接 OPPONENT LEFT —— 不向死通道发送
+  （sendPlayerReady 会抛 TransportError）。
+
 ### 阶段边界
 
 - **Phase 12**：Transport only —— 协议层 + NetworkManager +
@@ -555,6 +582,8 @@ BattleScene（只经 OnlineGameCoordinatorApi 交互）
   HOST AUTHORITATIVE 校验）。
 - **Phase 15**：Desync Protection（STATE_SNAPSHOT 对账 / sequence 检查 /
   恢复策略）。
+- **Phase 16**：Online Rematch（同连接重开局：握手复用 / 协调器重置 /
+  交接闭环 + 边缘路径防线）。
 
 ## 7. 质量门禁
 

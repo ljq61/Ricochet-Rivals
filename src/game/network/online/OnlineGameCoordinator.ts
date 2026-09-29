@@ -62,6 +62,8 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
   private selfReady = false;
   /** Host 专用：Guest 的 PLAYER_READY 是否已到 */
   private guestReady = false;
+  /** Phase 16 对称 ready：Guest 侧记录 Host 的 PLAYER_READY（ResultScene 提示用） */
+  private hostReady = false;
   private gameStart: GameStartPayload | null = null;
 
   /** 幂等防线：每消息类型的最近已处理 sequence（重复 / 重放防护） */
@@ -115,6 +117,11 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
 
   get lastRttMs(): number | null {
     return this.lastRttMsValue;
+  }
+
+  /** Phase 16：对端 PLAYER_READY 是否已到（对称 ready，ResultScene 提示用） */
+  get opponentReady(): boolean {
+    return this.role === 'host' ? this.guestReady : this.hostReady;
   }
 
   // ---- Lobby -----------------------------------------------------------
@@ -198,13 +205,18 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
     if (!this.guardInbound(envelope, NetworkMessageType.PLAYER_READY, isPlayerReadyPayload)) {
       return;
     }
-    if (this.role !== 'host' || this.guestReady) {
-      return; // Guest 不消费；重复 Ready 幂等
+    if (this.started) {
+      return; // 对局进行中重复 Ready 幂等
     }
-    this.guestReady = true;
-    if (this.selfReady && !this.started) {
-      this.startGame();
+    if (this.role === 'host') {
+      this.guestReady = true;
+      if (this.selfReady) {
+        this.startGame();
+      }
+      return;
     }
+    // Guest 侧对称记录（Phase 16 Rematch：ResultScene 展示对方已准备）
+    this.hostReady = true;
   }
 
   private handleGameStart(envelope: NetworkEnvelope<unknown>): void {
@@ -410,6 +422,8 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
       rejectedCount: this.rejectedCount,
       lastHashMatch: this.guestChannel?.lastHashMatch ?? null,
       syncState: this.syncStateValue,
+      selfReady: this.selfReady,
+      started: this.started,
       recoveryCount: sync.recoveryCount,
       lastSyncReason: sync.lastSyncReason,
       localHash: sync.localHash,

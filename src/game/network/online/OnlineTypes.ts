@@ -338,6 +338,9 @@ export interface OnlineDebugInfo {
   /** Phase 15 desync 诊断（battle 期前为初始值；字段与 StateSyncDiagnostics 对齐） */
   readonly syncState?: OnlineSyncState;
   readonly recoveryCount?: number;
+  /** Phase 16 Rematch 握手诊断（Result 场景等待卡点定位用） */
+  readonly selfReady?: boolean;
+  readonly started?: boolean;
   readonly lastSyncReason?: string | null;
   readonly localHash?: string | null;
   readonly hostHash?: string | null;
@@ -362,6 +365,11 @@ export interface OnlineGameCoordinatorApi {
   enterLobby(handlers: OnlineLobbyHandlers): () => void;
   /** Lobby：发送 PLAYER_READY（Host 汇齐双 Ready 即构建并发送 GAME_START） */
   sendPlayerReady(): void;
+  /**
+   * 对端 PLAYER_READY 是否已到（Lobby / Result Rematch 等待提示用；
+   * Host 视角 = Guest Ready，Guest 视角 = Host Ready —— Phase 16 对称 ready）。
+   */
+  readonly opponentReady: boolean;
 
   /** Battle：注入系统依赖（必须在场景 create 早期、输入源接线前调用） */
   attach(deps: OnlineBattleDeps): void;

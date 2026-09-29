@@ -281,6 +281,12 @@ export class OnlineConnectionController {
     if (this.state !== waitState) {
       return; // 期间已被 fail / back 接管
     }
+    // connect 成功 = 通道已打开：总预算兜底职责终结（不清会让已连接的
+    // 会话在预算耗尽后被误判 timedOut —— 预算与验证窗口同税制后实测暴露）
+    if (this.connectTimer !== null) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
     this.setState(OnlineConnectionState.CONNECTED);
 
     // PING/PONG 验证：窗口内无 PONG → FAILED（connection unstable）。

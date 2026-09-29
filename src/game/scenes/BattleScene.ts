@@ -121,6 +121,8 @@ export class BattleScene extends Phaser.Scene {
   private syncLocked = false;
   /** Phase 15：SYNC_FAILED 终局（onSyncFailure 后禁重复处理） */
   private syncFailed = false;
+  /** Phase 16：联机对局已交接给 ResultScene（SHUTDOWN 不销毁 session） */
+  private handedToResult = false;
   /** 断线后的返回菜单按钮（懒创建） */
   private disconnectButton: MenuButton | null = null;
   /** COMMAND_REJECTED 轻量提示防刷屏 */
@@ -168,6 +170,7 @@ export class BattleScene extends Phaser.Scene {
     this.connectionLost = false;
     this.syncLocked = false;
     this.syncFailed = false;
+    this.handedToResult = false;
     this.disconnectButton = null;
     this.lastRejectedToastMs = 0;
   }
@@ -508,10 +511,18 @@ export class BattleScene extends Phaser.Scene {
     this.cameras.main.once(
       Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE,
       () => {
+        // Phase 16：联机对局把旧协调器交接给 ResultScene（其 dispose 归
+        // Result；session / transport 保留在 registry SessionManager，
+        // Rematch 复用同一 WebRTC 连接）。handedToResult 置位后
+        // SHUTDOWN 不销毁 session（见 onShutdown）。
+        this.handedToResult = this.online !== null;
         this.scene.start(ResultScene.KEY, {
           setup: this.setup,
           winnerId: this.state.winnerId,
           localPlayerId: this.online?.localPlayerId,
+          onlineCoordinator: this.handedToResult
+            ? (this.online as OnlineGameCoordinatorApi)
+            : undefined,
         } satisfies ResultSceneData);
       }
     );
@@ -900,13 +911,18 @@ export class BattleScene extends Phaser.Scene {
     // Phase 14：协调器与联机会话随对局结束彻底清理
     //（coordinator.dispose 尽力而为发 DISCONNECT；SessionManager 关
     // transport —— 对端经 onDisconnect 收到通知，gameOver 后被抑制）
-    if (this.online !== null) {
+    // Phase 16 例外：gameOver 转 ResultScene 的正常交接（handedToResult）
+    // —— 旧协调器已交接给 Result（其 dispose 归 Result），session /
+    // transport 保留供 Rematch 复用同一 WebRTC 连接。
+    if (this.online !== null && !this.handedToResult) {
       this.online.dispose();
       this.online = null;
     }
-    const sessionManager = this.registry.get(ONLINE_SESSION_MANAGER_KEY) as
-      | OnlineSessionManager
-      | undefined;
-    sessionManager?.disposeSession();
+    if (!this.handedToResult) {
+      const sessionManager = this.registry.get(ONLINE_SESSION_MANAGER_KEY) as
+        | OnlineSessionManager
+        | undefined;
+      sessionManager?.disposeSession();
+    }
   }
 }

@@ -3,13 +3,13 @@
 横版 2D 回合制弹道对战网页游戏。
 Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
-当前进度：**Phase 0 ～ Phase 15 完成**（见 `TASKS.md`）——含 **WebRTC P2P 联机对战**（Host Authoritative）+ **Desync 自动检测与状态恢复**（Turn Boundary 同步屏障 + 权威快照恢复，Phase 15 经 test-reviewer PASS 验收）；**真机 Mac ↔ iPhone 配对 + 完整对战实测跑通**（2026-09-29 真机修复轮，见 TASKS.md Phase 13 节）。
+当前进度：**Phase 0 ～ Phase 16 完成**（见 `TASKS.md`）——含 **WebRTC P2P 联机对战**（Host Authoritative）+ **Desync 自动检测与状态恢复**（Turn Boundary 同步屏障 + 权威快照恢复，Phase 15）+ **Online Rematch**（同一 WebRTC 连接重开新局：全新 gameSeed / GameState / TurnState，零新 wire 协议，Phase 16 经 test-reviewer PASS WITH ISSUES 验收、Medium×2 已修复复验）；**真机 Mac ↔ iPhone 配对 + 完整对战实测跑通**（2026-09-29 真机修复轮，见 TASKS.md Phase 13 节）。
 
 ## 技术栈
 
 - TypeScript (strict) + Vite
 - Phaser 4.x + Matter Physics
-- Vitest（475 单测）+ puppeteer-core E2E（123 项，Windows / macOS 双平台，双浏览器真实 WebRTC 对战 + Force Desync 恢复验证）
+- Vitest（481 单测）+ puppeteer-core E2E（130 项，Windows / macOS 双平台，双浏览器真实 WebRTC 对战 + Force Desync 恢复验证 + Rematch 重开局）
 - WebRTC RTCDataChannel P2P 联机（HOST AUTHORITATIVE，已落地；含 desync 防护）
 
 ## 开发
@@ -19,7 +19,7 @@ npm install --include=dev   # 本机 npm 全局 omit=dev，必须带 --include=d
 
 npm run dev        # 启动开发服务器
 npm run typecheck  # tsc --noEmit（strict）
-npm run test       # vitest run（475 项）
+npm run test       # vitest run（481 项）
 npm run build      # 类型检查 + 生产构建
 npm run preview    # 预览构建产物
 npm run e2e        # 全量 E2E（desktop / mobile / sp / online 配对 / online 对战）
@@ -30,7 +30,7 @@ npm run e2e        # 全量 E2E（desktop / mobile / sp / online 配对 / online
 
 - **Single Player**：P1 vs AI（三档难度：easy / normal / hard，seeded RNG，纯函数决策）
 - **Local 2 Player**：热座双人（共用键鼠 / 触屏，回合切换横幅提示）
-- **Online P2P**：手动配对（Host 生成连接码 ↔ 微信等渠道互发 ↔ Guest 应答），真实 WebRTC DataChannel 直连；**Host = P1 = 权威**，Guest 为意图客户端（本地仅做表现播放，HP / 伤害 / 回合切换一律以 Host 广播为准）。真机优化：Guest Response 码页面内展示（HTTP 下长按复制）、等待 Host 应用无时限、Host 侧 2 分钟连接/验证预算、COPY 按钮剪贴板双路径（clipboard API → execCommand 降级，跨平台可靠复制）。**Desync 防护（Phase 15）**：回合边界 stateHash 比对 → 偏差自动请求权威快照恢复（Host 永远权威）→ 对局继续；Turn Result ACK 同步屏障保证 Host 不超前 Guest；超时有限重试后安全终止
+- **Online P2P**：手动配对（Host 生成连接码 ↔ 微信等渠道互发 ↔ Guest 应答），真实 WebRTC DataChannel 直连；**Host = P1 = 权威**，Guest 为意图客户端（本地仅做表现播放，HP / 伤害 / 回合切换一律以 Host 广播为准）。真机优化：Guest Response 码页面内展示（HTTP 下长按复制）、等待 Host 应用无时限、Host 侧 2 分钟连接/验证预算、COPY 按钮剪贴板双路径（clipboard API → execCommand 降级，跨平台可靠复制）。**Desync 防护（Phase 15）**：回合边界 stateHash 比对 → 偏差自动请求权威快照恢复（Host 永远权威）→ 对局继续；Turn Result ACK 同步屏障保证 Host 不超前 Guest；超时有限重试后安全终止。**Online Rematch（Phase 16）**：对局结束双方点 REMATCH → 复用同一 WebRTC 连接重新开局（握手同 Lobby，Host 每局全新 matchId + seed），等待对方期间显示 WAITING / OPPONENT READY；对端 Result 期离开 → OPPONENT LEFT 提示回菜单
 
 ## 玩法要点
 
@@ -87,7 +87,7 @@ src/
     random/               # SeededRandom（Mulberry32）
     ui/                   # AimButton / AimRenderer / TurnBanner / PlayerHud / DebugOverlay
     utils/                # MathUtils
-tests/                    # Vitest 纯逻辑测试（40 文件 475 项，含双端 loopback 集成与
-                          #   Phase 15 desync 恢复全链）
+tests/                    # Vitest 纯逻辑测试（41 文件 481 项，含双端 loopback 集成、
+                          #   Phase 15 desync 恢复全链与 Phase 16 Rematch 握手）
 scripts/e2e.mjs           # E2E（desktop / mobile / sp / online 配对 / online 对战）
 ```
