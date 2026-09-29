@@ -1,3 +1,4 @@
+import { GAME_CONFIG } from '../../src/game/config/GameConfig';
 import { describe, expect, it } from 'vitest';
 import { createOnlineHarness, type OnlineHarness } from './onlineHarness';
 import { computeStateHash } from '../../src/game/network/online/AuthoritativeState';
@@ -47,7 +48,7 @@ describe('Online Loopback 双端完整对局（Phase 14 集成）', () => {
       turnId: 1,
       weaponId: 'normal',
       startX: 550,
-      startY: 912,
+      startY: GAME_CONFIG.world.groundTopY + GAME_CONFIG.player.launcher.offsetY,
       velocityX: 1600,
       velocityY: -1600,
       seed: 7,
@@ -140,7 +141,7 @@ describe('Online Loopback 双端完整对局（Phase 14 集成）', () => {
       turnId: 2,
       weaponId: 'normal',
       startX: 4450,
-      startY: 912,
+      startY: GAME_CONFIG.world.groundTopY + GAME_CONFIG.player.launcher.offsetY,
       velocityX: -1500,
       velocityY: -1500,
       seed: 7,

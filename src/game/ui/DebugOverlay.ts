@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { DEBUG_GAME, DEBUG_NETWORK } from '../config/DebugConfig';
+import { DEBUG_GAME, DEBUG_NETWORK, DEBUG_OVERLAY } from '../config/DebugConfig';
 import type { CameraMode } from '../camera/CameraMode';
 import type { ControlProfile } from '../platform/DeviceProfile';
 import type { Orientation } from '../platform/ViewportService';
@@ -46,7 +46,7 @@ export class DebugOverlay {
   private label: Phaser.GameObjects.Text | null = null;
 
   constructor(scene: Phaser.Scene) {
-    if (!DEBUG_GAME) {
+    if (!DEBUG_GAME || !DEBUG_OVERLAY) {
       return;
     }
     const ui = Math.max(1, window.devicePixelRatio || 1);

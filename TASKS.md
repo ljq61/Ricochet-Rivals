@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
-> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验；Phase 17 未启动）**
-> 验证：`npm run typecheck` / `npm run test`（480）/ `npm run build` / `npm run e2e`（130）全部通过。
+> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验）；Phase 17 进行中：首屏美术样片已接入，完整美术与 Juice 待续。**
+> 当前验证：`npm run typecheck` / `npm run test`（484）/ `npm run build` 已通过；Q 版改动后的 `npm run e2e` 首轮为 123 passed / 1 failed，失败点是 Guest Turn 4 相机回 `FREE_VIEW` 的转场等待超时。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
 ---
@@ -349,8 +349,8 @@ direction × speed
 ## 实现说明（2026-09-28）
 
 - 瞄准计算（aimMath.ts）与弹道预测（TrajectoryCalculator.ts）全部纯函数，零 Phaser 依赖，19 个单测覆盖
-- 发射原点 = 炮手脚底 + `player.launcher.offsetY`（-48，炮塔位置），Phase 5 炮弹从此出生
-- AimController：AIMING + 未发射 + 炮手 180px 内 pointerdown 开始；拖拽持续/释放走 window 监听（移出 Canvas 不丢）；低于最小力度松手 = 静默取消；Esc/右键取消瞄准时自动中止
+- 发射原点 = 炮手脚底 + `player.launcher.offsetY`（-64，炮塔位置），Phase 5 炮弹从此出生
+- AimController：AIMING + 未发射 + 炮手 220px 内 pointerdown 开始；拖拽持续/释放走 window 监听（移出 Canvas 不丢）；低于最小力度松手 = 静默取消；Esc/右键取消瞄准时自动中止
 - 轨迹预测与 Projectile 共用同一 GameConfig 重力（p = p₀ + v·t + ½g·t²），不写"假轨迹"
 - FireCommand 全参数（playerId/turnId/weaponId/start/velocity/seed）经 CommandBus → GameLogic → FireSystem；Phase 4 仅标记 hasFired 并锁移动，炮弹 Phase 5 生成
 - 发射后相机回 FREE_VIEW（Phase 6 起改为 PROJECTILE_FOLLOW）
@@ -420,7 +420,7 @@ Projectile ✅
 
 Ground ✅
 
-Player ✅（引信距离 100px 内不激活，避免发射瞬间自爆；激活后回落砸发射者同样爆炸）
+Player ✅（引信距离 180px 内不激活，避免扩大后的角色在发射瞬间自爆；激活后回落砸发射者同样爆炸）
 
 Obstacle（V0.1 无障碍物，FUTURE）
 
@@ -437,7 +437,7 @@ World Exit ✅（左右/穿地越界直接销毁）
 - Matter gravity 单位坑修复：Matter gravity 1 ≈ 1000 px/s²，GameConfig 的 px/s² 在 PhaserGameConfig 层 ÷1000 适配（Phase 0 遗留隐患）
 - 炮弹刚体 frictionAir=0：与 TrajectoryCalculator 预览同一抛体模型，预览即真实前 0.8s
 - FireCommand velocity（px/s）→ Matter setVelocity（px/step，÷60）适配在 Projectile 内
-- 玩家碰撞体（28×76 静态矩形）每帧从 PlayerState 同步；不参与移动物理
+- 玩家碰撞体（120×180 静态矩形）每帧从 PlayerState 同步；不参与移动物理
 - 占位爆炸动画（IMPACT→EXPLODING 280ms 扩散淡出）；正式爆炸/伤害/反馈为 Phase 7
 - Projectile 不修改任何 PlayerState（HP 由 Phase 7 DamageSystem 处理）
 
@@ -528,7 +528,7 @@ Touch Feedback、Desktop Keyboard Shortcuts。
       拖动速度按 1/zoom 换算；新增 panToX（快捷聚焦平移）。
 - [x] AimController 改走 InputRouter claimant：触屏起始判定
       aimStartRadiusScreenPx(150) 屏幕半径（÷zoom 换算世界距离），
-      桌面保持 startRadius(180) 世界距离；aimMath 纯函数未动。
+      桌面保持 startRadius(220) 世界距离；aimMath 纯函数未动。
 - [x] Aim Dead Zone：触屏拖动超过 14px 才激活（防误触），
       死区内松手 = 静默取消不发射；桌面死区 0 = 与 Phase 4 一致。
 - [x] AimButton：InputRouter zone 命中；触屏加大（300×72）并抬高到
@@ -659,7 +659,7 @@ DPR 3 的 iPhone 上位图被浏览器拉伸 3 倍 → 所有文字 / 图形发�
 - [x] 60 ～ 140：1 Damage（splashDamage）
 - [x] > 140：0 Damage
 - [x] Player：10 HP
-- [x] 距离 = 爆炸中心到玩家身体中心（x, y − collision.height/2）
+- [x] 距离 = 爆炸中心到玩家碰撞矩形最近边缘（矩形内部距离为 0；二头身体型同步）
 
 ## Feedback（Placeholder）
 
@@ -699,7 +699,7 @@ Projectile 不直接执行 `player.hp -= damage`：
 ## 测试（Phase 7 新增）
 
 - [x] DamageSystem：分层边界（60→2 / 60.0001→1 / 140→1 / 140.0001→0）、
-      身体中心几何、双玩家结果、阵亡免疫、hpAfter clamp、
+      玩家 AABB 最近边缘几何、双玩家结果、阵亡免疫、hpAfter clamp、
       apply 写入 GameState、gameOver + winner、自爆、同归于尽（12）
 - [x] ExplosionSystem：事件构建（半径/上下文透传）、结算链一致、
       击杀流程、远落点无伤（4）
@@ -879,7 +879,7 @@ AIMING 相机中心受世界边界 clamp（桌面 1280×800 可见宽 1728，
 P1 移动到 ~663 后炮塔屏幕位置 (490, 676) 恰好落进 AimButton
 zone（x∈[490,790], y∈[668,724]）→ pointerdown 被按钮抢走 =
 取消瞄准，拖拽永远无法发射。修复：Desktop 拖拽起点统一上移
-60 CSS px（与 Mobile 同一防御；仍在 180 世界 px 起始半径内，
+60 CSS px（与 Mobile 同一防御；仍在 220 世界 px 起始半径内，
 瞄准向量按「指针 − 炮塔」计算，起点偏移不影响力度/方向）。
 
 ### 已落地反馈 ②（2026-09-28）：移动端 UI 布局调整（仅触屏档位）
@@ -1812,6 +1812,23 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 # Phase 17 — Juice / Polish
 
 基础美术素材替换 Placeholder。
+
+首屏样片进度（2026-09-29；不代表完整 A 批次或 Phase 17 完成）：
+
+- [x] 风格规范、素材清单与接入顺序：`docs/ArtDesign/PHASE17_ART_DIRECTION.md`
+- [x] 内置 image_gen 生成海港远景、蓝红角色静态姿态、机械塔楼、NORMAL 弹体和爆炸视觉，共 6 张 PNG
+- [x] 主菜单背景与角色构图、金属按钮、战场背景 / 平台 / 塔楼、角色和血条面板接入
+- [x] 远景按比例放大至至少 1800 世界像素高，顶部延伸到 y=-720；5000 世界像素宽度只铺两片相邻镜像
+- [x] 修正标题拼写、手机横屏标题布局、角色脚底锚点；Debug Overlay 独立开关，保留 E2E 观测句柄
+- [x] 双方角色改为二头身 Q 版并放大到约 180 世界像素高；碰撞体 120×180、发射点 / 引信 / 瞄准起始范围同步调参
+- [x] NORMAL 弹体与单帧爆炸资源导入 `Projectile`，保留资源缺失时的 Graphics 回退
+- [x] 484 单测通过；构建含类型检查通过；桌面 / 手机模拟截图复查
+- [ ] Q 版改动后的全量 E2E 复跑：首轮 123/124，唯一失败为 Guest Turn 4 等待相机回 `FREE_VIEW` 的转场时序超时；需在稳定预览环境复跑
+- [x] Chrome 实际截图检查：桌面 1440×900 @1x、手机模拟 844×390 @2x；菜单进入本地对战正常
+- [ ] 样片用户视觉验收、真机验证、其余 A 批次素材与独立背景视差层
+
+资产来源、原始提示词、技术规格与局限：`docs/ArtDesign/FIRST_LOOK_ASSETS.md`。
+首轮保留静态角色移动起伏、现有爆炸与受击反馈；完整动画、音效和 hit stop 尚未制作。
 
 增加：
 

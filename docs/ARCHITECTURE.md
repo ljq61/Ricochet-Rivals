@@ -203,9 +203,9 @@ Phase 6.5 起，指针生命周期统一由 `InputRouter` 接管（§5.12）：
 - **炮弹 frictionAir = 0**：与 TrajectoryCalculator 的解析抛体一致，
   "预览即真实前 0.8 秒"成立。
 - **碰撞分类**：`collisionCategories.ts`（GROUND / PLAYER / PROJECTILE），
-  玩家刚体（28×76 静态矩形）每帧从 PlayerState 同步，只作为炮弹目标，
+  玩家刚体（120×180 静态矩形）每帧从 PlayerState 同步，只作为炮弹目标，
   不参与移动物理。
-- **引信机制**：炮弹出生点在炮手碰撞体内，飞离发射点 100px 前
+- **引信机制**：炮弹出生点在炮手碰撞体内，飞离发射点 180px 前
   collisionMask 只含 GROUND，之后激活 PLAYER（保持激活，
   回落砸中发射者同样爆炸）——见 `projectileRules.isProjectileArmed`。
 
@@ -270,7 +270,7 @@ FireSystem（规则）    校验 FIRE + hasFired=true
   预览即真实模型的前 0.8 秒（CODELY.md §13 禁止假轨迹）；
 - 拖拽事件统一走 InputRouter（AIM claimant，§5.12）：
   触屏起始判定 150 屏幕px + 14px 死区（防误触），
-  桌面保持 180 世界px 且死区 0（与 Phase 4 一致）；
+  桌面保持 220 世界px 且死区 0（与 Phase 4 一致）；
 - 力度不足（< 0.15）松手 = 静默取消，不产生命令；
 - 发射后：FireSystem 标记 hasFired → 移动即被 MovementSystem 拒绝
   （两系统通过 State 解耦），Phase 5 在同一 FIRE 路由上接 ProjectileSystem。
@@ -403,7 +403,7 @@ ProjectileSystem.onImpact(ProjectileImpact {x,y,ownerId,weaponId,turnId})
 要点：
 
 - **分层伤害**：≤60 → 2；60 < d ≤ 140 → 1；>140 → 0。
-  距离 = 爆炸中心到玩家**身体中心**（x, y − collision.height/2）；
+  距离 = 爆炸中心到玩家**碰撞矩形最近边缘**（矩形内部距离为 0）；
 - **阵亡与胜负**：apply 内 hp clamp ≥ 0 → isAlive；任一阵亡即
   gameOver + winnerId（同归于尽 → null）。Phase 8 TurnManager 消费该状态；
 - 已阵亡玩家免疫（damage 0，血量不变）；自爆（回落砸发射者）同样结算；

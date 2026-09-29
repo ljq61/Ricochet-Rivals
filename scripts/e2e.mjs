@@ -35,7 +35,7 @@ const BROWSER_CANDIDATES = [
 ];
 
 const GROUND_TOP_Y = 960;
-const LAUNCHER_OFFSET_Y = -48;
+const LAUNCHER_OFFSET_Y = -64;
 
 // ---- 微型断言工具 --------------------------------------------------------
 
@@ -176,7 +176,7 @@ function solveFortyFiveRelease(origin, d, targetWorldX) {
  * Space 瞄准 → 45° 求解反向拖拽 → 释放 → 等待 FireCommand 生效。
  * 拖拽起点上移 60 CSS px：炮手靠近视口左边界时相机中心被 clamp（864），
  * 炮塔屏幕位置可能与 AimButton zone 重叠 —— 起点偏移避开按钮，
- * 仍在 180 世界 px 起始半径内；瞄准向量按「指针 − 炮塔」计算，
+ * 仍在 220 世界 px 起始半径内；瞄准向量按「指针 − 炮塔」计算，
  * 起点偏移不影响力度 / 方向（与 Mobile 流程同一套防御）。
  */
 async function fireFortyFiveShot(page, viewportCssW, viewportCssH, targetWorldX) {

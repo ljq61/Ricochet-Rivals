@@ -22,7 +22,7 @@ function fire(playerId: 'P1' | 'P2', turnId = 1, overrides: Partial<FireCommand>
     turnId,
     weaponId: 'normal',
     startX: GAME_CONFIG.player.spawn.P1,
-    startY: GAME_CONFIG.world.groundTopY - 48,
+    startY: GAME_CONFIG.world.groundTopY + GAME_CONFIG.player.launcher.offsetY,
     velocityX: 1000,
     velocityY: -700,
     seed: 1,

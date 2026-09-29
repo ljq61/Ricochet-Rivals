@@ -1,3 +1,4 @@
+import { GAME_CONFIG } from '../../../src/game/config/GameConfig';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FireCommand } from '../../../src/game/commands/GameCommand';
 import { NetworkMessageType } from '../../../src/game/network/NetworkMessageType';
@@ -31,7 +32,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** P1 回合发射（harness FIRE 既有参数：startY=912 为 P1 炮塔） */
+/** P1 回合发射（harness FIRE 既有参数：startY 来自当前炮塔配置） */
 function hostFire(turnId: number): void {
   const fire: FireCommand = {
     type: 'FIRE',
@@ -39,7 +40,7 @@ function hostFire(turnId: number): void {
     turnId,
     weaponId: 'normal',
     startX: 550,
-    startY: 912,
+    startY: GAME_CONFIG.world.groundTopY + GAME_CONFIG.player.launcher.offsetY,
     velocityX: 1600,
     velocityY: -1600,
     seed: 7,
@@ -310,7 +311,7 @@ describe('Phase 15 — Desync 检测与快照恢复', () => {
       turnId: 2,
       weaponId: 'normal',
       startX: 4450,
-      startY: 912,
+      startY: GAME_CONFIG.world.groundTopY + GAME_CONFIG.player.launcher.offsetY,
       velocityX: -1500,
       velocityY: -1500,
       seed: 7,

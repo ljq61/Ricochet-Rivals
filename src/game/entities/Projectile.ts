@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { GAME_CONFIG } from '../config/GameConfig';
+import { ART } from '../config/ArtAssets';
 import { playerColor } from '../config/Palette';
 import type { FireCommand } from '../commands/GameCommand';
 import { COLLISION_CATEGORY } from '../physics/collisionCategories';
@@ -14,6 +15,7 @@ import type { TurnId } from '../state/ids';
 const MATTER_STEPS_PER_SECOND = 60;
 
 const PROJECTILE_LABEL_PREFIX = 'projectile:';
+const PROJECTILE_ART_SIZE = 64;
 
 /**
  * 投射物（Phase 5，V0.1 仅 NORMAL）。
@@ -21,7 +23,7 @@ const PROJECTILE_LABEL_PREFIX = 'projectile:';
  * 组成：
  * - state：ProjectileState（纯数据，契约结构，velocity 单位 px/s）
  * - body：Matter 圆形刚体（frictionAir 0，保证弹道与预览一致）
- * - visual：Graphics 占位视觉
+ * - visual：像素美术资源，缺失时回退 Graphics 占位视觉
  *
  * 状态机（CODELY.md §14）：
  *   spawn → flying →（碰撞/超时）→ impact → exploding → destroyed
@@ -37,7 +39,8 @@ export class Projectile {
 
   private readonly scene: Phaser.Scene;
   private readonly body: MatterJS.BodyType;
-  private readonly visual: Phaser.GameObjects.Graphics;
+  private readonly visual: Phaser.GameObjects.Image | Phaser.GameObjects.Graphics;
+  private readonly usesProjectileArt: boolean;
   private readonly spawnX: number;
   private readonly spawnY: number;
   private armed = false;
@@ -64,13 +67,22 @@ export class Projectile {
     const radius = GAME_CONFIG.projectile.radius;
     const color = playerColor(command.playerId);
 
-    // 视觉（占位：本体 + 白描边）
-    this.visual = scene.add.graphics().setDepth(500);
-    this.visual.fillStyle(color, 1);
-    this.visual.fillCircle(0, 0, radius);
-    this.visual.lineStyle(2, 0xffffff, 0.9);
-    this.visual.strokeCircle(0, 0, radius);
-    this.visual.setPosition(command.startX, command.startY);
+    // 视觉：优先使用 Phase 17 像素榴弹，资源缺失时保留原占位表现。
+    this.usesProjectileArt = scene.textures.exists(ART.projectile);
+    if (this.usesProjectileArt) {
+      this.visual = scene.add.image(command.startX, command.startY, ART.projectile)
+        .setOrigin(0.5)
+        .setDisplaySize(PROJECTILE_ART_SIZE, PROJECTILE_ART_SIZE)
+        .setDepth(500);
+    } else {
+      const fallback = scene.add.graphics().setDepth(500);
+      fallback.fillStyle(color, 1);
+      fallback.fillCircle(0, 0, radius);
+      fallback.lineStyle(2, 0xffffff, 0.9);
+      fallback.strokeCircle(0, 0, radius);
+      fallback.setPosition(command.startX, command.startY);
+      this.visual = fallback;
+    }
 
     // 物理刚体：无空气阻力，弹道与 TrajectoryCalculator 一致；
     // 引信未激活前只与地面碰撞（出生点在炮手碰撞体内）
@@ -106,7 +118,12 @@ export class Projectile {
       this.state.velocityY = this.body.velocity.y * MATTER_STEPS_PER_SECOND;
 
       this.visual.setPosition(this.state.x, this.state.y);
-      this.visual.rotation = this.body.angle;
+      if (this.usesProjectileArt) {
+        // 资源默认朝右；跟随速度方向旋转，左右飞行保持可读轮廓。
+        this.visual.setRotation(Math.atan2(this.state.velocityY, this.state.velocityX));
+      } else {
+        this.visual.rotation = this.body.angle;
+      }
 
       // 引信：离开发射点后激活玩家碰撞（激活后保持）
       if (!this.armed && isProjectileArmed(this.state, this.spawnX, this.spawnY, GAME_CONFIG.projectile.playerCollisionArmDistance)) {
@@ -153,30 +170,49 @@ export class Projectile {
     this.state.status = 'exploding';
     this.explodeElapsedMs = 0;
 
-    // 爆炸视觉：白色扩散圈 + 本体淡出
-    this.visual.clear();
-    const radius = GAME_CONFIG.projectile.radius;
-    this.visual.lineStyle(3, 0xffd24a, 0.95);
-    this.visual.strokeCircle(0, 0, radius + 10);
-    this.visual.fillStyle(0xffffff, 0.55);
-    this.visual.fillCircle(0, 0, radius + 6);
+    // 爆炸视觉：优先显示像素爆炸资源；缺失时回退原有范围圈。
+    if (this.usesProjectileArt) {
+      this.visual.setAlpha(0);
+    } else {
+      const fallback = this.visual as Phaser.GameObjects.Graphics;
+      const radius = GAME_CONFIG.projectile.radius;
+      fallback.clear();
+      fallback.lineStyle(3, 0xffd24a, 0.95);
+      fallback.strokeCircle(0, 0, radius + 10);
+      fallback.fillStyle(0xffffff, 0.55);
+      fallback.fillCircle(0, 0, radius + 6);
+    }
 
-    // 爆炸范围圈（Phase 7 反馈）：真实伤害半径（explosion.radius）的
-    // 提示环，扩散淡出后销毁 —— 与本体扩散动画相互独立
-    const ring = this.scene.add.graphics().setDepth(490);
-    ring.setPosition(this.state.x, this.state.y);
-    ring.lineStyle(4, 0xff5063, 0.55);
-    ring.strokeCircle(0, 0, GAME_CONFIG.explosion.radius);
-    ring.fillStyle(0xff5063, 0.08);
-    ring.fillCircle(0, 0, GAME_CONFIG.explosion.radius);
-    this.scene.tweens.add({
-      targets: ring,
-      alpha: 0,
-      scale: 1.35,
-      duration: GAME_CONFIG.projectile.explodeDurationMs * 2,
-      ease: 'Sine.easeOut',
-      onComplete: () => ring.destroy(),
-    });
+    if (this.scene.textures.exists(ART.explosion)) {
+      const burst = this.scene.add.image(this.state.x, this.state.y, ART.explosion)
+        .setOrigin(0.5)
+        .setDisplaySize(GAME_CONFIG.explosion.radius * 3, GAME_CONFIG.explosion.radius * 3)
+        .setDepth(510);
+      this.scene.tweens.add({
+        targets: burst,
+        alpha: 0,
+        scale: 1.25,
+        duration: GAME_CONFIG.projectile.explodeDurationMs * 2,
+        ease: 'Sine.easeOut',
+        onComplete: () => burst.destroy(),
+      });
+    } else {
+      // 爆炸范围圈（Phase 7 反馈）：真实伤害半径的提示环。
+      const ring = this.scene.add.graphics().setDepth(490);
+      ring.setPosition(this.state.x, this.state.y);
+      ring.lineStyle(4, 0xff5063, 0.55);
+      ring.strokeCircle(0, 0, GAME_CONFIG.explosion.radius);
+      ring.fillStyle(0xff5063, 0.08);
+      ring.fillCircle(0, 0, GAME_CONFIG.explosion.radius);
+      this.scene.tweens.add({
+        targets: ring,
+        alpha: 0,
+        scale: 1.35,
+        duration: GAME_CONFIG.projectile.explodeDurationMs * 2,
+        ease: 'Sine.easeOut',
+        onComplete: () => ring.destroy(),
+      });
+    }
   }
 
   /** 出界：直接销毁，不播放爆炸（CODELY.md §14） */

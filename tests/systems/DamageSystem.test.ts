@@ -11,7 +11,7 @@ import { PLAYER_IDS, type PlayerId } from '../../src/game/state/ids';
 /**
  * DamageSystem（Phase 7，CODELY.md §15）：
  * 分层伤害 ≤60 → 2 / ≤140 → 1 / >140 → 0；
- * 距离 = 爆炸中心到玩家身体中心；
+ * 距离 = 爆炸中心到玩家碰撞矩形的最近距离；
  * apply 更新 GameState（hp / isAlive / gameOver / winner）。
  */
 
@@ -72,26 +72,52 @@ describe('DamageSystem.calculate', () => {
     expect(p2.hpAfter).toBe(GAME_CONFIG.player.maxHp - directDamage);
   });
 
-  it('爆炸点在脚底正下方：距离 = 身高一半（38）→ 仍 2 伤害', () => {
+  it('爆炸点在脚底：距离 0 → 2 伤害', () => {
     const state = setupState();
     const explosion = explosionAt('P1', 0, BODY_CENTER_OFFSET); // 脚底
     const result = system.calculate(state, explosion);
     const p1 = result.players.find((p) => p.playerId === 'P1')!;
-    expect(p1.distance).toBeCloseTo(BODY_CENTER_OFFSET, 6);
+    expect(p1.distance).toBe(0);
     expect(p1.damage).toBe(directDamage);
   });
 
-  it('水平距离分层：50 → 2；100 → 1；200 → 0', () => {
+  it('身体边缘外水平距离分层：50 → 2；100 → 1；200 → 0', () => {
     const state = setupState();
     for (const [dx, expected] of [
       [50, directDamage],
       [100, splashDamage],
       [200, 0],
     ] as const) {
-      const result = system.calculate(state, explosionAt('P1', dx));
+      const result = system.calculate(state, explosionAt('P1', GAME_CONFIG.player.collision.width / 2 + dx));
       const p1 = result.players.find((p) => p.playerId === 'P1')!;
       expect(p1.damage, `dx=${dx}`).toBe(expected);
     }
+  });
+
+  it('大角色头顶炮弹接触点算直伤；越过溅射边缘不受伤', () => {
+    const state = setupState();
+    for (const [gap, damage] of [[16, 2], [60, 2], [60.01, 1], [140, 1], [140.01, 0]] as const) {
+      const event = explosionAt('P1', 0, -BODY_CENTER_OFFSET - gap);
+      const entry = system.calculate(state, event).players[0]!;
+      expect(entry.distance).toBeCloseTo(gap, 5);
+      expect(entry.damage).toBe(damage);
+    }
+  });
+
+  it('矩形角外使用欧氏距离，且移动后跟随玩家位置', () => {
+    const state = setupState();
+    state.players.P1.x += 100;
+    const event: ExplosionEvent = {
+      sourcePlayerId: 'P1',
+      weaponId: 'normal',
+      x: state.players.P1.x + GAME_CONFIG.player.collision.width / 2 + 36,
+      y: state.players.P1.y - GAME_CONFIG.player.collision.height - 48,
+      radius: GAME_CONFIG.explosion.radius,
+      turnId: 1,
+    };
+    const entry = system.calculate(state, event).players[0]!;
+    expect(entry.distance).toBeCloseTo(60, 6);
+    expect(entry.damage).toBe(2);
   });
 
   it('两个玩家都在结果中，远端玩家为 0 伤害', () => {

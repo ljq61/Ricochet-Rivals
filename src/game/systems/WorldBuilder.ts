@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { GAME_CONFIG } from '../config/GameConfig';
 import { PALETTE, playerColor } from '../config/Palette';
 import type { PlayerId } from '../state/ids';
+import { ART } from '../config/ArtAssets';
 
 /**
  * 静态占位世界构建器（Phase 1/2）。
@@ -17,16 +18,94 @@ const ALPHA = {
   basePlatform: 0.55,
 } as const;
 
+/**
+ * 背景每片至少放大到约 1.67 倍世界高度：底边仍贴地，顶部额外留出
+ * 720 世界像素给炮弹上升段。按当前 5000px 世界宽度会铺两片，
+ * 且始终保持原图宽高比。
+ */
+const HARBOR_BACKGROUND_MIN_HEIGHT = 1800;
+
 export class WorldBuilder {
   constructor(private readonly scene: Phaser.Scene) {}
 
   build(): void {
+    if (this.scene.textures.exists(ART.harbor)) {
+      this.buildHarbor();
+      return;
+    }
     this.buildBands();
     this.buildGround();
     this.buildMidfield();
     this.buildDistanceTicks();
     this.buildBase('P1');
     this.buildBase('P2');
+  }
+
+  /**
+   * 等比放大的相邻镜像背景，底边对齐世界底部，避免炮弹跟随到世界
+   * 顶部以上时露出空画布。当前 5000px 世界宽度只需要两片。
+   */
+  private buildHarbor(): void {
+    const { width, height, groundTopY: top } = GAME_CONFIG.world;
+    const source = this.scene.textures.get(ART.harbor).getSourceImage();
+    const backgroundHeight = Math.max(
+      HARBOR_BACKGROUND_MIN_HEIGHT,
+      (width / 2) * source.height / source.width,
+    );
+    const plateWidth = backgroundHeight * source.width / source.height;
+    const plateCount = Math.ceil(width / plateWidth);
+    for (let i = 0; i < plateCount; i++) {
+      this.scene.add.image(i * plateWidth, height, ART.harbor)
+        .setOrigin(0, 1)
+        .setDisplaySize(plateWidth, backgroundHeight)
+        .setFlipX(i % 2 === 1)
+        .setDepth(-100);
+    }
+    const g = this.scene.add.graphics().setDepth(-10);
+    g.fillStyle(0x151c22);
+    g.fillRect(0, top, width, height - top);
+    for (let x = 0; x < width; x += 120) {
+      g.fillStyle(0x38434b);
+      g.fillRect(x + 3, top + 14, 114, 34);
+      g.lineStyle(3, 0x0a1119);
+      g.strokeRect(x + 3, top + 14, 114, 34);
+      g.lineStyle(8, 0x53616b);
+      g.lineBetween(x + 10, top + 53, x + 105, height);
+      g.fillStyle(0xd5b879);
+      g.fillCircle(x + 12, top + 24, 3);
+      g.fillCircle(x + 105, top + 24, 3);
+    }
+    g.fillStyle(0xb49a65);
+    g.fillRect(0, top, width, 10);
+    g.fillStyle(0xffdfa0);
+    g.fillRect(0, top, width, 3);
+    for (const id of ['P1', 'P2'] as const) {
+      const left = id === 'P1';
+      const bounds = left ? GAME_CONFIG.player.leftBounds : GAME_CONFIG.player.rightBounds;
+      const color = playerColor(id);
+      const flagX = left ? bounds.minX + 40 : bounds.maxX - 40;
+      if (this.scene.textures.exists(ART.tower)) {
+        this.scene.add.image(left ? 140 : width - 140, top, ART.tower)
+          .setDisplaySize(520, 520).setOrigin(0.5, 0.966)
+          .setFlipX(!left).setDepth(-20);
+      }
+      g.fillStyle(color);
+      g.fillRect(bounds.minX, top + 5, bounds.maxX - bounds.minX, 5);
+      g.lineStyle(5, 0x151c22);
+      g.lineBetween(flagX, top, flagX, top - 220);
+      g.fillStyle(color);
+      g.fillRect(flagX, top - 220, 76, 48);
+      g.lineStyle(3, 0xffdfa0);
+      g.strokeRect(flagX, top - 220, 76, 48);
+      this.scene.add.text(flagX + 38, top - 196, id, {
+        fontFamily: 'monospace', fontSize: '24px', fontStyle: 'bold', color: '#ffffff',
+        stroke: '#151c22', strokeThickness: 4,
+      }).setOrigin(0.5).setDepth(-9);
+      for (const x of [bounds.minX, bounds.maxX]) {
+        g.lineStyle(3, color, 0.8);
+        g.lineBetween(x, top - 25, x, top);
+      }
+    }
   }
 
   /** 500px 间隔的淡色竖向刻度线，给超宽地图提供拖动反馈 */

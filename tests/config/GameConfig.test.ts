@@ -54,6 +54,15 @@ describe('GAME_CONFIG integrity', () => {
     expect(player.maxHp).toBeGreaterThan(0);
   });
 
+  it('炮弹引信启用前已离开扩大后的玩家碰撞体', () => {
+    const { radius, playerCollisionArmDistance } = GAME_CONFIG.projectile;
+    const farthestY = Math.max(-player.launcher.offsetY, player.collision.height + player.launcher.offsetY);
+    const safeDistance = Math.hypot(player.collision.width / 2 + radius, farthestY + radius);
+    expect(playerCollisionArmDistance).toBeGreaterThan(safeDistance);
+    expect(player.launcher.offsetY).toBeLessThan(-radius);
+    expect(player.launcher.offsetY).toBeGreaterThan(-player.collision.height);
+  });
+
   it('AI 参数保持有效区间（Phase 10：表现延迟有序、尽力弹仰角合理、三档误差单调递减）', () => {
     const { ai } = GAME_CONFIG;
     expect(ai.thinkDelayMs.min).toBeGreaterThan(0);

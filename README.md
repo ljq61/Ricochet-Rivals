@@ -5,11 +5,13 @@ Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
 当前进度：**Phase 0 ～ Phase 16 完成**（见 `TASKS.md`）——含 **WebRTC P2P 联机对战**（Host Authoritative）+ **Desync 自动检测与状态恢复**（Turn Boundary 同步屏障 + 权威快照恢复，Phase 15）+ **Online Rematch**（同一 WebRTC 连接重开新局：全新 gameSeed / GameState / TurnState，零新 wire 协议，Phase 16 经 test-reviewer PASS WITH ISSUES 验收、Medium×2 已修复复验）；**真机 Mac ↔ iPhone 配对 + 完整对战实测跑通**（2026-09-29 真机修复轮，见 TASKS.md Phase 13 节）。
 
+Phase 17 已开始：主菜单与战斗首屏美术样片已接入。包括海港远景、蓝红静态角色、机械塔楼、NORMAL 弹体、爆炸视觉与金属 UI；[素材与验证记录](docs/ArtDesign/FIRST_LOOK_ASSETS.md)。完整动画、音效和命中反馈仍待后续。
+
 ## 技术栈
 
 - TypeScript (strict) + Vite
 - Phaser 4.x + Matter Physics
-- Vitest（481 单测）+ puppeteer-core E2E（130 项，Windows / macOS 双平台，双浏览器真实 WebRTC 对战 + Force Desync 恢复验证 + Rematch 重开局）
+- Vitest（484 单测）+ puppeteer-core E2E（desktop / mobile / SP / online 配对与对战；基线 130 项，Q 版改动后的复跑记录见 `TASKS.md`）
 - WebRTC RTCDataChannel P2P 联机（HOST AUTHORITATIVE，已落地；含 desync 防护）
 
 ## 开发
@@ -19,7 +21,7 @@ npm install --include=dev   # 本机 npm 全局 omit=dev，必须带 --include=d
 
 npm run dev        # 启动开发服务器
 npm run typecheck  # tsc --noEmit（strict）
-npm run test       # vitest run（481 项）
+npm run test       # vitest run（484 项）
 npm run build      # 类型检查 + 生产构建
 npm run preview    # 预览构建产物
 npm run e2e        # 全量 E2E（desktop / mobile / sp / online 配对 / online 对战）
@@ -87,7 +89,7 @@ src/
     random/               # SeededRandom（Mulberry32）
     ui/                   # AimButton / AimRenderer / TurnBanner / PlayerHud / DebugOverlay
     utils/                # MathUtils
-tests/                    # Vitest 纯逻辑测试（41 文件 481 项，含双端 loopback 集成、
+tests/                    # Vitest 纯逻辑测试（41 文件 484 项，含双端 loopback 集成、
                           #   Phase 15 desync 恢复全链与 Phase 16 Rematch 握手）
 scripts/e2e.mjs           # E2E（desktop / mobile / sp / online 配对 / online 对战）
 ```

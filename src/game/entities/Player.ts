@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import { PALETTE, playerColor, toCssColor } from '../config/Palette';
 import type { PlayerState } from '../state/PlayerState';
+import { ART, PLAYER_ART_BOUNDS } from '../config/ArtAssets';
+import { GAME_CONFIG } from '../config/GameConfig';
 
 /**
  * 玩家视觉实体（渲染层）。
@@ -16,6 +18,7 @@ export class Player {
   private readonly scene: Phaser.Scene;
   private readonly container: Phaser.GameObjects.Container;
   private readonly barrel: Phaser.GameObjects.Graphics;
+  private readonly sprite: Phaser.GameObjects.Image | null;
 
   private facing: 1 | -1;
   private lastX: number;
@@ -28,22 +31,35 @@ export class Player {
     this.lastX = playerState.x;
 
     const color = playerColor(playerState.id);
+    const { width, height } = GAME_CONFIG.player.collision;
 
     // 身体 + 头（静态，绘制一次）
     const body = scene.add.graphics();
     body.fillStyle(color, 1);
-    body.fillRect(-14, -52, 28, 52);
+    body.fillRoundedRect(-width * 0.3, -height / 2, width * 0.6, height / 2, 12);
     body.fillStyle(PALETTE.head, 1);
-    body.fillCircle(0, -64, 12);
+    body.fillCircle(0, -height * 0.75, height / 4);
 
     // 炮管（随朝向重绘）
     this.barrel = scene.add.graphics();
+    const artBounds = PLAYER_ART_BOUNDS[playerState.id];
+    this.sprite = scene.textures.exists(ART[playerState.id])
+      ? scene.add.image(0, 0, ART[playerState.id])
+        .setScale(height / (artBounds.bottom - artBounds.top))
+        .setOrigin(0.5, artBounds.bottom / artBounds.sourceHeight)
+      : null;
+    if (this.sprite) {
+      body.setVisible(false);
+      this.barrel.setVisible(false);
+    }
 
     const label = scene.add
-      .text(0, -100, playerState.id, {
+      .text(0, -height - 24, playerState.id, {
         fontFamily: 'monospace',
         fontSize: '22px',
         color: toCssColor(color),
+        stroke: '#151c22',
+        strokeThickness: 4,
       })
       .setOrigin(0.5);
 
@@ -52,6 +68,7 @@ export class Player {
       this.barrel,
       label,
     ]);
+    if (this.sprite) this.container.addAt(this.sprite, 1);
 
     this.redrawBarrel();
   }
@@ -100,8 +117,10 @@ export class Player {
   }
 
   private redrawBarrel(): void {
+    this.sprite?.setFlipX(this.facing < 0);
     this.barrel.clear();
-    this.barrel.lineStyle(6, PALETTE.barrel, 1);
-    this.barrel.lineBetween(0, -40, this.facing * 30, -40);
+    this.barrel.lineStyle(10, PALETTE.barrel, 1);
+    const y = GAME_CONFIG.player.launcher.offsetY;
+    this.barrel.lineBetween(0, y, this.facing * 56, y);
   }
 }

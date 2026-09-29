@@ -144,17 +144,27 @@ export class MenuButton {
 
   private draw(): void {
     const ui = this.deps.viewport.current.uiScale;
-    const accent = this.deps.accent ?? 0x3f8cff;
-    const radius = 12 * ui;
+    const accent = this.deps.accent ?? 0xf3a725;
+    const radius = 4 * ui;
     const { width, height } = this;
 
     this.bg.clear();
-    this.bg.fillStyle(0x0d1420, 0.85);
+    this.bg.fillStyle(0x080d12, 1);
     this.bg.fillRoundedRect(-width / 2, -height / 2, width, height, radius);
     const active = this.pressed || this.hovered;
-    this.bg.fillStyle(accent, this.pressed ? 0.85 : active ? 0.95 : 0.7);
-    this.bg.fillRoundedRect(-width / 2, -height / 2, width, height, radius);
-    this.bg.lineStyle(2 * ui, accent, active ? 1 : 0.75);
+    this.bg.fillStyle(accent, this.pressed ? 0.65 : active ? 1 : 0.88);
+    this.bg.fillRoundedRect(-width / 2 + 4 * ui, -height / 2 + 4 * ui, width - 8 * ui, height - 8 * ui, radius);
+    this.bg.lineStyle(2 * ui, active ? 0xffe19a : 0xb4b6ad, 1);
     this.bg.strokeRoundedRect(-width / 2, -height / 2, width, height, radius);
+    this.bg.lineStyle(2 * ui, 0xffe19a, 0.55);
+    this.bg.lineBetween(-width / 2 + 10 * ui, -height / 2 + 7 * ui, width / 2 - 10 * ui, -height / 2 + 7 * ui);
+    for (const x of [-1, 1]) {
+      for (const y of [-1, 1]) {
+        this.bg.fillStyle(0x151c22);
+        this.bg.fillCircle(x * (width / 2 - 10 * ui), y * (height / 2 - 10 * ui), 2.5 * ui);
+      }
+    }
+    this.label.setColor(this.deps.accent === undefined ? '#151c22' : '#fff4db');
+    this.label.setFontStyle('bold');
   }
 }

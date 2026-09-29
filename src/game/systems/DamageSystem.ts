@@ -16,7 +16,8 @@ import { PLAYER_IDS } from '../state/ids';
  *   60 < d ≤ 140    → 1（splashDamage）
  *   d > 140         → 0
  *
- * 距离 = 爆炸中心到玩家身体中心（x, y − collision.height/2）。
+ * 距离 = 爆炸中心到玩家碰撞矩形的最近距离（内部为 0）。
+ * 大体型角色的头顶、侧身和脚底命中均按实际身体边缘结算。
  * 炮弹回落砸中发射者同样结算（Phase 5 引信语义）。
  * 纯逻辑、零 Phaser 依赖：calculate/apply 均可直接单测；
  * 未来 Shield / Poison / Critical / Armor 只在此层扩展。
@@ -68,14 +69,15 @@ export class ConcreteDamageSystem implements DamageSystem {
   }
 }
 
-/** 爆炸中心到玩家身体中心的欧氏距离 */
+/** 爆炸中心到与 Matter 相同的玩家 AABB 的最近距离。 */
 function distanceToPlayer(
   explosion: ExplosionEvent,
   player: PlayerState
 ): number {
-  // 玩家碰撞体中心：x 为脚底横坐标，y 为脚底 − 身高一半
-  const centerY = player.y - GAME_CONFIG.player.collision.height / 2;
-  return Math.hypot(explosion.x - player.x, explosion.y - centerY);
+  const { width, height } = GAME_CONFIG.player.collision;
+  const dx = Math.max(0, Math.abs(explosion.x - player.x) - width / 2);
+  const dy = Math.max(0, player.y - height - explosion.y, explosion.y - player.y);
+  return Math.hypot(dx, dy);
 }
 
 /**

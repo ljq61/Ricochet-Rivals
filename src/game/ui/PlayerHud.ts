@@ -104,7 +104,7 @@ export class PlayerHud {
       })
       .setOrigin(0, 0.5);
 
-    container.add([label, bar, hpText]);
+    container.add([bar, label, hpText]);
 
     return {
       container,
@@ -147,6 +147,10 @@ export class PlayerHud {
       player.maxHp > 0 ? Math.max(0, entry.shownHp) / player.maxHp : 0;
 
     entry.bar.clear();
+    entry.bar.fillStyle(0x151c22, 0.94);
+    entry.bar.fillRoundedRect(-8 * ui, -20 * ui, (HP_TEXT_X + 64) * ui, 40 * ui, 3 * ui);
+    entry.bar.lineStyle(2 * ui, 0xb4b6ad, 0.8);
+    entry.bar.strokeRoundedRect(-8 * ui, -20 * ui, (HP_TEXT_X + 64) * ui, 40 * ui, 3 * ui);
     entry.bar.fillStyle(0x0d1420, 0.8);
     entry.bar.fillRoundedRect(barX, -barHeight / 2, barWidth, barHeight, radius);
     if (ratio > 0) {

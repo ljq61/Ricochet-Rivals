@@ -42,13 +42,13 @@ export const GAME_CONFIG = {
 
     /** 发射原点：相对炮手脚底坐标的偏移（炮塔位置） */
     launcher: {
-      offsetY: -48,
+      offsetY: -64,
     },
 
-    /** 炮手碰撞体尺寸（占位视觉的物理表示：身宽 28，含头顶总高 76） */
+    /** 二头身角色实体判定；脚底锚点不变，双方共用。 */
     collision: {
-      width: 28,
-      height: 76,
+      width: 120,
+      height: 180,
     },
   },
 
@@ -103,7 +103,7 @@ export const GAME_CONFIG = {
     maxDragDistance: 180,
     minPower: 0.15,
     /** 发起瞄准的点击判定半径（炮手附近） */
-    startRadius: 180,
+    startRadius: 220,
     minLaunchSpeed: 550,
     /**
      * 2026-09-28 调参：1400 → 2400。
@@ -130,7 +130,7 @@ export const GAME_CONFIG = {
      * 不与玩家碰撞（否则发射瞬间自爆）。之后引信一直保持激活，
      * 抛物线回落砸中发射者同样爆炸。
      */
-    playerCollisionArmDistance: 100,
+    playerCollisionArmDistance: 180,
     /** IMPACT → EXPLODING 占位爆炸动画时长，随后 DESTROYED */
     explodeDurationMs: 280,
   },

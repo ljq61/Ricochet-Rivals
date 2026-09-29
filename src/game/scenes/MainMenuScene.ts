@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { PALETTE, toCssColor } from '../config/Palette';
+import { MenuArtwork } from '../ui/MenuArtwork';
 import { DEBUG_GAME } from '../config/DebugConfig';
 import { createMatchSetup } from '../match/MatchFactory';
 import type { MatchSetup } from '../match/MatchSetup';
@@ -38,6 +38,7 @@ export class MainMenuScene extends Phaser.Scene {
   private viewport!: ViewportService;
   private inputRouter!: InputRouter;
   private title!: Phaser.GameObjects.Text;
+  private artwork!: MenuArtwork;
   private modeButtons!: Record<
     'singlePlayer' | 'local2p' | 'online',
     MenuButton
@@ -58,11 +59,15 @@ export class MainMenuScene extends Phaser.Scene {
     // Phaser GameObject interactive 在本项目 Scale 配置下指针坐标失效）
     this.inputRouter = new InputRouter(this);
     this.cameras.main.fadeIn(220, 0, 0, 0);
+    this.artwork = new MenuArtwork(this);
 
     this.title = this.add
-      .text(0, 0, 'RICHOCHET RIVALS', {
-        fontFamily: 'monospace',
-        color: toCssColor(PALETTE.head),
+      .text(0, 0, 'RICOCHET RIVALS', {
+        fontFamily: 'Georgia, serif',
+        fontStyle: 'bold',
+        color: '#ffca59',
+        stroke: '#151c22',
+        strokeThickness: 6,
       })
       .setOrigin(0.5)
       .setDepth(900);
@@ -174,16 +179,19 @@ export class MainMenuScene extends Phaser.Scene {
   /** Safe Area + uiScale 布局（resize / 旋转 / DPR 变化自动重排） */
   private reposition(): void {
     const { width, height, safeArea, uiScale } = this.viewport.current;
+    this.artwork.layout(width, height, uiScale);
 
-    this.title.setFontSize(TITLE_FONT * uiScale);
+    this.title.setFontSize(Math.min(TITLE_FONT, width / uiScale / 14) * uiScale);
     this.title.setPosition(
       width / 2,
-      safeArea.top + EDGE_MARGIN * uiScale + TITLE_FONT * uiScale * 0.6
+      safeArea.top + (height / uiScale < 540 ? 28 : EDGE_MARGIN + TITLE_FONT * 0.6) * uiScale
     );
 
-    const gap = MODE_GAP * uiScale;
+    const gap = (height / uiScale < 540 ? 0 : MODE_GAP) * uiScale;
     const buttonH = 64 * uiScale;
-    const top = height * MODE_TOP_FRACTION + safeArea.top;
+    const top = height / uiScale < 540
+      ? safeArea.top + 108 * uiScale
+      : height * MODE_TOP_FRACTION + safeArea.top;
     const list = [
       this.modeButtons.singlePlayer,
       this.modeButtons.local2p,
