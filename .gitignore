@@ -5,9 +5,9 @@ coverage/
 .DS_Store
 Thumbs.db
 
-# Codely CLI local artifacts (chat backups & local env; agents/ stays tracked)
-.codely-cli/auto-saves/
-.codely-cli/settings.json
+# Local Codely configuration and artifacts
+.codely/
+.codely-cli/
 
 # E2E 视觉抽查截图（scripts/visual-check.mjs 产物，随跑随弃）
 scripts/visual-output/
