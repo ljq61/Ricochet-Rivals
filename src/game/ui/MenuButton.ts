@@ -3,11 +3,11 @@ import type { ViewportService } from '../platform/ViewportService';
 import type { InputRouter } from '../input/InputRouter';
 import { ART } from '../config/ArtAssets';
 
-/** 屏幕手感常量（CSS px，运行时 ×uiScale）；高度 64 ≥ 56 触控目标下限 */
+/** 屏幕手感常量（CSS px，运行时 ×uiScale）；默认高度 64；紧凑图标保持 48 触控目标下限 */
 const DEFAULT_WIDTH = 320;
 const DEFAULT_HEIGHT = 64;
 const FONT_SIZE = 22;
-/** 9-slice 底板启用阈值（CSS px）：小件（64 icon）切片退化，保持程序绘制 */
+/** 9-slice 底板启用阈值（CSS px）：小件（48px icon）切片退化，保持程序绘制 */
 const ART_MIN_WIDTH = 150;
 
 export interface MenuButtonDeps {
@@ -20,6 +20,9 @@ export interface MenuButtonDeps {
   label: string;
   accent?: number;
   baseWidth?: number;
+  baseHeight?: number;
+  fontSize?: number;
+  icon?: 'sound' | 'fullscreen';
   onTap: () => void;
 }
 
@@ -54,6 +57,7 @@ export class MenuButton {
   private width: number;
   private height: number;
   private hovered = false;
+  private iconActive = false;
   /** 可见性驱动 zone 命中：不可见 = 不可点（防止重叠布局下不可见按钮抢走点击） */
   private visible = true;
   private readonly unsubscribeViewport: () => void;
@@ -80,7 +84,7 @@ export class MenuButton {
       .setDepth(900);
 
     this.width = baseWidth;
-    this.height = DEFAULT_HEIGHT;
+    this.height = deps.baseHeight ?? DEFAULT_HEIGHT;
 
     deps.router.registerZone({
       id: deps.id,
@@ -112,6 +116,12 @@ export class MenuButton {
 
   setLabel(text: string): void {
     this.label.setText(text);
+    this.draw();
+  }
+
+  setIconActive(active: boolean): void {
+    this.iconActive = active;
+    this.draw();
   }
 
   /** 当前命中区中心（物理像素，场景布局后有效；E2E ÷uiScale 得 CSS 坐标） */
@@ -151,8 +161,8 @@ export class MenuButton {
   private applyScale(): void {
     const ui = this.deps.viewport.current.uiScale;
     this.width = (this.deps.baseWidth ?? DEFAULT_WIDTH) * ui;
-    this.height = DEFAULT_HEIGHT * ui;
-    this.label.setFontSize(FONT_SIZE * ui);
+    this.height = (this.deps.baseHeight ?? DEFAULT_HEIGHT) * ui;
+    this.label.setFontSize((this.deps.fontSize ?? FONT_SIZE) * ui);
     if (this.art !== null) {
       // 生成底板：等比铺满命中区（素材自带透明边距 → 可见药丸 ~70% 高）
       this.art.setDisplaySize(this.width, this.height);
@@ -191,5 +201,37 @@ export class MenuButton {
     }
     this.label.setColor(this.deps.accent === undefined ? '#151c22' : '#fff4db');
     this.label.setFontStyle('bold');
+    if (this.deps.icon) {
+      this.label.setVisible(false);
+      this.drawIcon(ui);
+    }
+  }
+
+  /** Code-native pictograms stay crisp at every DPR; state is never encoded only by color. */
+  private drawIcon(ui: number): void {
+    const g = this.bg;
+    g.lineStyle(2.5 * ui, 0xffedbd, 1);
+    if (this.deps.icon === 'sound') {
+      g.fillStyle(0xffedbd);
+      g.fillRect(-11 * ui, -4 * ui, 6 * ui, 8 * ui);
+      g.fillTriangle(-6 * ui, -4 * ui, 2 * ui, -10 * ui, 2 * ui, 10 * ui);
+      g.fillTriangle(-6 * ui, -4 * ui, -6 * ui, 4 * ui, 2 * ui, 10 * ui);
+      if (this.iconActive) {
+        for (const radius of [7, 12]) {
+          g.beginPath().arc(2 * ui, 0, radius * ui, -0.85, 0.85).strokePath();
+        }
+      } else {
+        g.lineStyle(3 * ui, 0xf47b65).lineBetween(-12 * ui, 12 * ui, 13 * ui, -12 * ui);
+      }
+    } else {
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          const corner = this.iconActive ? 5 : 11;
+          const end = this.iconActive ? 12 : 4;
+          g.lineBetween(sx * corner * ui, sy * corner * ui, sx * end * ui, sy * corner * ui);
+          g.lineBetween(sx * corner * ui, sy * corner * ui, sx * corner * ui, sy * end * ui);
+        }
+      }
+    }
   }
 }

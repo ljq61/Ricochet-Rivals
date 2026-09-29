@@ -12,10 +12,12 @@ import { BattleScene } from './BattleScene';
 import { OnlineConnectionScene } from './OnlineConnectionScene';
 
 const TITLE_FONT = 44;
-const MODE_GAP = 20;
-const MODE_TOP_FRACTION = 0.32;
+const MODE_GAP = 10;
+const MODE_TOP_FRACTION = 0.46;
 const EDGE_MARGIN = 24;
-const SMALL_BUTTON_WIDTH = 220;
+const ICON_SIZE = 48;
+const MODE_BUTTON_WIDTH = 244;
+const MODE_BUTTON_HEIGHT = 52;
 
 /**
  * 主菜单（Phase 11）：正式游戏入口。
@@ -26,8 +28,8 @@ const SMALL_BUTTON_WIDTH = 220;
  *
  * 平台（CODELY.md §25）：屏幕空间布局（相机 zoom 1，物理像素坐标），
  * uiScale 控制尺寸手感，Safe Area 避让刘海 / 圆角 / 手势条；
- * 按钮 hit target 64 CSS px ≥ 56 下限，触屏靠 pressed 状态、不依赖 hover。
- * 竖屏：全局 OrientationGate DOM 覆盖层自然拦截（菜单可见但被盖住）。
+ * 模式按钮高 52 CSS px，工具图标 48 CSS px，触屏靠 pressed 状态、不依赖 hover。
+ * 竖屏：菜单允许显示；OrientationGate 仅在战斗场景拦截。
  *
  * Sound / Fullscreen：Sound 经 UserSettings（localStorage 持久化，失败兜底）；
  * Fullscreen feature-detect，不支持则隐藏；请求来自用户操作，
@@ -89,6 +91,9 @@ export class MainMenuScene extends Phaser.Scene {
         id: 'menu-single-player',
         viewport: this.viewport,
         label: 'SINGLE PLAYER',
+        baseWidth: MODE_BUTTON_WIDTH,
+        baseHeight: MODE_BUTTON_HEIGHT,
+        fontSize: 18,
         onTap: () => this.startBattle(createMatchSetup('single_player')),
       }),
       local2p: new MenuButton(this, {
@@ -96,6 +101,9 @@ export class MainMenuScene extends Phaser.Scene {
         id: 'menu-local-2p',
         viewport: this.viewport,
         label: 'LOCAL 2 PLAYER',
+        baseWidth: MODE_BUTTON_WIDTH,
+        baseHeight: MODE_BUTTON_HEIGHT,
+        fontSize: 18,
         onTap: () => this.startBattle(createMatchSetup('local_2p')),
       }),
       online: new MenuButton(this, {
@@ -103,6 +111,9 @@ export class MainMenuScene extends Phaser.Scene {
         id: 'menu-online',
         viewport: this.viewport,
         label: 'ONLINE',
+        baseWidth: MODE_BUTTON_WIDTH,
+        baseHeight: MODE_BUTTON_HEIGHT,
+        fontSize: 18,
         accent: 0x8fa3c7,
         onTap: () => this.transitionTo(OnlineConnectionScene.KEY),
       }),
@@ -113,13 +124,18 @@ export class MainMenuScene extends Phaser.Scene {
       id: 'menu-sound',
       viewport: this.viewport,
       label: this.soundLabel(),
-      baseWidth: SMALL_BUTTON_WIDTH,
+      baseWidth: ICON_SIZE,
+      baseHeight: ICON_SIZE,
+      icon: 'sound',
       accent: 0x56698a,
       onTap: () => {
         toggleSound();
         this.soundButton.setLabel(this.soundLabel());
+        this.soundButton.setIconActive(getUserSettings().soundEnabled);
       },
     });
+
+    this.soundButton.setIconActive(getUserSettings().soundEnabled);
 
     if (document.fullscreenEnabled) {
       this.fullscreenButton = new MenuButton(this, {
@@ -127,7 +143,9 @@ export class MainMenuScene extends Phaser.Scene {
         id: 'menu-fullscreen',
         viewport: this.viewport,
         label: this.fullscreenLabel(),
-        baseWidth: SMALL_BUTTON_WIDTH,
+        baseWidth: ICON_SIZE,
+        baseHeight: ICON_SIZE,
+        icon: 'fullscreen',
         accent: 0x56698a,
         onTap: () => {
           void this.toggleFullscreen();
@@ -135,6 +153,8 @@ export class MainMenuScene extends Phaser.Scene {
       });
     }
 
+    document.addEventListener('fullscreenchange', this.syncFullscreenIcon);
+    this.syncFullscreenIcon();
     this.reposition();
     this.viewport.onChange(() => this.reposition());
     this.installDebugHandles();
@@ -172,6 +192,11 @@ export class MainMenuScene extends Phaser.Scene {
     return document.fullscreenElement ? 'EXIT FULLSCREEN' : 'FULLSCREEN';
   }
 
+  private readonly syncFullscreenIcon = (): void => {
+    this.fullscreenButton?.setLabel(this.fullscreenLabel());
+    this.fullscreenButton?.setIconActive(Boolean(document.fullscreenElement));
+  };
+
   private async toggleFullscreen(): Promise<void> {
     try {
       if (document.fullscreenElement) {
@@ -195,9 +220,9 @@ export class MainMenuScene extends Phaser.Scene {
     const titleY =
       safeArea.top + (height / uiScale < 540 ? 28 : EDGE_MARGIN + TITLE_FONT * 0.6) * uiScale;
     if (this.title instanceof Phaser.GameObjects.Image) {
-      // Logo：宽 ≤ 视口 62%，等比；窄屏再随宽收
+      // Logo：宽 ≤ 视口 64%，等比；窄屏再随宽收
       const short = height / uiScale < 540;
-      const logoCssWidth = Math.min(short ? 210 : 500, (width / uiScale) * 0.62);
+      const logoCssWidth = Math.min(short ? 340 : 680, (width / uiScale) * 0.64);
       const source = this.textures.get(ART.logo).getSourceImage();
       this.title
         .setDisplaySize(logoCssWidth * uiScale, (logoCssWidth * source.height / source.width) * uiScale)
@@ -207,10 +232,10 @@ export class MainMenuScene extends Phaser.Scene {
       this.title.setPosition(width / 2, titleY);
     }
 
-    const gap = (height / uiScale < 540 ? 0 : MODE_GAP) * uiScale;
-    const buttonH = 64 * uiScale;
+    const gap = MODE_GAP * uiScale;
+    const buttonH = MODE_BUTTON_HEIGHT * uiScale;
     const top = height / uiScale < 540
-      ? safeArea.top + 108 * uiScale
+      ? safeArea.top + Math.max(160, height / uiScale * 0.43) * uiScale
       : height * MODE_TOP_FRACTION + safeArea.top;
     const list = [
       this.modeButtons.singlePlayer,
@@ -221,19 +246,10 @@ export class MainMenuScene extends Phaser.Scene {
       list[i]?.setPosition(width / 2, top + (buttonH + gap) * i);
     }
 
-    const bottom =
-      height - safeArea.bottom - EDGE_MARGIN * uiScale - buttonH / 2;
-    this.soundButton.setPosition(
-      safeArea.left + EDGE_MARGIN * uiScale + (SMALL_BUTTON_WIDTH / 2) * uiScale,
-      bottom
-    );
-    this.fullscreenButton?.setPosition(
-      width -
-        safeArea.right -
-        EDGE_MARGIN * uiScale -
-        (SMALL_BUTTON_WIDTH / 2) * uiScale,
-      bottom
-    );
+    const bottom = height - safeArea.bottom - 14 * uiScale - ICON_SIZE * uiScale / 2;
+    const right = width - safeArea.right - 14 * uiScale - ICON_SIZE * uiScale / 2;
+    this.fullscreenButton?.setPosition(right, bottom);
+    this.soundButton.setPosition(right - (this.fullscreenButton ? ICON_SIZE + 10 : 0) * uiScale, bottom);
   }
 
   // ---- E2E / 调试 ---------------------------------------------------------
@@ -277,6 +293,7 @@ export class MainMenuScene extends Phaser.Scene {
   }
 
   private onShutdown(): void {
+    document.removeEventListener('fullscreenchange', this.syncFullscreenIcon);
     this.viewport.destroy();
     this.inputRouter.destroy();
   }

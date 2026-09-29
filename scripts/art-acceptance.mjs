@@ -125,6 +125,22 @@ async function inspect(browser, mobile) {
   await pause(300);
   const prefix = mobile ? 'mobile' : 'desktop';
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-menu.png` });
+  const menu = await dbg(page);
+  if (menu.buttons.singlePlayer.width !== 244 || menu.buttons.sound.width !== 48) {
+    throw new Error('Expected compact mode buttons and 48px utility icons');
+  }
+  const clickMenu = mobile ? tapMenuButton : clickMenuButton;
+  await clickMenu(page, 'sound');
+  if ((await dbg(page)).soundEnabled === menu.soundEnabled) throw new Error('Sound icon did not toggle');
+  await clickMenu(page, 'sound');
+  if ((await dbg(page)).soundEnabled !== menu.soundEnabled) throw new Error('Sound icon did not restore');
+  if (!mobile && menu.buttons.fullscreen) {
+    await clickMenu(page, 'fullscreen');
+    await waitFor(() => page.evaluate(() => Boolean(document.fullscreenElement)), 3000, 'fullscreen icon enters');
+    await clickMenu(page, 'fullscreen');
+    await waitFor(() => page.evaluate(() => !document.fullscreenElement), 3000, 'fullscreen icon exits');
+  }
+
   await (mobile ? tapMenuButton : clickMenuButton)(page, 'local2p');
   await waitForScene(page, 'BattleScene');
   await waitFor(async () => (await dbg(page)).phase === 'ACTION', 10000, 'ACTION');

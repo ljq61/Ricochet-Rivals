@@ -23,8 +23,6 @@ export const ART = {
   buttonSteel: 'art-button-steel',
   /** 基地受损轮：火焰 16 帧循环（4×4 sheet，BootScene 运行时切帧） */
   baseFire: 'art-base-fire',
-  /** 基地水线轮：静态前景水面条带（与场景同宽镜向循环，压住基地浮空部分） */
-  foregroundWater: 'art-foreground-water',
   /** Phase 17 玩法特性：中央章鱼触手 16 帧待机循环（任一方 HP ≤ 4 升起） */
   octopus: 'art-octopus',
 } as const;
@@ -32,7 +30,7 @@ export const ART = {
 export const ART_FILES = [
   [ART.harbor, 'harbor.png'],
   [ART.aimControls, 'aim-controls.png'],
-  [ART.platform, 'dock-platform.png'],
+  [ART.platform, 'dock-platform-tall.png'],
   [ART.portraitFrame, 'portrait-frame.png'],
   [ART.smoke, 'smoke-puff.png'],
   [ART.tower, 'harbor-tower.png'],
@@ -48,9 +46,11 @@ export const ART_FILES = [
   [ART.buttonGold, 'button-gold.png'],
   [ART.buttonSteel, 'button-steel.png'],
   [ART.baseFire, 'base-fire.png'],
-  [ART.foregroundWater, 'water-strip.png'],
   [ART.octopus, 'octopus.png'],
 ] as const;
+
+/** Long-piling dock, measured alpha bounds; world and menu share the same aspect ratio. */
+export const DOCK_ART_FRAME = { x: 17, y: 65, width: 1739, height: 759 } as const;
 
 /**
  * 精灵序列 sheet 网格（4×4 = 16 帧循环动画；帧尺寸 = 源尺寸 ÷ 网格，

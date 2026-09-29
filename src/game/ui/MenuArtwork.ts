@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { ART, PLAYER_ART_BOUNDS } from '../config/ArtAssets';
+import { ART, PLAYER_ART_BOUNDS, DOCK_ART_FRAME } from '../config/ArtAssets';
 import type { PlayerId } from '../state/ids';
 
 /**
@@ -48,12 +48,12 @@ export class MenuArtwork {
       const bounds = PLAYER_ART_BOUNDS[i === 0 ? 'P1' : 'P2'];
       const size = Math.min(height * 0.52, width * 0.25);
       const x = width * (i === 0 ? 0.18 : 0.82);
-      const feetY = Math.min(height * 0.88, height - 92 * ui);
+      const feetY = height * (height / ui < 540 ? 0.84 : 0.87);
       sprite.setScale(size / (bounds.bottom - bounds.top))
         .setOrigin(0.5, bounds.bottom / bounds.sourceHeight)
         .setPosition(x, feetY).setVisible(visible);
       const dockW = width * 0.33;
-      this.docks[i]?.setPosition(x, feetY).setDisplaySize(dockW, dockW * 241 / 2128).setVisible(visible);
+      this.docks[i]?.setPosition(x, feetY).setDisplaySize(dockW, dockW * DOCK_ART_FRAME.height / DOCK_ART_FRAME.width).setVisible(visible);
     }
   }
 }
