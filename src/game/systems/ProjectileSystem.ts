@@ -31,7 +31,7 @@ export class ProjectileSystem {
   private readonly scene: Phaser.Scene;
   private readonly events = new Phaser.Events.EventEmitter();
   private readonly projectiles: Projectile[] = [];
-  private readonly groundBody: MatterJS.BodyType;
+  private readonly groundBodies: MatterJS.BodyType[];
   private readonly playerBodies: Record<PlayerId, MatterJS.BodyType>;
   private nextId = 1;
 
@@ -39,21 +39,15 @@ export class ProjectileSystem {
     this.scene = scene;
 
     // 地面静态刚体（Projectile 的碰撞目标；视觉地面由 WorldBuilder 绘制）
-    const { width, height, groundTopY } = GAME_CONFIG.world;
+    const { height, groundTopY, platformOverhang } = GAME_CONFIG.world;
     const groundHeight = height - groundTopY;
-    this.groundBody = scene.matter.add.rectangle(
-      width / 2,
-      groundTopY + groundHeight / 2,
-      width,
-      groundHeight,
-      {
-        isStatic: true,
-        label: GROUND_LABEL,
-        collisionFilter: {
-          category: COLLISION_CATEGORY.GROUND,
-          mask: COLLISION_CATEGORY.PROJECTILE,
-        },
-      }
+    this.groundBodies = [GAME_CONFIG.player.leftBounds, GAME_CONFIG.player.rightBounds].map(
+      (bounds) => scene.matter.add.rectangle(
+        (bounds.minX + bounds.maxX) / 2, groundTopY + groundHeight / 2,
+        bounds.maxX - bounds.minX + platformOverhang * 2, groundHeight,
+        { isStatic: true, label: GROUND_LABEL,
+          collisionFilter: { category: COLLISION_CATEGORY.GROUND, mask: COLLISION_CATEGORY.PROJECTILE } },
+      ),
     );
 
     // 玩家静态刚体（仅作为炮弹目标；位置每帧由 State 同步）
@@ -157,7 +151,7 @@ export class ProjectileSystem {
     const world = this.scene.matter?.world;
     if (world) {
       world.off('collisionstart', this.onCollisionStart);
-      world.remove(this.groundBody);
+      for (const body of this.groundBodies) world.remove(body);
       for (const playerId of PLAYER_IDS) {
         world.remove(this.playerBodies[playerId]);
       }

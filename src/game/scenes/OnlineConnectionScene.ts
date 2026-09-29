@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { MenuArtwork } from '../ui/MenuArtwork';
 import { DEBUG_GAME } from '../config/DebugConfig';
 import { PALETTE, toCssColor } from '../config/Palette';
 import { InputRouter } from '../input/InputRouter';
@@ -54,6 +55,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
   static readonly KEY = 'OnlineConnectionScene';
 
   private viewport!: ViewportService;
+  private artwork!: MenuArtwork;
   private inputRouter!: InputRouter;
   private controller!: OnlineConnectionController;
   /** Phase 14：game.registry 注入的跨 Scene 会话持有者（main.ts 组合根） */
@@ -107,6 +109,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.viewport = new ViewportService(this, { worldCameraZoom: false });
     this.inputRouter = new InputRouter(this);
     this.cameras.main.fadeIn(220, 0, 0, 0);
+    this.artwork = new MenuArtwork(this, true);
 
     this.controller = new OnlineConnectionController({
       matchId: 'online-manual-pairing',
@@ -602,6 +605,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
   // ---- 布局 ---------------------------------------------------------------
 
   private reposition(): void {
+    this.artwork.layout(this.viewport.current.width, this.viewport.current.height, this.viewport.current.uiScale);
     const { width, height, safeArea, uiScale } = this.viewport.current;
     // Phase 17 修复轮：左上角返回 icon 让出顶部带 —— 标题 / 文案整体下移
     // （icon 底沿 88*ui + 间隙 16*ui = 104*ui 起为标题区）

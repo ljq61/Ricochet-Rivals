@@ -25,8 +25,8 @@ export interface AimButtonDeps {
  *   setInteractive —— 一次手势生命周期只有一个 Owner
  * - AIMING 时点击 = 取消瞄准（触屏没有 Esc / 右键，按钮即取消入口）
  * - 真机反馈轮（Phase 17）：两态金属皮肤 —— READY 金（可瞄准）/
- *   AIMING 红（瞄准中）；触屏用生成图标（art-aim-ready 金准星 /
- *   art-aim-active 红热准星 + 中心上膛炮弹 —— 激活态加呼吸脉冲，
+ *   AIMING 红（瞄准中）；触屏用生成图标（art-aim-controls 金准星 /
+ *   红色回转箭头 —— 激活态加呼吸脉冲，
  *   素材缺失回退程序绘制）
  * - 跟随 ViewportService 变化重定位（resize / 旋转 / DPR 变化）
  *
@@ -46,6 +46,8 @@ export class AimButton {
   private width: number;
   private height: number;
   private hovered = false;
+  private screenX = 0;
+  private screenY = 0;
   /** Phase 14：本地回合外（对手回合）隐藏并失活 zone */
   private interactable = true;
   private readonly unsubscribeViewport: () => void;
@@ -65,10 +67,10 @@ export class AimButton {
       })
       .setOrigin(0.5);
 
-    // 两态生成图标（触屏档位专用；BootScene 预加载，缺失回退 Graphics）
+    // 两态生成图标（桌面与触屏共用；BootScene 预加载，缺失回退 Graphics）
     this.icon =
-      deps.isTouchProfile && scene.textures.exists(ART.aimReady)
-        ? scene.add.image(0, 0, ART.aimReady)
+      scene.textures.exists(ART.aimControls)
+        ? scene.add.image(0, 0, ART.aimControls, 'ready')
         : null;
 
     this.container = scene.add
@@ -135,6 +137,9 @@ export class AimButton {
       aiming ? '取消瞄准 · Esc / 右键' : '回到炮手 / 瞄准 [Space]'
     );
     this.label.setColor(aiming ? '#fff4db' : '#151c22');
+    this.label.setX(20 * ui);
+    this.icon?.setTexture(ART.aimControls, aiming ? 'cancel' : 'ready')
+      .setPosition(-width / 2 + 30 * ui, 0).setDisplaySize(46 * ui, 46 * ui);
     this.label.setFontStyle('bold');
 
     const radius = 4 * ui;
@@ -176,17 +181,18 @@ export class AimButton {
   /**
    * 触屏态：生成图标两态（真机反馈轮）——
    * READY = 金色准星金属盘（点击发起瞄准）；
-   * AIMING = 红热准星 + 中心上膛炮弹 + 呼吸脉冲（点击取消）。
+   * AIMING = 红色取消箭头 + 呼吸脉冲（点击取消）。
    * 图标缺失时回退程序绘制（金属盘 + 准星，无斜杠禁止语义）。
    */
   private drawTouchIcon(aiming: boolean, inFlow: boolean): void {
     const alpha = inFlow || aiming ? 1 : 0.55;
 
     if (this.icon !== null) {
-      this.label.setText('');
+      this.label.setText(aiming ? '取消' : '瞄准').setFontSize(12 * this.deps.viewport.current.uiScale)
+        .setPosition(0, this.height / 2 + 10 * this.deps.viewport.current.uiScale)
+        .setStroke('#151c22', 3 * this.deps.viewport.current.uiScale);
       this.bg.clear();
-      this.icon.setTexture(aiming ? ART.aimActive : ART.aimReady);
-      this.icon.setAlpha(1);
+      this.icon.setTexture(ART.aimControls, aiming ? 'cancel' : 'ready');
       this.container.setAlpha(alpha);
       if (aiming) {
         this.startPulse();
@@ -266,10 +272,20 @@ export class AimButton {
 
   private contains(x: number, y: number): boolean {
     return (
-      x >= this.container.x - this.width / 2 &&
-      x <= this.container.x + this.width / 2 &&
-      y >= this.container.y - this.height / 2 &&
-      y <= this.container.y + this.height / 2
+      x >= this.screenX - this.width / 2 &&
+      x <= this.screenX + this.width / 2 &&
+      y >= this.screenY - this.height / 2 &&
+      y <= this.screenY + this.height / 2
+    );
+  }
+
+  private placeOnScreen(x: number, y: number): void {
+    this.screenX = x;
+    this.screenY = y;
+    const { width, height, zoom } = this.deps.viewport.current;
+    this.container.setScale(1 / zoom).setPosition(
+      width / 2 + (x - width / 2) / zoom,
+      height / 2 + (y - height / 2) / zoom,
     );
   }
 
@@ -283,19 +299,16 @@ export class AimButton {
       this.height = TOUCH_ICON_SIZE * uiScale;
       this.icon?.setDisplaySize(this.width, this.height);
       const margin = TOUCH_RIGHT_MARGIN * uiScale + safeArea.right;
-      this.container.setPosition(
-        width - margin - this.width / 2,
-        height / 2
-      );
+      this.placeOnScreen(width - margin - this.width / 2, height / 2);
       return;
     }
 
     this.width = DESKTOP_SIZE.width * uiScale;
     this.height = DESKTOP_SIZE.height * uiScale;
 
-    this.label.setFontSize(20 * uiScale);
+    this.label.setFontSize(16 * uiScale);
 
     const bottomMargin = DESKTOP_BOTTOM_MARGIN * uiScale + safeArea.bottom;
-    this.container.setPosition(width / 2, height - bottomMargin - this.height / 2);
+    this.placeOnScreen(width / 2, height - bottomMargin - this.height / 2);
   }
 }

@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { MenuArtwork } from '../ui/MenuArtwork';
 import { playerColor, toCssColor } from '../config/Palette';
 import { DEBUG_GAME } from '../config/DebugConfig';
 import type { MatchSetup } from '../match/MatchSetup';
@@ -63,6 +64,7 @@ export class ResultScene extends Phaser.Scene {
   private rematchCancel: (() => void) | null = null;
   private rematchPhase: 'idle' | 'waiting' | 'opponent-left' = 'idle';
   private viewport!: ViewportService;
+  private artwork!: MenuArtwork;
   private inputRouter!: InputRouter;
   private titleText!: Phaser.GameObjects.Text;
   private statusLine!: Phaser.GameObjects.Text;
@@ -90,11 +92,14 @@ export class ResultScene extends Phaser.Scene {
     this.viewport = new ViewportService(this, { worldCameraZoom: false });
     this.inputRouter = new InputRouter(this);
     this.cameras.main.fadeIn(220, 0, 0, 0);
+    this.artwork = new MenuArtwork(this, false);
+    this.artwork.showResult(this.winnerId);
 
     this.titleText = this.add
       .text(0, 0, this.resultLabel(), {
         fontFamily: 'monospace',
         color: this.resultColor(),
+        stroke: '#151c22', strokeThickness: 6,
       })
       .setOrigin(0.5)
       .setDepth(900);
@@ -291,6 +296,7 @@ export class ResultScene extends Phaser.Scene {
   }
 
   private reposition(): void {
+    this.artwork.layout(this.viewport.current.width, this.viewport.current.height, this.viewport.current.uiScale);
     const { width, height, uiScale } = this.viewport.current;
 
     this.titleText.setFontSize(TITLE_FONT * uiScale);

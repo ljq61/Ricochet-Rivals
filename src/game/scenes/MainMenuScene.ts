@@ -196,11 +196,12 @@ export class MainMenuScene extends Phaser.Scene {
       safeArea.top + (height / uiScale < 540 ? 28 : EDGE_MARGIN + TITLE_FONT * 0.6) * uiScale;
     if (this.title instanceof Phaser.GameObjects.Image) {
       // Logo：宽 ≤ 视口 62%，等比；窄屏再随宽收
-      const logoCssWidth = Math.min(560, (width / uiScale) * 0.62);
+      const short = height / uiScale < 540;
+      const logoCssWidth = Math.min(short ? 210 : 500, (width / uiScale) * 0.62);
       const source = this.textures.get(ART.logo).getSourceImage();
       this.title
         .setDisplaySize(logoCssWidth * uiScale, (logoCssWidth * source.height / source.width) * uiScale)
-        .setPosition(width / 2, titleY);
+        .setOrigin(0.5, 0).setPosition(width / 2, safeArea.top + 12 * uiScale);
     } else {
       this.title.setFontSize(Math.min(TITLE_FONT, width / uiScale / 14) * uiScale);
       this.title.setPosition(width / 2, titleY);

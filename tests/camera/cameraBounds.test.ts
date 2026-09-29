@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   clampCameraCenterX,
+  followClampedCenterY,
   groundAnchoredCenterY,
 } from '../../src/game/camera/cameraBounds';
 import { GAME_CONFIG } from '../../src/game/config/GameConfig';
@@ -69,5 +70,30 @@ describe('groundAnchoredCenterY（贴地构图）', () => {
     const visible = 390 / (390 / 1080); // zoom 公式下可见高恒等于 1080
     expect(visible).toBeCloseTo(1080, 10);
     expect(groundAnchoredCenterY(visible, WORLD_H)).toBe(WORLD_H / 2);
+  });
+});
+
+describe('followClampedCenterY（PROJECTILE_FOLLOW 垂直边界：上界图顶）', () => {
+  const TOP = WORLD_H - GAME_CONFIG.world.backgroundMinHeight; // = -720
+
+  it('界内目标原样跟随（正常弹道起伏不动 clamp）', () => {
+    expect(followClampedCenterY(400, 1080, WORLD_H, TOP)).toBe(400);
+    expect(followClampedCenterY(0, 1080, WORLD_H, TOP)).toBe(0);
+  });
+
+  it('炮弹高于图顶：可见顶边 clamp 在图顶（center = TOP + visible/2）', () => {
+    // 近垂直满力炮弹目标 y = -5000 → 相机停在 center -180（可见 [-720, 360]）
+    expect(followClampedCenterY(-5000, 1080, WORLD_H, TOP)).toBe(TOP + 540);
+  });
+
+  it('低于地平线：底边对齐 World 底部（贴地构图沿用）', () => {
+    expect(followClampedCenterY(9999, 1080, WORLD_H, TOP)).toBe(WORLD_H - 540);
+  });
+
+  it('可见高度 ≥ 图像纵向跨度：垂直居中整图', () => {
+    const span = WORLD_H - TOP; // 1800
+    expect(followClampedCenterY(-5000, span, WORLD_H, TOP)).toBe(
+      (WORLD_H + TOP) / 2
+    );
   });
 });

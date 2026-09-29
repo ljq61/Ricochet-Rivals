@@ -353,7 +353,8 @@ export class BattleScene extends Phaser.Scene {
     //     发射 → PROJECTILE 相位 + 相机跟随；
     //     碰撞 → 伤害结算 → RESOLVE 相位 → 反馈 → 锁定爆炸点停留；
     //     停留结束 / 出界 → 回合收口（endTurn / TURN_TRANSITION / GAME_OVER）
-    this.projectileSystem.onLaunched(() => {
+    this.projectileSystem.onLaunched((projectile) => {
+      this.playerViews[projectile.ownerId].playFireReaction();
       this.logCameraEvent(`launched`);
       // Phase 17 Juice：发射音 + 飞行口哨各播一次（真机反馈：口哨循环
       // 在 desync 清场路径下停不掉且听感重复 —— 单次播放，无循环句柄）

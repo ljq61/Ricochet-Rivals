@@ -11,3 +11,5 @@ Thumbs.db
 
 # E2E 视觉抽查截图（scripts/visual-check.mjs 产物，随跑随弃）
 scripts/visual-output/
+
+scripts/art-acceptance-output/

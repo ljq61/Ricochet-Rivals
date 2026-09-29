@@ -34,6 +34,8 @@ export class Player {
   private facing: 1 | -1;
   private lastX: number;
   private bobPhase = 0;
+  private reactionHoldMs = 0;
+  private idleTimeMs = 0;
   private hitTween: Phaser.Tweens.Tween | null = null;
   /** 当前姿态纹理 key（null=idle；幂等切换短路用） */
   private currentPoseKey: string | null;
@@ -89,6 +91,11 @@ export class Player {
 
   /** 每帧从 PlayerState 同步视觉（含占位走动动画） */
   update(playerState: PlayerState, deltaMs: number): void {
+    // Local visual hold only. State and collision bodies continue to update normally.
+    if (this.reactionHoldMs > 0) {
+      this.reactionHoldMs = Math.max(0, this.reactionHoldMs - deltaMs);
+      return;
+    }
     const deltaX = playerState.x - this.lastX;
     this.lastX = playerState.x;
 
@@ -106,27 +113,43 @@ export class Player {
       this.bobPhase = 0;
     }
 
-    this.container.setPosition(playerState.x, playerState.y + bob);
+    this.idleTimeMs += deltaMs;
+    if (this.hitTween === null) {
+      const breath = Math.sin(this.idleTimeMs / 320) * 0.012;
+      this.container.setScale(1 - breath * 0.4, 1 + breath)
+        .setAngle(moving ? Math.sin(this.bobPhase) * 2 : 0);
+    }
+    this.container.setPosition(playerState.x, playerState.y + Math.min(0, bob));
   }
 
   /**
-   * 受击反馈（Phase 7）：整体闪烁数次。
+   * 受击反馈：70ms 表现停顿、压缩后仰，再弹性恢复。
    * 纯视觉（渲染层自行管理 Tween），不读取 / 不修改 PlayerState；
    * 重复触发时重启，避免动画叠加。
    */
   playHitReaction(): void {
     this.hitTween?.stop();
-    this.container.setAlpha(1);
+    this.reactionHoldMs = 70;
+    this.container.setAlpha(1).setScale(1.12, 0.88).setAngle(-this.facing * 7);
     this.hitTween = this.scene.tweens.add({
       targets: this.container,
-      alpha: { from: 1, to: 0.15 },
-      duration: 110,
-      yoyo: true,
-      repeat: 3,
+      alpha: { from: 0.65, to: 1 },
+      scaleX: 1, scaleY: 1, angle: 0,
+      delay: 70, duration: 320, ease: 'Back.easeOut',
       onComplete: () => {
         this.container.setAlpha(1);
         this.hitTween = null;
       },
+    });
+  }
+
+  /** Recoil is anchored at the feet; it cannot move the logical player. */
+  playFireReaction(): void {
+    this.hitTween?.stop();
+    this.container.setScale(1.08, 0.94).setAngle(-this.facing * 5);
+    this.hitTween = this.scene.tweens.add({
+      targets: this.container, scaleX: 1, scaleY: 1, angle: 0, alpha: 1,
+      duration: 240, ease: 'Back.easeOut', onComplete: () => { this.hitTween = null; },
     });
   }
 

@@ -1,14 +1,15 @@
 /** Phase 17 first-look assets. Missing files retain the existing playable visuals. */
 export const ART = {
   harbor: 'art-harbor',
+  aimControls: 'art-aim-controls',
+  platform: 'art-dock-platform',
+  portraitFrame: 'art-portrait-frame',
+  smoke: 'art-smoke',
   tower: 'art-tower',
   P1: 'art-blue',
   P2: 'art-red',
   projectile: 'art-projectile',
   explosion: 'art-explosion',
-  /** 真机反馈轮：触屏瞄准两态图标（金=可瞄准 / 红热+上膛=瞄准中） */
-  aimReady: 'art-aim-ready',
-  aimActive: 'art-aim-active',
   /** 真机反馈轮：双方基地（concept01 §05，底部平整甲板=走线） */
   baseP1: 'art-base-p1',
   baseP2: 'art-base-p2',
@@ -24,13 +25,15 @@ export const ART = {
 
 export const ART_FILES = [
   [ART.harbor, 'harbor.png'],
+  [ART.aimControls, 'aim-controls.png'],
+  [ART.platform, 'dock-platform.png'],
+  [ART.portraitFrame, 'portrait-frame.png'],
+  [ART.smoke, 'smoke-puff.png'],
   [ART.tower, 'harbor-tower.png'],
   [ART.P1, 'blue-chibi.png'],
   [ART.P2, 'red-chibi.png'],
   [ART.projectile, 'normal-projectile.png'],
   [ART.explosion, 'explosion-impact.png'],
-  [ART.aimReady, 'aim-ready.png'],
-  [ART.aimActive, 'aim-active.png'],
   [ART.baseP1, 'base-blue.png'],
   [ART.baseP2, 'base-red.png'],
   [ART.avatarP1, 'avatar-blue.png'],

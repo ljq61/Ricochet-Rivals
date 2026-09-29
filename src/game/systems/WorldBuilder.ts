@@ -21,9 +21,9 @@ const ALPHA = {
 /**
  * 背景每片至少放大到约 1.67 倍世界高度：底边仍贴地，顶部额外留出
  * 720 世界像素给炮弹上升段。按当前 5000px 世界宽度会铺两片，
- * 且始终保持原图宽高比。
+ * 且始终保持原图宽高比。最小高度常量在 GameConfig.world
+ * （与相机垂直 clamp 上界同源）。
  */
-const HARBOR_BACKGROUND_MIN_HEIGHT = 1800;
 
 export class WorldBuilder {
   constructor(private readonly scene: Phaser.Scene) {}
@@ -47,9 +47,12 @@ export class WorldBuilder {
    */
   private buildHarbor(): void {
     const { width, height, groundTopY: top } = GAME_CONFIG.world;
+    // 相机顶界 clamp（followClampedCenterY）后正常不可达；
+    // 留作放宽 clamp 时的兜底天空（不露空画布）。
+    this.scene.add.rectangle(width / 2, -4000, width, 8000, 0x67adee).setDepth(-110);
     const source = this.scene.textures.get(ART.harbor).getSourceImage();
     const backgroundHeight = Math.max(
-      HARBOR_BACKGROUND_MIN_HEIGHT,
+      GAME_CONFIG.world.backgroundMinHeight,
       (width / 2) * source.height / source.width,
     );
     const plateWidth = backgroundHeight * source.width / source.height;
@@ -61,62 +64,25 @@ export class WorldBuilder {
         .setFlipX(i % 2 === 1)
         .setDepth(-100);
     }
-    const g = this.scene.add.graphics().setDepth(-10);
-    g.fillStyle(0x151c22);
-    g.fillRect(0, top, width, height - top);
-    for (let x = 0; x < width; x += 120) {
-      g.fillStyle(0x38434b);
-      g.fillRect(x + 3, top + 14, 114, 34);
-      g.lineStyle(3, 0x0a1119);
-      g.strokeRect(x + 3, top + 14, 114, 34);
-      g.lineStyle(8, 0x53616b);
-      g.lineBetween(x + 10, top + 53, x + 105, height);
-      g.fillStyle(0xd5b879);
-      g.fillCircle(x + 12, top + 24, 3);
-      g.fillCircle(x + 105, top + 24, 3);
-    }
-    g.fillStyle(0xb49a65);
-    g.fillRect(0, top, width, 10);
-    g.fillStyle(0xffdfa0);
-    g.fillRect(0, top, width, 3);
+    // Independent docks: leave the harbor open between the two bases.
     for (const id of ['P1', 'P2'] as const) {
       const left = id === 'P1';
       const bounds = left ? GAME_CONFIG.player.leftBounds : GAME_CONFIG.player.rightBounds;
-      const color = playerColor(id);
-      const flagX = left ? bounds.minX + 40 : bounds.maxX - 40;
-      // 真机反馈轮（Phase 17）：concept01 §05 基地（底部平整甲板=走线，
-      // 双方独立成体 —— 中间天然断开为开阔码头）；素材缺失回退塔楼+旗杆占位。
-      // 甲板锚点 per-side —— 宁沉勿浮：素材甲板层实测不在画布底（蓝 ~92% 高），
-      // 锚点压到甲板层全部没入地面 Graphics 以下 → 木排末端切面不可见，
-      // 塔楼轮廓自然接地（浮起 = 甲板悬空 + 直切边穿帮）
+      const center = (bounds.minX + bounds.maxX) / 2;
+      const dockWidth = bounds.maxX - bounds.minX + GAME_CONFIG.world.platformOverhang * 2;
       const baseKey = left ? ART.baseP1 : ART.baseP2;
-      const baseOriginY = 0.9;
       if (this.scene.textures.exists(baseKey)) {
-        this.scene.add.image(left ? 380 : width - 380, top, baseKey)
-          .setDisplaySize(760, 760).setOrigin(0.5, baseOriginY).setDepth(-20);
-      } else if (this.scene.textures.exists(ART.tower)) {
-        this.scene.add.image(left ? 140 : width - 140, top, ART.tower)
-          .setDisplaySize(520, 520).setOrigin(0.5, 0.966)
-          .setFlipX(!left).setDepth(-20);
+        // Measured source deck heights differ: blue 88%, red 76.5%.
+        this.scene.add.image(center, top + 6, baseKey)
+          .setDisplaySize(dockWidth, dockWidth).setOrigin(0.5, left ? 0.88 : 0.765).setDepth(-20);
+      }
+      if (this.scene.textures.exists(ART.platform)) {
+        this.scene.add.image(center, top, ART.platform, 'deck')
+          .setOrigin(0.5, 0).setDisplaySize(dockWidth, dockWidth * 241 / 2128).setDepth(-10);
       } else {
-        g.lineStyle(5, 0x151c22);
-        g.lineBetween(flagX, top, flagX, top - 220);
-        g.fillStyle(color);
-        g.fillRect(flagX, top - 220, 76, 48);
-        g.lineStyle(3, 0xffdfa0);
-        g.strokeRect(flagX, top - 220, 76, 48);
+        const deck = this.scene.add.graphics().setDepth(-10);
+        deck.fillStyle(0x947145).fillRect(center - dockWidth / 2, top, dockWidth, 24);
       }
-      // 走线高亮（角色实际站立的横条）+ 移动边界 + 阵营标识 —— 功能层保留
-      g.fillStyle(color);
-      g.fillRect(bounds.minX, top + 5, bounds.maxX - bounds.minX, 5);
-      g.lineStyle(3, color, 0.8);
-      for (const x of [bounds.minX, bounds.maxX]) {
-        g.lineBetween(x, top - 25, x, top);
-      }
-      this.scene.add.text(left ? bounds.minX + 44 : bounds.maxX - 44, top - 40, id, {
-        fontFamily: 'monospace', fontSize: '24px', fontStyle: 'bold', color: '#ffffff',
-        stroke: '#151c22', strokeThickness: 4,
-      }).setOrigin(0.5).setDepth(-9);
     }
   }
 

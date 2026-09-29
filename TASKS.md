@@ -1,6 +1,6 @@
 # Ricochet Rivals — Development Tasks
 
-> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验）；Phase 17 进行中：首屏美术样片 + 用户反馈 4 项修复轮 + 7 音效 Juice 轮 + 美术批次轮（基地/HP HUD/菜单/触控）+ 真机反馈修复各轮完成（含 desync 恢复遗留相机滞留的产品级 bug 修复），hit stop / 粒子 / 角色反应 / UI transitions 待续。**
+> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验）；Phase 17 进行中：首屏美术样片 + 修复/音效/美术批次/真机反馈各轮 + 概念对齐与特效重制（hit stop / 粒子 / 角色反应 / UI transitions 全落地）+ 相机顶界 clamp 完成（含 desync 恢复遗留相机滞留的产品级 bug 修复）；剩余：用户视觉验收、真机性能验收、独立视差层与逐帧角色动画。**
 > 当前验证：`npm run typecheck` / `npm run test`（487）/ `npm run build` 已通过；美术批次 + 反馈修复轮后 `npm run e2e` 全量 **130 passed / 0 failed** 复验全绿（desync 恢复清炮弹修复前曾同点连续三次 123/124）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
@@ -1860,7 +1860,7 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
   rAF 恢复慢）。单段 29/29 通过 + 全量复跑见验证记录
 
 资产来源、原始提示词、技术规格与局限：`docs/ArtDesign/FIRST_LOOK_ASSETS.md`。
-首轮保留静态角色移动起伏、现有爆炸与受击反馈；完整动画、音效和 hit stop 尚未制作。
+首轮记录保留；后续音效与表现升级见下文及 `docs/ArtDesign/PHASE17_POLISH_REWORK.md`。完整逐帧角色动画仍不是当前程序动画的交付内容。
 
 ### 修复轮 Known Issues（非阻塞）
 
@@ -1942,10 +1942,10 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 - [x] victory
 - [x] defeat
 - [x] camera shake（Phase 7 已有：`cameraController.shake()`，爆炸时触发）
-- [ ] impact freeze / hit stop
-- [ ] particles
-- [ ] player reaction
-- [ ] UI transitions
+- [x] impact freeze / hit stop（70ms 角色表现停顿，物理与网络继续）
+- [x] particles（喷口火焰、烟尾、冲击环、爆炸烟团与火星）
+- [x] player reaction（呼吸、移动起伏、后坐力、受击压缩与恢复、结算胜负姿态）
+- [x] UI transitions（复用 220ms 场景淡入淡出，统一菜单/联机/结算美术）
 
 这里重点优化：
 
@@ -1968,6 +1968,28 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
       消除杂物群红色噪音（base-red.png 重生成替换）
 - [x] 验证：typecheck / test（487）/ build 全绿 + E2E 全量复跑
       **130 passed / 0 failed**
+
+---
+
+### Phase 17 概念对齐与特效重制（2026-09-29）
+
+- [x] 新生成并接入瞄准/取消双态图集、独立码头、金属头像框、烟雾粒子，共 4 张透明 PNG；旧按钮原图保留但停止预加载。
+- [x] HUD 大头像、铆钉边框、队伍铭牌、红色分段血条与真实扣血动画；HUD/瞄准按钮抵消世界相机缩放，保持 CSS 尺寸和输入热区一致。
+- [x] 标题人物按可见脚底站在生成平台；Logo 完整显示；手机底部功能按钮让出人物脚部。
+- [x] 取消贯穿世界的钢板，左右基地甲板分别校准；仅两侧平台保留碰撞体，中间海域落弹按出界结束。
+- [x] 火焰烟尾跟随速度反向；爆炸闪光、火团、冲击环、火星、烟团分层；修复贴图绝对 scale 导致的异常放大。
+- [x] 下落镜头不再露出海面下方空画布；高空保留蓝色天空底层。
+- [x] **相机顶界 clamp（用户试玩反馈：炮弹高飞时相机跟出背景图外露空白）**：
+      PROJECTILE_FOLLOW 垂直上界 = 背景图顶（height − backgroundMinHeight，
+      GameConfig 与 WorldBuilder 铺图同源常量）——炮弹过高时相机停在图顶
+      等它回落，与左右 World Bounds 同语义；下界贴地构图保留
+      （followClampedCenterY 纯函数吸收双界，cameraBounds 单测 9 → 13 项）。
+      修复后 typecheck / 491 项单测 / build + 全量 E2E 复跑
+      **130 passed / 0 failed** 全绿。
+- [x] 类型检查、487 项单测、构建通过；完整 E2E 130/130；最终桌面/手机专项通过真实按钮双态、命中扣血、中场落弹、结算和联机页切换，无 pageerror。
+- [ ] 整个 Phase 17 的用户视觉验收和真实手机性能验收；独立视差层与逐帧角色动画仍保留为后续精制项，不冒充已生成。
+
+制作记录、提示词和验证边界：`docs/ArtDesign/PHASE17_POLISH_REWORK.md`。
 
 ---
 

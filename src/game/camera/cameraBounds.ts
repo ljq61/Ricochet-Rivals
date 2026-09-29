@@ -42,3 +42,26 @@ export function groundAnchoredCenterY(
   }
   return worldHeight - visibleWorldHeight / 2;
 }
+
+/**
+ * 垂直方向（PROJECTILE_FOLLOW / IMPACT）：上界 = 背景图顶
+ * （worldHeight − backgroundMinHeight），下界 = 贴地构图（World 底部）。
+ * - 目标在界内：原样返回（相机正常跟随炮弹起伏）
+ * - 目标高于图顶：clamp 在「可见顶边 = 图顶」——炮弹过高时相机停在
+ *   图顶等它回落，不露出图外空白（与水平 World Bounds 同语义）
+ * - 可见高度 ≥ 图像纵向跨度（worldHeight − topBoundY）：垂直居中整图
+ */
+export function followClampedCenterY(
+  centerY: number,
+  visibleWorldHeight: number,
+  worldHeight: number,
+  topBoundY: number
+): number {
+  const span = worldHeight - topBoundY;
+  if (visibleWorldHeight >= span) {
+    return (worldHeight + topBoundY) / 2;
+  }
+  const min = topBoundY + visibleWorldHeight / 2;
+  const max = worldHeight - visibleWorldHeight / 2;
+  return Math.min(max, Math.max(min, centerY));
+}

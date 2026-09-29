@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { ProjectileEffects } from './ProjectileEffects';
 import { GAME_CONFIG } from '../config/GameConfig';
 import { ART } from '../config/ArtAssets';
 import { playerColor } from '../config/Palette';
@@ -43,6 +44,7 @@ export class Projectile {
   readonly turnId: TurnId;
 
   private readonly scene: Phaser.Scene;
+  private readonly effects: ProjectileEffects;
   private readonly body: MatterJS.BodyType;
   private readonly visual: Phaser.GameObjects.Image | Phaser.GameObjects.Graphics;
   private readonly usesProjectileArt: boolean;
@@ -53,6 +55,7 @@ export class Projectile {
 
   constructor(scene: Phaser.Scene, id: string, command: FireCommand) {
     this.scene = scene;
+    this.effects = new ProjectileEffects(scene);
     this.spawnX = command.startX;
     this.spawnY = command.startY;
     this.turnId = command.turnId;
@@ -123,6 +126,7 @@ export class Projectile {
       this.state.velocityY = this.body.velocity.y * MATTER_STEPS_PER_SECOND;
 
       this.visual.setPosition(this.state.x, this.state.y);
+      this.effects.update(this.state.x, this.state.y, this.state.velocityX, this.state.velocityY, deltaMs);
       if (this.usesProjectileArt) {
         // 资源喷嘴端默认朝右：弹头（圆端）朝飞行方向 → 速度角 +180°，
         // 喷嘴拖尾（真机反馈：喷嘴在前 = 双方头尾反了）
@@ -195,42 +199,14 @@ export class Projectile {
       fallback.fillCircle(0, 0, radius + 6);
     }
 
-    if (this.scene.textures.exists(ART.explosion)) {
-      const burst = this.scene.add.image(this.state.x, this.state.y, ART.explosion)
-        .setOrigin(0.5)
-        .setDisplaySize(GAME_CONFIG.explosion.radius * 3, GAME_CONFIG.explosion.radius * 3)
-        .setDepth(510);
-      this.scene.tweens.add({
-        targets: burst,
-        alpha: 0,
-        scale: 1.25,
-        duration: GAME_CONFIG.projectile.explodeDurationMs * 2,
-        ease: 'Sine.easeOut',
-        onComplete: () => burst.destroy(),
-      });
-    } else {
-      // 爆炸范围圈（Phase 7 反馈）：真实伤害半径的提示环。
-      const ring = this.scene.add.graphics().setDepth(490);
-      ring.setPosition(this.state.x, this.state.y);
-      ring.lineStyle(4, 0xff5063, 0.55);
-      ring.strokeCircle(0, 0, GAME_CONFIG.explosion.radius);
-      ring.fillStyle(0xff5063, 0.08);
-      ring.fillCircle(0, 0, GAME_CONFIG.explosion.radius);
-      this.scene.tweens.add({
-        targets: ring,
-        alpha: 0,
-        scale: 1.35,
-        duration: GAME_CONFIG.projectile.explodeDurationMs * 2,
-        ease: 'Sine.easeOut',
-        onComplete: () => ring.destroy(),
-      });
-    }
+    this.effects.impact(this.state.x, this.state.y);
   }
 
   /** 出界：直接销毁，不播放爆炸（CODELY.md §14） */
   destroyWithoutExplosion(): void {
     this.state.status = 'destroyed';
     this.scene.matter.world.remove(this.body);
+    this.effects.finish();
     this.visual.destroy();
   }
 
@@ -241,6 +217,7 @@ export class Projectile {
     if (world && this.state.status !== 'destroyed') {
       world.remove(this.body);
     }
+    this.effects.finish();
     this.visual.destroy();
   }
 }

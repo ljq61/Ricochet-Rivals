@@ -1,6 +1,10 @@
 import Phaser from 'phaser';
 import { CameraMode } from './CameraMode';
-import { clampCameraCenterX, groundAnchoredCenterY } from './cameraBounds';
+import {
+  clampCameraCenterX,
+  followClampedCenterY,
+  groundAnchoredCenterY,
+} from './cameraBounds';
 import { exponentialApproach } from './cameraMotion';
 import {
   modeAfterReturnHome,
@@ -22,7 +26,8 @@ export type FollowTargetProvider = () => { x: number; y: number } | null;
  * - RETURN_HOME：Tween 回当前炮手（350ms），完成自动进入 AIMING
  * - AIMING：锁定当前炮手（每帧居中跟随），禁止拖动
  * - PROJECTILE_FOLLOW：指数平滑跟随炮弹（帧率无关，不硬锁）；
- *   水平 clamp 在 World Bounds，垂直自由（炮弹可飞出世界上沿）
+ *   水平 clamp 在 World Bounds；垂直上不过背景图顶（炮弹过高时相机
+ *   停在图顶等它回落，不露图外空白）、下不露地面以下
  * - IMPACT：平滑贴向爆炸点并停留约 850ms；停留结束（或模式被外部
  *   接管）时 resolve focusImpact 的 Promise，由调用方决定去向
  * - TURN_TRANSITION：Phase 8 实现
@@ -381,6 +386,11 @@ export class CameraController implements GestureClaimant {
     );
   }
 
+  /** 背景图顶（世界坐标）：相机垂直跟随上界，与 WorldBuilder 铺图同源 */
+  private followTopBoundY(): number {
+    return GAME_CONFIG.world.height - GAME_CONFIG.world.backgroundMinHeight;
+  }
+
   private smoothApproach(
     target: { x: number; y: number },
     rate: number,
@@ -391,8 +401,14 @@ export class CameraController implements GestureClaimant {
       this.visibleWorldWidth,
       GAME_CONFIG.world.width
     );
-    // 垂直不 clamp：炮弹可飞出世界上沿，相机需跟随到天空
-    const targetCenterY = target.y;
+    // 垂直双向 clamp：上不过背景图顶（炮弹过高相机停在图顶等回落，
+    // 不露图外空白），下沿用贴地构图（不露地面以下）。
+    const targetCenterY = followClampedCenterY(
+      target.y,
+      this.visibleWorldHeight,
+      GAME_CONFIG.world.height,
+      this.followTopBoundY()
+    );
 
     const nextCenterX = exponentialApproach(
       this.getCenterX(),
@@ -413,7 +429,14 @@ export class CameraController implements GestureClaimant {
         GAME_CONFIG.world.width
       )
     );
-    this.setCenterY(nextCenterY);
+    this.setCenterY(
+      followClampedCenterY(
+        nextCenterY,
+        this.visibleWorldHeight,
+        GAME_CONFIG.world.height,
+        this.followTopBoundY()
+      )
+    );
   }
 
   private resolveImpactStay(): void {

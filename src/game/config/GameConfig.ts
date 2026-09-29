@@ -12,6 +12,15 @@ export const GAME_CONFIG = {
     height: 1080,
     /** 地面顶部 Y 坐标（地面填充到世界底部） */
     groundTopY: 960,
+    /** Dock extends beyond movement bounds by half a character width. */
+    platformOverhang: 75,
+    /**
+     * 背景每片至少放大到该世界像素高（底边贴世界底部）：
+     * 图顶保证 ≤ height − backgroundMinHeight，即相机垂直跟随的上界
+     * （炮弹过高时相机停在图顶等它回落，不露图外空白）。
+     * WorldBuilder 铺图与 CameraController 顶界 clamp 同源取此常量。
+     */
+    backgroundMinHeight: 1800,
   },
 
   player: {

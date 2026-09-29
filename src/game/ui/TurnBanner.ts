@@ -191,13 +191,16 @@ export class TurnBanner {
     const textWidth = this.label.width;
     const w = textWidth + PILL_PADDING_X * 2 * ui;
     const h = PILL_HEIGHT * ui;
-    const radius = h / 2;
+    const radius = 4 * ui;
 
     this.bg.clear();
-    this.bg.fillStyle(0x0d1420, fillAlpha);
+    this.bg.fillStyle(0x151c22, fillAlpha);
     this.bg.fillRoundedRect(-w / 2, -h / 2, w, h, radius);
-    this.bg.lineStyle(2 * ui, accent, 0.95);
+    this.bg.lineStyle(3 * ui, 0xc5a66b, 0.95);
     this.bg.strokeRoundedRect(-w / 2, -h / 2, w, h, radius);
+    this.bg.fillStyle(accent).fillRect(-w / 2 + 5 * ui, h / 2 - 6 * ui, w - 10 * ui, 3 * ui);
+    this.bg.fillStyle(0xffdf9e);
+    for (const x of [-w / 2 + 9 * ui, w / 2 - 9 * ui]) this.bg.fillCircle(x, 0, 2 * ui);
   }
 
   /** 胜负横幅：文本可能变长，重画底 */
