@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
-> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验）；Phase 17 进行中：首屏美术样片 + 修复/音效/美术批次/真机反馈各轮 + 概念对齐与特效重制（hit stop / 粒子 / 角色反应 / UI transitions 全落地）+ 相机顶界 clamp + 基地受损烟/火分档（火焰 16 帧序列）+ 静态前景水面（配色匹配背景海）+ HUD 头像框渐变 + Rematch 等待提示强化 + 中央章鱼触手玩法特性（任一方 HP ≤ 4 升起、阻挡中低弹道逼高抛物线）完成（含 desync 恢复遗留相机滞留的产品级 bug 修复）；剩余：用户视觉验收、真机性能验收、独立视差层与逐帧角色动画、AI 感知触手。**
-> 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；章鱼触手轮后 `npm run e2e` 全量 **130 passed / 0 failed** 复验全绿（desync 恢复清炮弹修复前曾同点连续三次 123/124）。
+> 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
+> 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；Phase 18 agent 侧 + P3 修复后 `npm run e2e` 全量 **147 passed / 0 failed**（含 932×430@DPR3 移动段 17 项；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
 ---
@@ -2083,18 +2083,112 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 
 ---
 
-# Phase 18 — Mobile Preparation
+# Phase 18 — Mobile QA & V0.1 Release Hardening（2026-09-29 重定义）
 
-不是完整移动版。
+> 本阶段不开发新 Gameplay Feature（禁新武器 / Item / 地图机制 / Wind / 选人 / 商店 / 排行榜 / 新章鱼 / 新 AI）。
+> AI 不感知章鱼障碍 = Known Issue / V0.2，仅当导致 AI 无法完成游戏才扩 scope。
+> Phase 17 边界：真机视觉验收并入本阶段；视差层 / 逐帧角色动画 / AI 感知章鱼 = Phase 17 follow-up，非阻塞。
+> 完成即 **V0.1 Release Candidate**。
 
-只处理基础：
+## 旧六项状态（Phase 6.5 起已实现 —— 只验不建）
 
-- [ ] Responsive Canvas
-- [ ] Touch Camera Drag
-- [ ] Touch Aim Drag
-- [ ] Prevent Browser Scroll
-- [ ] Landscape Warning
-- [ ] Safe Area
+- [x] Responsive Canvas —— **IMPLEMENTED — VERIFY ON DEVICE**（Scale.NONE + ViewportService：位图=CSS×DPR、显式 canvas style、visualViewport 优先）
+- [x] Touch Camera Drag —— **IMPLEMENTED — VERIFY ON DEVICE**（InputRouter window 级 Pointer Events + GestureArbiter，UI > AIM > MOVEMENT > CAMERA）
+- [x] Touch Aim Drag —— **IMPLEMENTED — VERIFY ON DEVICE**（AimController 触屏起始半径 150 CSS px + 14px 死区，死区内松手静默取消）
+- [x] Prevent Browser Scroll —— **IMPLEMENTED — VERIFY ON DEVICE**（touch-action:none / overscroll-behavior:none / iOS gesture 事件拦截 / dblclick+contextmenu preventDefault）
+- [x] Landscape Warning —— **IMPLEMENTED — VERIFY ON DEVICE**（OrientationGate DOM 覆盖层，仅 BattleScene 门禁；Menu/Online 允许竖屏）
+- [x] Safe Area —— **IMPLEMENTED — VERIFY ON DEVICE**（viewport-fit=cover + env() insets ×DPR，各 Scene 布局消费）
+
+## Step 1 审计结论（2026-09-29，Main Agent 只读复核）
+
+**ALREADY IMPLEMENTED**（代码级确认）：ViewportService（visualViewport 优先 / 幂等 applyViewport / destroy 清理）、DeviceProfile（UA-free 能力检测）、OrientationGate（Battle-only shouldGate）、InputRouter（client→画布坐标换算 / pointerId 多指仲裁 / pointercancel / blur releaseAll / DOM 覆盖层天然拦截）、TouchControls（88px 移动钮多指追踪 / 隐藏即清 heldPointers / 相位门禁）、AimController（死区 / 相机模式守卫中止 / 最小力度门禁）、CameraController（FREE_VIEW 拖拽 + 双向 clamp）、DPR 高清渲染（含 canvas CSS 滞留坑修复与 E2E deviceScaleFactor 断言）、浏览器手势防御全套、Online textarea（挂 body + touch-action:auto + user-select:text 显式重开 —— Step 9 关注点已处理）、Fullscreen（feature-detect + 失败兜底）、移动端 E2E 既有 29 项（含 DPR 路径 / 画布偏移回归 / 竖屏覆盖层）。
+
+**NEEDS FIX（代码级缺口 —— 2026-09-29 已全部处置）**：
+- [x] F1：聚焦按钮命中区 24 → **48 CSS px 下限**（视觉保持 24；FOCUS_GAP 8→24
+      使相邻命中区零重叠；移动钮 88 已达标不动）—— 既有 E2E 硬编码坐标
+      经数学验证仍落在新命中区内
+- [x] F2：音频 unlock —— **Phaser 4 内建**（源码验证：body 级 touchstart/
+      mousedown/keydown → context.resume()，首手势即解锁；iOS 17/18 后台
+      返回 VISIBLE → suspend+resume 兜底 phaserjs#6829）—— 无需自定义，
+      留真机复验
+- [x] F3：粒子观测口 —— `countAliveParticles()`（场景 ParticleEmitter
+      存活计数总和）→ DebugOverlay `Particles` 行 + `__RR_DEBUG__.particles`
+      句柄（QA 记录 / E2E 粒子预算断言口）
+- [x] 验证：F1/F3 后 typecheck / test（500）/ build 全绿（E2E 随 Step 16 一起跑）
+
+**NEEDS VERIFICATION（真机项，代码无法自证）**：DPR3 清晰度、刘海/灵动岛/Home Indicator 实机遮挡、iOS Safari WebAudio 首交互解锁、后台/前台恢复（各相机模式）、工具栏伸缩（visualViewport 监听已接，行为待验）、中低端机性能、跨网移动 WebRTC、瞄准手感（命中区/死区/最大力度反馈）、740×360 小屏视觉。
+
+## Step 3-17 QA 矩阵
+
+### 视口/渲染（Step 3）—— Canvas CSS size / bitmap / game size / zoom / 指针坐标五一致性
+- [ ] 冷启动 / resize / 旋转双向 / 工具栏伸缩 / 全屏进出 / 后台返回 / DPR2 / DPR3
+- [ ] High-DPI：iPhone DPR3 / Android DPR2-3 不糊，不得回退 CSS 位图方案
+- [ ] 动态相机：不同宽高比横向范围不同、纵向构图恒定；禁改 World/Physics/移动/爆炸参数
+
+### 安全区（Step 4）—— 四 Scene 全覆盖（不只 Battle）
+- [ ] MainMenu / Battle / OnlineConnection / Result；P1/P2 HUD、瞄准钮、移动钮、聚焦钮、返回/Copy/Connect/Rematch/MainMenu
+
+### 触控 QA（Step 5-7）—— 触摸相机 / 移动 / 瞄准
+- [ ] 相机：拖向自然 / 不越界 / 指针离画布不卡死 / pointercancel / 切后台 / UI-Aim-Move 不误触相机 / 快速连拖无残留
+- [ ] 移动：按住走 / 松手停 / 左右快速切换 / 双指各按 / 滑出释放 / cancel / 切后台 / 换回合 / 瞄准中 / 弹道中；无"持续走/按钮卡/预算扣/结束后仍动"
+- [ ] 瞄准（P0）：15°-75° 双方各测；命中区足够 / 指指不遮反馈 / 死区 / 小拖不误射 / 满力可辨 / 出屏松手不卡 / cancel / Fire / 无二次 Fire / 相机不抢手势
+
+### 触控目标审计（Step 8）：全部主要目标 ≥48 CSS px，主操作 ≥56
+### 在线连接移动端（Step 9）：Create→Copy→切微信→回浏览器→Paste 全链真机；后台切换不销毁 RTC/session；textarea 选择/粘贴/键盘不受全局 touch-action 影响（代码已确认，真机复验）
+- [ ] OnlineConnection 竖屏可用；连接成功进 Battle 时 Portrait → Rotate Overlay（非错位/非不可操作开局）
+
+### 移动 WebRTC Smoke（Step 10）：跨网至少 4 完整回合 + 一次伤害 + Rematch/终局；记录 Connected/Ping/断线/Rematch；无法跨网则明确记 INTERNET MOBILE P2P NOT VERIFIED（禁假设成功）
+### 音频移动端（Step 11）：首交互后可播；8 音效全检；Safari autoplay/AudioContext unlock；不得"第一炮静音第二炮才响"
+### 性能（Step 12）：中低端机 FPS/长帧/内存/粒子数；最重场景（火焰+烟+章鱼+炮弹）；目标 ≥45 FPS 持续、近 60 理想、爆炸偶发 spike 可接受；粒子预算无无限增长、连续 Rematch 5 次无泄漏
+### 后台/前台恢复（Step 13）：FREE_VIEW / AIMING / PROJECTILE_FOLLOW / 对手回合 各切后台 5s；无输入卡死/移动持续/Aim 持续/手势残留；Online 允许连接瞬态、不得 corrupt GameState
+### 视觉 QA（Step 14，并入 Phase 17 验收）：HUD 可读 / 角色比例 / 弹道点 / 爆炸 / 基地烟火 / 前景水 / 章鱼 / Result / Rematch 等待 / 菜单 —— 重点 844×390 与 740×360
+### 可用性 sanity（Step 15）：按钮文案可读、不靠 hover 表达；YOUR TURN / OPPONENT TURN / WAITING / CONNECTED / DISCONNECTED 均有文字/图形状态（非仅颜色）
+### 自动化回归（Step 16，agent 侧 —— 2026-09-29 已落地）
+- [x] E2E Mobile Viewport Flow：**932×430 @DPR3 新段 15 项**（设备矩阵
+      iPhone 16 Pro Max 档）：DPR3 全断言组（uiScale=3 / 位图 2796×1290 /
+      CSS=视口 / zoom≈1.194 / landscape / 覆盖层隐藏）+ AimButton 动态坐标
+      （W−52, H/2）→ 瞄准 → 死区 → 发射 → PROJECTILE_FOLLOW → 换手 P2；
+      844×390 全流程既有覆盖不变
+- [x] Portrait Battle：Overlay visible / Landscape：hidden（既有断言，复核通过）
+- [x] Pointer 回归：**双指各按 ◀/▶**（合成 PointerEvent 双 pointerId：净方向 0
+      原地 → 松一指向右 → 全松即停）+ **pointercancel 释放**（拖拽被系统打断
+      → 后续手势仍可平移，无残留 owner）；orientation resize / 画布坐标换算
+      （既有竖屏往返 + 画布偏移回归覆盖）
+- [x] 粒子预算基线断言（开局存活粒子 = 0，经 `__RR_DEBUG__.particles`）
+- [x] 验证：test（500）/ build / 全量 E2E **145 passed / 0 failed**（130 → 145，
+      串行独占跑，无并行写 dist 任务）
+
+### 发布回归（Step 17）：全部修复后串行 typecheck / test / build / e2e（**禁与写 dist 任务并行** —— detached Frame 竞态已有实录）
+
+## test-reviewer 验收记录（2026-09-29，agent 侧）
+
+**判定：PASS WITH ISSUES（仅 P3×3，无 P0/P1/P2）—— agent 侧 Release Gate 就绪。**
+独立复跑：typecheck ✅ / test **500/500** ✅ / build ✅ / `RR_E2E_ONLY=mobile` 段 **46/46** ✅（Phase 18 新 15 项全绿）。
+关键复核结论：F1 命中区数学成立（新中心 398/446，硬编码 406/438 落新命中区余量 16px；740×360 最窄视口与移动钮/AimButton 无交集；zone 仲裁优先级未破坏）；F2 Phaser 内建 unlock 源码实锤（body 级 touchstart/touchend/mousedown/mouseup/keydown 五事件 → resume()，表述已按 reviewer 修正）；F3 零成本路径与发射器遍历完整性确认；E2E 合成 PointerEvent 与真实触摸同链路成立（claimant 无 isPrimary/pointerType 门）；PHASE18_DEVICE_QA.md 覆盖完整。
+
+**P3×3 处置（验收后即修）**：
+- [x] P3-1：pointercancel 用例补前置断言「首个合成拖拽确实平移了相机」（cMid ≠ cPre，cancel 用例非空洞通过）
+- [x] P3-2：粒子基线 `===0` 配对新增「飞行期 > 0」计数器 sanity 断言（弹尾发射器活跃期）
+- [x] P3-3：QA 文档补 A14 工具栏伸缩 / A15 全屏进出 / A16 旋转双向三个显式勾选项
+- [x] P3 修复后复验：typecheck / build + 全量 E2E **147 passed / 0 failed**（145 → 147）
+
+**剩余**：用户侧真机 QA（`docs/PHASE18_DEVICE_QA.md`，A-F 六段）→ 反馈按 Bug 路由派发 → 串行四命令复验 → Phase 18 = COMPLETE + V0.1 RELEASE GATE 更新（不自动进 V0.2）。
+
+## Bug 路由与严重级
+- Touch/Aim/Camera/Gameplay → gameplay-engineer；WebRTC/Session → network-engineer；Viewport/Scene/CSS/UI/发布集成 → Main Agent
+- P0（crash/不可玩/触控失灵/画布尺寸错/瞄准不可用/状态损坏）与 P1（输入粘滞/刘海遮挡/严重掉帧/方向失效/音频全无/Rematch 泄漏）必须清零；P2/P3 记录不阻塞
+
+## 验收标准（全部满足才 COMPLETE）
+- [ ] 既有移动端设施已审计（本节 Step 1）
+- [ ] Responsive Canvas / High-DPI / 触摸相机 / 触摸移动 / 触摸瞄准 真机通过
+- [ ] 浏览器滚动/手势冲突无 P0/P1；Landscape Gate 真机通过；Online Connection 竖屏可用
+- [ ] Safe Area 真机通过；iOS Safari baseline 通过或明确阻塞项；Android Chrome baseline 通过或明确阻塞项
+- [ ] 后台/前台恢复无 P0/P1；音频移动端 baseline；性能无持续严重掉帧
+- [ ] Rematch / Scene 生命周期无明显泄漏；Online Mobile 完成 REAL smoke test（或如实记录 NOT VERIFIED）
+- [ ] SP / L2P / Online 无回归；typecheck / test / build / e2e 四绿
+- [ ] test-reviewer PASS（或 PASS WITH ISSUES 且仅剩 P2/P3）
+
+完成后：TASKS.md 标 Phase 18 = COMPLETE、更新 V0.1 RELEASE GATE，**不自动进入 V0.2**。
 
 ---
 

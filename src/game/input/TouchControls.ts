@@ -34,12 +34,16 @@ import type { GestureKind } from './gesture';
 
 /** 屏幕手感常量（CSS px，运行时 ×uiScale） */
 const MOVE_BUTTON_SIZE = 88;
-/** Phase 9 反馈 ②：聚焦按钮右下角 → 底部居中，尺寸缩小 2/3（72 → 24） */
+/** Phase 9 反馈 ②：聚焦按钮右下角 → 底部居中，尺寸缩小 2/3（72 → 24）
+ *  —— 视觉保持 24；Phase 18 Step 8 触控下限：命中区单独扩至 ≥48 CSS px */
 const FOCUS_BUTTON_SIZE = 24;
+/** Phase 18 Step 8：触控目标命中区下限（视觉可以小，命中区不能小） */
+const FOCUS_HIT_MIN = 48;
 const FOCUS_FONT = 10;
 const EDGE_MARGIN = 20;
 const GAP = 12;
-const FOCUS_GAP = 8;
+/** 48px 命中区不互相重叠所需的最小中心距（视觉 24 + 间 24 = 48） */
+const FOCUS_GAP = 24;
 /** Phase 9 反馈 ②：◀/▶ 移动按钮常驻半透明（按下时抬亮提供反馈） */
 const MOVE_BUTTON_ALPHA = 0.2;
 const MOVE_BUTTON_PRESSED_ALPHA = 0.5;
@@ -51,9 +55,12 @@ interface TouchButton {
   bg: Phaser.GameObjects.Graphics;
   /** CSS px 基准尺寸（×uiScale 后为游戏像素尺寸） */
   baseSize: number;
-  /** 游戏像素尺寸（zone 命中与绘制用） */
+  /** 游戏像素尺寸（绘制用） */
   width: number;
   height: number;
+  /** 游戏像素命中区尺寸（zone contains 用；≥ 视觉尺寸，聚焦钮达 48 CSS px 下限） */
+  hitWidth: number;
+  hitHeight: number;
   /** 移动按钮方向（箭头重绘用） */
   direction: 'left' | 'right' | null;
   /** 移动按钮箭头 / 聚焦按钮文本（缩放重绘用） */
@@ -254,6 +261,8 @@ export class TouchControls implements InputSource {
       baseSize,
       width: baseSize,
       height: baseSize,
+      hitWidth: baseSize,
+      hitHeight: baseSize,
       direction,
       arrow: null,
       text: null,
@@ -322,6 +331,13 @@ export class TouchControls implements InputSource {
     // 尺寸重算（DPR 变化时按钮需重绘）
     for (const button of this.allButtons()) {
       const size = button.baseSize * uiScale;
+      // Phase 18 Step 8：命中区 ≥48 CSS px（聚焦钮视觉 24 保持不变；
+      // 中心距 48（FOCUS_GAP）保证相邻命中区不重叠）
+      const hit = button.direction
+        ? size
+        : Math.max(size, FOCUS_HIT_MIN * uiScale);
+      button.hitWidth = hit;
+      button.hitHeight = hit;
       if (button.width !== size) {
         button.width = size;
         button.height = size;
@@ -413,10 +429,11 @@ function containsButton(
 ): boolean {
   const cx = button.container.x;
   const cy = button.container.y;
+  // 命中区（hitWidth/hitHeight ≥ 视觉尺寸；聚焦钮扩至 48 CSS px 下限）
   return (
-    x >= cx - button.width / 2 &&
-    x <= cx + button.width / 2 &&
-    y >= cy - button.height / 2 &&
-    y <= cy + button.height / 2
+    x >= cx - button.hitWidth / 2 &&
+    x <= cx + button.hitWidth / 2 &&
+    y >= cy - button.hitHeight / 2 &&
+    y <= cy + button.hitHeight / 2
   );
 }

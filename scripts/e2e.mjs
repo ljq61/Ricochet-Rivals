@@ -934,6 +934,185 @@ async function runMobile(browser) {
   check('转回横屏覆盖层消失（resize/orientation 处理）', overlayGone);
 
   await page.close();
+
+  // ---- Phase 18 Step 16：视口矩阵扩展（932×430 @DPR3）+ pointer 回归 -------
+  section('Mobile — Viewport Matrix 932×430 @DPR3 + pointercancel + 双指移动（Phase 18）');
+
+  const vp = await browser.newPage();
+  await vp.setViewport({
+    width: 932, height: 430, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
+  });
+  await vp.goto(URL, { waitUntil: 'load' });
+  await waitForScene(vp, 'MainMenuScene', 15000);
+  await tapMenuButton(vp, 'local2p');
+  await waitForScene(vp, 'BattleScene', 10000);
+
+  // DPR3 视口断言组（设备矩阵 932×430：iPhone 16 Pro Max 档）
+  const v0 = await dbg(vp);
+  check('932×430@3：控制档位 touch', v0.controlProfile === 'touch');
+  check(
+    '932×430@3：uiScale = DPR 3（游戏坐标 = 物理像素）',
+    v0.uiScale === 3,
+    `uiScale=${v0.uiScale}`
+  );
+  const bmp = await vp.evaluate(() => ({
+    w: document.querySelector('canvas').width,
+    h: document.querySelector('canvas').height,
+  }));
+  check(
+    '932×430@3：画布位图 = 2796×1290（CSS×DPR，不回退 CSS 位图）',
+    bmp.w === 932 * 3 && bmp.h === 430 * 3,
+    `bmp=${bmp.w}x${bmp.h}`
+  );
+  const cssVP = await vp.evaluate(() => ({
+    w: document.querySelector('canvas').clientWidth,
+    h: document.querySelector('canvas').clientHeight,
+  }));
+  check(
+    '932×430@3：画布 CSS 尺寸 = 视口',
+    cssVP.w === 932 && cssVP.h === 430,
+    `css=${cssVP.w}x${cssVP.h}`
+  );
+  check(
+    '932×430@3：zoom = (430×3)/1080 ≈ 1.194（纵向构图恒定）',
+    Math.abs(v0.cameraZoom - (430 * 3) / 1080) < 0.005,
+    `zoom=${v0.cameraZoom}`
+  );
+  check(
+    '932×430@3：landscape + 旋转覆盖层隐藏',
+    v0.orientation === 'landscape' &&
+      (await vp.evaluate(
+        () => !document.getElementById('rotate-overlay').classList.contains('is-visible')
+      ))
+  );
+
+  // Phase 18 粒子预算基线：开局（HP 10）无发射器活跃
+  check(
+    '粒子预算基线：开局存活粒子 = 0',
+    (await dbg(vp)).particles === 0,
+    `particles=${(await dbg(vp)).particles}`
+  );
+
+  // 双指各按 ◀/▶（synthetic PointerEvent 多指：CDP 单点 API 无法真双指；
+  // client 坐标经 InputRouter 归一化到画布空间，与真实触摸同链路）
+  const m0 = (await dbg(vp)).players.P1;
+  await vp.evaluate(() => {
+    const c = document.querySelector('canvas');
+    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 41, pointerType: 'touch', clientX: 64, clientY: 366, bubbles: true }));
+    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 42, pointerType: 'touch', clientX: 164, clientY: 366, bubbles: true }));
+  });
+  await sleep(500);
+  const m1 = (await dbg(vp)).players.P1;
+  check(
+    '双指各按 ◀/▶：净方向 0（原地不动）',
+    Math.abs(m1 - m0) < 2,
+    `x: ${m0.toFixed(0)} → ${m1.toFixed(0)}`
+  );
+  await vp.evaluate(() => {
+    const c = document.querySelector('canvas');
+    c.dispatchEvent(new PointerEvent('pointerup', { pointerId: 41, pointerType: 'touch', bubbles: true }));
+  });
+  await sleep(500);
+  const m2 = (await dbg(vp)).players.P1;
+  check(
+    '松开 ◀（剩 ▶）：向右移动（多指独立追踪）',
+    m2 > m1 + 40,
+    `x: ${m1.toFixed(0)} → ${m2.toFixed(0)}`
+  );
+  await vp.evaluate(() => {
+    const c = document.querySelector('canvas');
+    c.dispatchEvent(new PointerEvent('pointerup', { pointerId: 42, pointerType: 'touch', bubbles: true }));
+  });
+  await sleep(300);
+  const m3 = (await dbg(vp)).players.P1;
+  await sleep(300);
+  const m4 = (await dbg(vp)).players.P1;
+  check(
+    '双指全松开：立即停止（无惯性 / 无卡键）',
+    Math.abs(m4 - m3) < 0.5,
+    `xReleased=${m3.toFixed(2)}, xAfter=${m4.toFixed(2)}`
+  );
+
+  // pointercancel：相机拖拽被系统打断（来电 / 手势接管）→ 释放无残留
+  const synthDrag = async (type, id, x, y) => {
+    await vp.evaluate(
+      (t, pid, cx, cy) => {
+        const c = document.querySelector('canvas');
+        c.dispatchEvent(new PointerEvent(t, { pointerId: pid, pointerType: 'touch', clientX: cx, clientY: cy, bubbles: true }));
+      },
+      type, id, x, y
+    );
+  };
+  const cPre = (await dbg(vp)).cameraScrollX;
+  await synthDrag('pointerdown', 7, 600, 200);
+  await synthDrag('pointermove', 7, 500, 200);
+  await synthDrag('pointercancel', 7, 500, 200);
+  await sleep(150);
+  const cMid = (await dbg(vp)).cameraScrollX;
+  // 前置：首个合成拖拽确实平移了相机（证明合成链路有效，cancel 用例非空洞）
+  check(
+    '合成拖拽生效：pointerdown→move 平移相机（与真实触摸同链路）',
+    Math.abs(cMid - cPre) > 30,
+    `scroll: ${cPre.toFixed(0)} → ${cMid.toFixed(0)}`
+  );
+  // cancel 后新手势仍可自由拖动（无残留 gesture owner）
+  await vp.touchscreen.touchStart(600, 200);
+  await vp.touchscreen.touchMove(540, 200);
+  await vp.touchscreen.touchEnd();
+  await sleep(150);
+  const cAfter = (await dbg(vp)).cameraScrollX;
+  check(
+    'pointercancel 释放拖拽：后续手势仍可平移相机（无残留 owner）',
+    Math.abs(cAfter - cMid) > 30,
+    `scroll: ${cMid.toFixed(0)} → ${cAfter.toFixed(0)}`
+  );
+
+  // 932×430 完整链路：AimButton（W−52, H/2）→ 瞄准 → 发射 → 跟随 → 换手
+  await vp.touchscreen.touchStart(880, 215);
+  await vp.touchscreen.touchEnd();
+  await waitFor(vp, async () => (await dbg(vp)).cameraMode === 'AIMING', 1500, 'AIMING');
+  const origin932 = await launchOriginScreen(vp, 932, 430);
+  const startY932 = origin932.y - 60;
+  await vp.touchscreen.touchStart(origin932.x, startY932);
+  await vp.touchscreen.touchMove(origin932.x + 5, startY932 + 5); // 死区内不激活
+  const shot932 = solveFortyFiveRelease(origin932, await dbg(vp), 4550);
+  await vp.touchscreen.touchMove(shot932.x, shot932.y);
+  await vp.touchscreen.touchEnd();
+  const fired932 = await waitFor(
+    vp,
+    async () => (await dbg(vp)).hasFired,
+    3000,
+    'hasFired'
+  );
+  check('932×430：触摸拖拽（>死区）释放 → 发射', fired932 === true);
+  check(
+    '932×430：发射后相机 PROJECTILE_FOLLOW（与 844×390 同链路）',
+    (await dbg(vp)).cameraMode === 'PROJECTILE_FOLLOW'
+  );
+  // 粒子计数器 sanity：飞行期弹尾火焰/烟雾发射器活跃 → 存活粒子 > 0
+  //（与开局基线 ===0 成对：证明计数器在工作，而非恒 0）
+  const inFlightParticles = await waitFor(
+    vp,
+    async () => ((await dbg(vp)).particles > 0 ? true : null),
+    3000,
+    '飞行期存活粒子 > 0'
+  );
+  check('粒子预算：飞行期存活粒子 > 0（计数器 sanity）', inFlightParticles === true);
+  const resolved932 = await waitFor(
+    vp,
+    async () => (await dbg(vp)).cameraMode === 'FREE_VIEW',
+    12000,
+    '攻击结束'
+  );
+  check('932×430：攻击结束回 FREE_VIEW', resolved932 === true);
+  const turn932 = await dbg(vp);
+  check(
+    '932×430：回合切换 P2 · 第 2 回合（触屏全链路跨视口稳定）',
+    turn932.turnId === 2 && turn932.currentPlayerId === 'P2',
+    `turn=${turn932.turnId} player=${turn932.currentPlayerId}`
+  );
+
+  await vp.close();
 }
 
 // ---- Single Player 场景（Phase 10 冒烟 + Phase 11 Result/Rematch） -------

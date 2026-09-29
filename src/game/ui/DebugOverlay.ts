@@ -27,6 +27,8 @@ export interface DebugSnapshot {
   viewportWidth: number;
   viewportHeight: number;
   uiScale: number;
+  /** Phase 18 性能观测：全场景存活粒子数（QA / E2E 粒子预算） */
+  particles: number;
   /** Phase 14 联机：DEBUG_NETWORK 时展示（离线 null = 不显示） */
   online?: OnlineDebugInfo | null;
 }
@@ -87,6 +89,7 @@ export class DebugOverlay {
       `Game     ${snapshot.gameWidth}x${snapshot.gameHeight} @${snapshot.devicePixelRatio}x`,
       `VP       ${snapshot.viewportWidth}x${snapshot.viewportHeight}`,
       `UIScale  ${snapshot.uiScale}`,
+      `Particles ${snapshot.particles}`,
     ];
     // Phase 14：NETWORK 段（ROLE / LOCAL / REMOTE / MATCH / NET STATE /
     // LAST RX / LAST TX / PING）—— 离线对局无 online 快照则不显示

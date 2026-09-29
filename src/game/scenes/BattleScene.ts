@@ -525,10 +525,23 @@ export class BattleScene extends Phaser.Scene {
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
       uiScale: this.viewportService.current.uiScale,
+      // Phase 18 性能观测：全场景存活粒子数（真机 QA / E2E 粒子预算）
+      particles: DEBUG_GAME ? this.countAliveParticles() : 0,
       // Phase 14：DEBUG_NETWORK 段（离线 null = 不显示）
       online:
         this.online !== null && DEBUG_NETWORK ? this.online.debugInfo() : null,
     });
+  }
+
+  /** Phase 18 性能观测：所有 ParticleEmitter 的存活粒子计数总和 */
+  private countAliveParticles(): number {
+    let count = 0;
+    for (const child of this.children.list) {
+      if (child instanceof Phaser.GameObjects.Particles.ParticleEmitter) {
+        count += child.getAliveParticleCount();
+      }
+    }
+    return count;
   }
 
   /** 瞄准按钮点击：AIMING → 取消；其余 → 发起瞄准 */
@@ -901,6 +914,10 @@ export class BattleScene extends Phaser.Scene {
       /** Phase 17 玩法特性：中央章鱼触手是否已升起（E2E/调试观测口） */
       get octopus(): boolean {
         return self.octopusTentacle.isActive;
+      },
+      /** Phase 18 性能观测：全场景存活粒子数（QA / E2E 粒子预算断言） */
+      get particles(): number {
+        return self.countAliveParticles();
       },
       get phase(): string {
         return self.state.phase;
