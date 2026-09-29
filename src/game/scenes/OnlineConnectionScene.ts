@@ -211,9 +211,11 @@ export class OnlineConnectionScene extends Phaser.Scene {
       router: this.inputRouter,
       id: 'online-back',
       viewport: this.viewport,
-      label: 'BACK',
+      // Phase 17 修复轮：手机上 260 宽的 BACK 与底部动作行（CONNECT）重叠
+      // —— 改为左上角小 icon（64×64 触控目标达标，E2E 仍经 rect 点击）
+      label: '←',
       accent: 0x56698a,
-      baseWidth: SMALL_WIDTH,
+      baseWidth: 64,
       onTap: () => this.leaveToMenu(),
     });
     this.buttons.backToMenu = new MenuButton(this, {
@@ -601,11 +603,17 @@ export class OnlineConnectionScene extends Phaser.Scene {
 
   private reposition(): void {
     const { width, height, safeArea, uiScale } = this.viewport.current;
+    // Phase 17 修复轮：左上角返回 icon 让出顶部带 —— 标题 / 文案整体下移
+    // （icon 底沿 88*ui + 间隙 16*ui = 104*ui 起为标题区）
+    this.buttons.back?.setPosition(
+      safeArea.left + (24 + 32) * uiScale,
+      safeArea.top + (24 + 32) * uiScale
+    );
     this.title.setFontSize(TITLE_FONT * uiScale);
-    this.title.setPosition(width / 2, safeArea.top + (44 + TITLE_FONT * 0.5) * uiScale);
+    this.title.setPosition(width / 2, safeArea.top + (104 + TITLE_FONT * 0.5) * uiScale);
 
     // 文案区固定在标题下方（曾按状态挪到中部 —— 与 DOM textarea 相互遮挡）
-    const statusY = safeArea.top + 100 * uiScale;
+    const statusY = safeArea.top + 160 * uiScale;
     this.statusLine.setFontSize(TEXT_FONT * uiScale);
     this.promptLine.setFontSize(TEXT_FONT * uiScale);
     this.statusLine.setPosition(width / 2, statusY);
@@ -624,10 +632,6 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.copy?.setPosition(centerX + 170 * uiScale, actionRowY);
     this.buttons.tryAgain?.setPosition(centerX, height * 0.6);
     this.buttons.enterBattle?.setPosition(centerX, height * 0.58);
-    this.buttons.back?.setPosition(
-      centerX - 200 * uiScale,
-      bottomRow
-    );
     this.buttons.backToMenu?.setPosition(centerX, height * 0.72);
 
     this.positionTextarea();

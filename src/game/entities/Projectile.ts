@@ -15,7 +15,12 @@ import type { TurnId } from '../state/ids';
 const MATTER_STEPS_PER_SECOND = 60;
 
 const PROJECTILE_LABEL_PREFIX = 'projectile:';
-const PROJECTILE_ART_SIZE = 64;
+/**
+ * 素材显示尺寸：画布 1254px、炮弹内容仅 456px 宽（scripts/measure-art.mjs
+ * 实测）→ 165 显示尺寸使可见炮弹约 60 世界 px（≈2× 碰撞直径 32，Q 版
+ * 角色比例下可读；修复轮前为 64 → 可见仅 ~23px，比命中判定还小）。
+ */
+const PROJECTILE_ART_SIZE = 165;
 
 /**
  * 投射物（Phase 5，V0.1 仅 NORMAL）。

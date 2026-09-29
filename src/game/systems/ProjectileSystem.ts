@@ -71,6 +71,22 @@ export class ProjectileSystem {
     return this.projectiles.map((p) => p.state);
   }
 
+  /**
+   * Phase 15 修复轮：desync 恢复入口清空在飞本地模拟炮弹。
+   * 权威快照将整回合重述，在飞模拟已作废 —— 若保留，后台冻结的炮弹
+   * 会在恢复完成后迟发 impact：相机被 focusImpact 打回 IMPACT，而
+   * pendingTurnEnd 已消费 / 恢复期 TURN_END 被丢弃、无任何重试路径
+   * → 相机永久滞留（E2E 全量三连复现：cam=IMPACT 而 phase=ACTION）。
+   * 静默销毁（无爆炸、无 IMPACT/OUT_OF_BOUNDS 事件），副作用止于
+   * 表现层；被恢复回合的权威伤害数字不补播（HUD 已随快照对齐）。
+   */
+  clearInFlightSimulations(): void {
+    for (const projectile of this.projectiles) {
+      projectile.destroyWithoutExplosion();
+    }
+    this.projectiles.length = 0;
+  }
+
   // ---- 事件（相机 / Phase 8 TurnManager 消费） ----
 
   /** 炮弹生成并发射（所有输入源 FIRE 的统一汇聚点） */

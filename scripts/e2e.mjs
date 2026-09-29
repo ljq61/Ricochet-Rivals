@@ -1640,9 +1640,19 @@ async function runOnlineBattle(browser) {
   await waitFor(
     pageGuest,
     async () => (await guestD()).cameraMode === 'FREE_VIEW',
-    5000,
+    // 全量套件下后台页 rAF 恢复显著慢于单段运行（两次全量 123/124 同点
+    // 失败、单段 29/29 通过）—— 与邻居等待（15s/25s）对齐
+    15000,
     'Guest 相机回 FREE_VIEW（转场完成，瞄准入口就绪）'
-  );
+  ).catch(async (e) => {
+    // 卡点诊断：相机事件环形日志（Phase 14 利器）+ 同步状态 —— 定位
+    // desync 恢复后相机滞留 IMPACT 的事件序列
+    const d = await guestD();
+    const log = await pageGuest.evaluate(() => window.__RR_DEBUG__.cameraEventLog ?? null);
+    throw new Error(
+      `${e.message} [diag cam=${d.cameraMode} phase=${d.phase} cur=${d.currentPlayerId} turn=${d.turnId} fired=${d.hasFired}] [camLog=${JSON.stringify(log)}]`
+    );
+  });
   await fireFortyFiveShot(pageGuest, 1280, 800, (await hostD()).players.P1).catch((e) => {
     console.log('[rematch-guest-fire-diag]', String(e).slice(0, 150));
     return null;

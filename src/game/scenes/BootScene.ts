@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { MainMenuScene } from './MainMenuScene';
-import { ART_FILES } from '../config/ArtAssets';
+import { ART_FILES, AIM_POSE_FILES } from '../config/ArtAssets';
+import { SFX_FILES } from '../audio/SfxBus';
 
 /**
  * Load first-look art once. Consumers retain playable fallback visuals.
@@ -21,6 +22,14 @@ export class BootScene extends Phaser.Scene {
     });
     for (const [key, file] of ART_FILES) {
       this.load.image(key, `assets/art/${file}`);
+    }
+    // Phase 17 修复轮：瞄准抬枪序列（15–75°，蓝红各 5 张）
+    for (const [key, file] of AIM_POSE_FILES) {
+      this.load.image(key, `assets/art/${file}`);
+    }
+    // Phase 17 Juice：音效（缺失时 SfxBus 静默跳过，同美术回退原则）
+    for (const [key, file] of SFX_FILES) {
+      this.load.audio(key, `assets/sfx/${file}`);
     }
   }
 

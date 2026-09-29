@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
-> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验）；Phase 17 进行中：首屏美术样片已接入，完整美术与 Juice 待续。**
-> 当前验证：`npm run typecheck` / `npm run test`（484）/ `npm run build` 已通过；Q 版改动后的 `npm run e2e` 首轮为 123 passed / 1 failed，失败点是 Guest Turn 4 相机回 `FREE_VIEW` 的转场等待超时。
+> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验）；Phase 17 进行中：首屏美术样片 + 用户反馈 4 项修复轮 + 7 音效 Juice 轮完成（含 desync 恢复遗留相机滞留的产品级 bug 修复），hit stop / 粒子 / 角色反应 / UI transitions 待续。**
+> 当前验证：`npm run typecheck` / `npm run test`（487）/ `npm run build` 已通过；修复 + 音效轮后 `npm run e2e` 全量 **130 passed / 0 failed**（desync 恢复清炮弹修复后；恢复前同点连续三次 123/124）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
 ---
@@ -1823,23 +1823,82 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 - [x] 双方角色改为二头身 Q 版并放大到约 180 世界像素高；碰撞体 120×180、发射点 / 引信 / 瞄准起始范围同步调参
 - [x] NORMAL 弹体与单帧爆炸资源导入 `Projectile`，保留资源缺失时的 Graphics 回退
 - [x] 484 单测通过；构建含类型检查通过；桌面 / 手机模拟截图复查
-- [ ] Q 版改动后的全量 E2E 复跑：首轮 123/124，唯一失败为 Guest Turn 4 等待相机回 `FREE_VIEW` 的转场时序超时；需在稳定预览环境复跑
 - [x] Chrome 实际截图检查：桌面 1440×900 @1x、手机模拟 844×390 @2x；菜单进入本地对战正常
 - [ ] 样片用户视觉验收、真机验证、其余 A 批次素材与独立背景视差层
+
+## 用户反馈修复轮（2026-09-29，4 项）
+
+- [x] **Online 连接页返回按钮**：手机上 260 宽 BACK 与底部动作行（CONNECT/COPY）重叠
+  —— 改为左上角 64×64 小 icon（'←'，safeArea 边距 24；标题 / 文案带整体
+  下移让出顶部带；E2E 仍经 debug rect 点击，零脚本改动）
+- [x] **炮弹视觉放大**：素材画布 1254 但内容仅 456px 宽，displaySize 64 时
+  可见炮弹仅 ~23 世界 px（比碰撞直径 32 还小）→ 64 → **165**（可见
+  ~60 世界 px ≈ 2× 碰撞直径，Q 版比例下可读；物理半径不变）
+- [x] **瞄准朝向跟随抛物线**：`BattleScene.updateAimPoseVisual` 每帧按
+  `aimState` 发射方向驱动 `Player.setFacing`（拖拽反向=发射向，左右跨拖
+  自动翻转）；瞄准结束 / 发射 / 回合切换自动复位
+- [x] **瞄准抬枪序列图 15/30/45/60/75°**：全能日辉（frontier_sunburst）
+  以既有蓝红 chibi 为参考各生成 5 张透明姿态图（共 10 张，
+  `public/assets/art/{blue,red}-aim{15..75}.png`）；`ArtAssets` 姿态
+  key / 文件清单 / 分桶纯函数（<7.5° 回 idle，平局取小角）+
+  实测锚点边界；`Player.setAimPose` 幂等切换纹理（素材缺失回退
+  idle）；BootScene 预加载；单测 3 项（484 → 487）
+- [x] **工具沉淀**：`scripts/measure-art.mjs`（零依赖 PNG alpha 边界
+  测量，zlib 解码 + unfilter —— 姿态锚点 / 弹体尺寸实测来源）；
+  `scripts/visual-check.mjs`（5 张视觉抽查截图：icon / 45°/75°/15°左
+  翻转 / 炮弹飞行，多模态复查通过）
+- [x] **E2E 时序修复 + 相机滞留根因修复**：全量 E2E 三连在同点失败
+  （123/124，Guest 相机等 FREE_VIEW 超时）→ 诊断升级（卡点相机模式
+  转储 + cameraEventLog）实锤根因：**desync 恢复不清在飞本地模拟炮弹**
+  —— 后台冻结的旧回模拟在恢复+回前台后迟发 impact（camLog：
+  `4:beginTransition→FREE_VIEW` → `4:impact@612`（turn 4 无人发射）
+  → `attackResolved-waiting`），pendingTurnEnd 已消费无重试 → 相机
+  永久滞留 IMPACT（真实用户后台化页面同窗口可中招）。修复：
+  `ProjectileSystem.clearInFlightSimulations()`（静默销毁，无 IMPACT/
+  OUT_OF_BOUNDS 事件）+ BattleScene 在 DESYNC_DETECTED/SYNC_REQUESTED
+  入口调用；等待预算 5s→15s 一并对齐邻居（次因：全量负载下后台页
+  rAF 恢复慢）。单段 29/29 通过 + 全量复跑见验证记录
 
 资产来源、原始提示词、技术规格与局限：`docs/ArtDesign/FIRST_LOOK_ASSETS.md`。
 首轮保留静态角色移动起伏、现有爆炸与受击反馈；完整动画、音效和 hit stop 尚未制作。
 
+### 修复轮 Known Issues（非阻塞）
+
+- [ ] **[Info]** 75° 姿态素材实际枪口仰角 ~60–65°（生成精度；序列递进
+      可读，真人视角可接受）—— 后续素材批次统一重制时校正
+- [ ] **[Info]** 手机端 Online 连接页提示行（prompt）与 DOM textarea 半
+      遮挡（既有布局：textarea 锚定底部动作行，prompt 在其中段）——
+      归样片用户视觉验收轮一并处理
+
+## Juice 音效轮（2026-09-29）
+
+- [x] **7 个音效全部生成并接入**（generate_sound_effect，sonilo 模型，
+  复古街机卡通风与像素海港美术同调；`public/assets/sfx/*.mp3`，7 文件
+  md5 全不同）：
+  - launch（发射 pneumatic THOOMP）→ `ProjectileSystem.onLaunched`
+  - projectile（飞行口哨，loop 随发射启停）→ onLaunched / onImpact /
+    onOutOfBounds
+  - explosion（爆炸 boom）→ onImpact
+  - hit（命中金属 clank+thud，有伤害才播）→ onImpact 结算
+  - turn（回合切换双音上行）→ 回合横幅（断线/同步失败时不播）
+  - victory / defeat（胜负 jingle，本地视角；Local 2P 恒庆祝；DRAW
+    按 defeat）→ gameOver 横幅
+- [x] **SfxBus**（`src/game/audio/SfxBus.ts`）：UserSettings.soundEnabled
+  播放时门禁（菜单 SOUND 开关即时生效）+ 素材缺失静默跳过（同美术
+  Graphics 回退原则）+ 单循环句柄幂等管理 + SHUTDOWN 兜底清理；
+  BootScene 预加载；事件驱动接线（规则层零感知）；联机双端各播本地
+  模拟一次、权威 TURN_RESULT 路径不重复触发（不双播）
+
 增加：
 
-- [ ] launch sound
-- [ ] projectile sound
-- [ ] explosion
-- [ ] hit sound
-- [ ] turn sound
-- [ ] victory
-- [ ] defeat
-- [ ] camera shake
+- [x] launch sound
+- [x] projectile sound
+- [x] explosion
+- [x] hit sound
+- [x] turn sound
+- [x] victory
+- [x] defeat
+- [x] camera shake（Phase 7 已有：`cameraController.shake()`，爆炸时触发）
 - [ ] impact freeze / hit stop
 - [ ] particles
 - [ ] player reaction

@@ -26,6 +26,7 @@ import type { BattleSceneData, MatchSetup } from '../match/MatchSetup';
 import { AimController } from '../input/AimController';
 import { AimButton } from '../ui/AimButton';
 import { AimRenderer } from '../ui/AimRenderer';
+import { SfxBus, SFX, type SfxKey } from '../audio/SfxBus';
 import { PlayerHud } from '../ui/PlayerHud';
 import { TurnBanner } from '../ui/TurnBanner';
 import { DamageNumbers } from '../ui/DamageNumbers';
@@ -104,6 +105,8 @@ export class BattleScene extends Phaser.Scene {
   private cameraController!: CameraController;
   private aimButton!: AimButton;
   private aimRenderer!: AimRenderer;
+  /** Phase 17 Juice：音效总线（发射/飞行/爆炸/命中/回合/胜负） */
+  private sfx!: SfxBus;
   private playerHud!: PlayerHud;
   private turnBanner!: TurnBanner;
   private damageNumbers!: DamageNumbers;
@@ -343,6 +346,8 @@ export class BattleScene extends Phaser.Scene {
     });
     this.inputRouter.registerClaimant(this.aimController);
     this.aimRenderer = new AimRenderer(this);
+    // Phase 17 Juice：音效总线（事件驱动，规则层零感知）
+    this.sfx = new SfxBus(this);
 
     // 11. 相机 ↔ 投射物事件连接（Phase 6/7/8）：
     //     发射 → PROJECTILE 相位 + 相机跟随；
@@ -350,6 +355,9 @@ export class BattleScene extends Phaser.Scene {
     //     停留结束 / 出界 → 回合收口（endTurn / TURN_TRANSITION / GAME_OVER）
     this.projectileSystem.onLaunched(() => {
       this.logCameraEvent(`launched`);
+      // Phase 17 Juice：发射口哨循环随发射启动，impact / 出界停
+      this.sfx.play(SFX.launch);
+      this.sfx.startLoop(SFX.projectile);
       this.turnManager.notifyProjectileLaunched();
       this.cameraController.followProjectile(() => {
         const projectile = this.projectileSystem.activeProjectiles[0];
@@ -363,6 +371,12 @@ export class BattleScene extends Phaser.Scene {
       const result = this.explosionSystem.explode(this.state, impact);
       this.turnManager.notifyProjectileResolved(result);
       this.cameraController.shake();
+      // Phase 17 Juice：停飞行口哨 + 爆炸；有命中再加 hit 反馈音
+      this.sfx.stopLoop();
+      this.sfx.play(SFX.explosion);
+      if (result.players.some((entry) => entry.damage > 0)) {
+        this.sfx.play(SFX.hit);
+      }
       for (const entry of result.players) {
         if (entry.damage > 0) {
           this.playerViews[entry.playerId].playHitReaction();
@@ -382,6 +396,7 @@ export class BattleScene extends Phaser.Scene {
     });
     this.projectileSystem.onOutOfBounds(() => {
       this.logCameraEvent('outOfBounds');
+      this.sfx.stopLoop();
       // 出界：无爆炸无伤害，同样进入 RESOLVE 并收口回合
       this.turnManager.notifyProjectileResolved(null);
       this.online?.notifyTurnResolved(null, null);
@@ -420,6 +435,9 @@ export class BattleScene extends Phaser.Scene {
 
     this.cameraController.update(delta);
     this.aimRenderer.update(this.aimController.aimState);
+    // Phase 17 修复轮：瞄准时角色朝向跟随发射方向（抛物线反向拖拽）+
+    // 抬枪姿态序列（15–75°）；瞄准结束 / 发射后由本方法自动复位 idle
+    this.updateAimPoseVisual();
     // Phase 14：联机对手回合隐藏瞄准 / 移动按钮（相机 Free View 仍可用）
     const localControls = this.isLocalControlledTurn();
     this.aimButton.refresh(this.cameraController.currentMode, localControls);
@@ -440,6 +458,7 @@ export class BattleScene extends Phaser.Scene {
       // 覆盖 OPPONENT DISCONNECTED / SYNC FAILED 提示（E2E 实测 flaky
       // 25% 暴露；横幅是玩家对局状态感知的唯一来源，覆盖即误导）
       if (!this.connectionLost && !this.syncFailed) {
+        this.sfx.play(SFX.turn);
         if (this.online !== null) {
           const label =
             this.state.currentPlayerId === this.online.localPlayerId
@@ -458,6 +477,7 @@ export class BattleScene extends Phaser.Scene {
         return;
       }
       this.bannerGameOverShown = true;
+      this.sfx.play(this.gameOverJingleKey());
       this.turnBanner.showGameOver(this.state.winnerId);
       // Phase 11：胜负横幅停留 ~1.6s → 淡出 → ResultScene。
       // delayedCall 绑定本场景时钟，shutdown 自动清理（无跨场景泄漏）；
@@ -572,6 +592,25 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
+   * Phase 17 修复轮：瞄准姿态 / 朝向驱动。aimState.active 时按发射方向
+   * （-normalize(drag)，即抛物线初速方向）翻转朝向，仰角分桶切换抬枪
+   * 序列图（15–75°）；非激活（取消 / 发射 / 相机离开 AIMING / 回合
+   * 切换后 currentPlayer 恒 idle）复位 idle。仅动渲染层，零规则耦合。
+   */
+  private updateAimPoseVisual(): void {
+    const aim = this.aimController.aimState;
+    const view = this.playerViews[this.state.currentPlayerId];
+    if (!aim.active) {
+      view.setAimPose(null);
+      return;
+    }
+    view.setFacing(aim.directionX >= 0 ? 1 : -1);
+    const elevation =
+      (Math.atan2(Math.abs(aim.directionY), Math.abs(aim.directionX)) * 180) / Math.PI;
+    view.setAimPose(elevation);
+  }
+
+  /**
    * Phase 14：当前回合是否不可由本地输入发起动作（对手回合或已断线）。
    * 离线恒 false。移动 / 瞄准入口据此静默；相机 Free View 不受影响
    * （对方回合仍可观察战场，CODELY.md Phase 14 规约）。
@@ -649,6 +688,24 @@ export class BattleScene extends Phaser.Scene {
     this.beginNextTurnTransition();
   }
 
+  /**
+   * Phase 17 Juice：胜负 jingle（本地视角）—— 联机/单机按本机胜负；
+   * Local 2P 任一方获胜都在本机庆祝；同归于尽按 defeat 收场。
+   */
+  private gameOverJingleKey(): SfxKey {
+    const winner = this.state.winnerId;
+    if (winner === null) {
+      return SFX.defeat;
+    }
+    if (this.online !== null) {
+      return winner === this.online.localPlayerId ? SFX.victory : SFX.defeat;
+    }
+    if (this.setup.mode === 'single_player') {
+      return winner === 'P1' ? SFX.victory : SFX.defeat;
+    }
+    return SFX.victory;
+  }
+
   /** 相机 TURN_TRANSITION 到新玩家 → ACTION（Host/离线/Guest 共用收尾） */
   private beginNextTurnTransition(): void {
     this.logCameraEvent(
@@ -703,6 +760,10 @@ export class BattleScene extends Phaser.Scene {
   /** Phase 15：同步状态迁移展示（DESYNC/SYNCING 提示；SYNCED 类不打扰） */
   private handleOnlineSyncStateChange(state: OnlineSyncState, detail?: string): void {
     if (state === OnlineSyncState.DESYNC_DETECTED || state === OnlineSyncState.SYNC_REQUESTED) {
+      // Phase 15 修复轮：进入恢复即废弃在飞本地模拟 —— 权威快照将整回合
+      // 重述；后台冻结的炮弹迟发 impact 会把相机打回 IMPACT 且无重试
+      // 路径 → 永久滞留（E2E 全量复现：cam=IMPACT 而 phase=ACTION）
+      this.projectileSystem.clearInFlightSimulations();
       this.turnBanner.showMessage('SYNCHRONIZING…', 0xffc24d);
     } else if (state === OnlineSyncState.SYNC_FAILED) {
       this.handleOnlineSyncFailure();
@@ -903,6 +964,7 @@ export class BattleScene extends Phaser.Scene {
     this.aimController.destroy();
     this.aimButton.destroy();
     this.aimRenderer.destroy();
+    this.sfx.destroy();
     this.playerHud.destroy();
     this.turnBanner.destroy();
     this.projectileSystem.destroy();
