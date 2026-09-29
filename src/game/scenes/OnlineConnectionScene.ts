@@ -70,12 +70,13 @@ export class OnlineConnectionScene extends Phaser.Scene {
 
   private title!: Phaser.GameObjects.Text;
   private statusLine!: Phaser.GameObjects.Text;
-  private codeLine!: Phaser.GameObjects.Text;
   private promptLine!: Phaser.GameObjects.Text;
   private buttons: Partial<Record<OnlineButton, MenuButton>> = {};
   private textarea: HTMLTextAreaElement | null = null;
   /** 当前流程中的连接码（host offer / guest response），COPY 用 */
   private currentCode: string | null = null;
+  /** textarea 正只读展示连接码（离开该状态时清空恢复粘贴语义） */
+  private textareaHoldsCode = false;
   private lastRttMs: number | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   /** RTT 显示的 PONG 订阅取消器（交接 / 关闭时清理） */
@@ -91,6 +92,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.transitioning = false;
     this.failureMessage = null;
     this.currentCode = null;
+    this.textareaHoldsCode = false;
     this.lastRttMs = null;
     this.handedOff = false;
     this.lobbyPhase = 'idle';
@@ -143,14 +145,6 @@ export class OnlineConnectionScene extends Phaser.Scene {
       .setDepth(900);
     this.statusLine = this.add
       .text(0, 0, '', { fontFamily: 'monospace', color: '#e8eef7' })
-      .setOrigin(0.5)
-      .setDepth(900);
-    this.codeLine = this.add
-      .text(0, 0, '', {
-        fontFamily: 'monospace',
-        color: '#8fa3c7',
-        wordWrap: { width: 900 },
-      })
       .setOrigin(0.5)
       .setDepth(900);
     this.promptLine = this.add
@@ -321,6 +315,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     try {
       const { connectionCode } = await this.controller.createHostSession();
       this.currentCode = connectionCode;
+      this.renderState(); // currentCode 在状态回调之后才就绪：补渲染"code ready"
     } catch {
       // 失败已由 onFailure 渲染
     }
@@ -340,6 +335,9 @@ export class OnlineConnectionScene extends Phaser.Scene {
     try {
       const { responseCode } = await this.controller.submitOfferCode(code);
       this.currentCode = responseCode;
+      // currentCode 在 GUEST_WAITING_FOR_HOST 状态回调之后才就绪：必须补渲染，
+      // 否则码永不显示（真机曾因此完全无法回传 Response）
+      this.renderState();
     } catch {
       // 失败已由 onFailure 渲染
     }
@@ -353,15 +351,44 @@ export class OnlineConnectionScene extends Phaser.Scene {
     try {
       await navigator.clipboard.writeText(this.currentCode);
     } catch {
-      // 剪贴板权限失败：降级选中文本（textarea 内手动复制）
-      this.textarea?.select();
-      this.buttons.copy?.setLabel('COPY FAILED — SELECT & COPY');
+      // navigator.clipboard 需要安全上下文 + 写权限：局域网 HTTP 下 API
+      // 缺失（同步抛出，仍在点击手势内），权限被拒时 NotAllowedError。
+      // 降级用 legacyCopy 复制【码本身】。禁止 select() 页面上那个输入框
+      // —— Host 侧它承载的是待粘贴的 Answer（此刻为空），选中它会把
+      // 空内容"成功"复制给用户（真机实测：COPIED! 却贴出空白）。
+      const legacyCopied = this.legacyCopy(this.currentCode);
+      this.buttons.copy?.setLabel(legacyCopied ? 'COPIED!' : 'COPY FAILED — SELECT & COPY');
     }
     this.time.delayedCall(1_500, () => {
       if (this.buttons.copy) {
         this.buttons.copy.setLabel('COPY CODE');
       }
     });
+  }
+
+  /** execCommand 降级复制：临时不可见 textarea 承载目标文本（旧 API 不受
+   *  安全上下文限制；必须在用户手势内同步执行；iOS 要求元素在屏幕内，
+   *  故 opacity:0 而非移出屏幕，readonly 防唤起键盘）。 */
+  private legacyCopy(text: string): boolean {
+    const el = document.createElement('textarea');
+    el.value = text;
+    el.setAttribute('readonly', 'true');
+    el.style.position = 'fixed';
+    el.style.top = '0';
+    el.style.left = '0';
+    el.style.opacity = '0';
+    el.style.pointerEvents = 'none';
+    document.body.appendChild(el);
+    el.select();
+    el.setSelectionRange(0, text.length);
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch {
+      ok = false;
+    }
+    el.remove();
+    return ok;
   }
 
   private leaveToMenu(): void {
@@ -404,7 +431,6 @@ export class OnlineConnectionScene extends Phaser.Scene {
     let showTextarea = false;
     let status = '';
     let prompt = '';
-    let codePreview = '';
 
     switch (state) {
       case OnlineConnectionState.CHOOSE_ROLE:
@@ -415,9 +441,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
         status = 'Creating connection code…';
         break;
       case OnlineConnectionState.HOST_WAITING_FOR_ANSWER:
-        status = 'STEP 1 — Send this connection code to your friend.';
-        prompt = 'STEP 2 — Ask your friend to send back their response code, then paste it below and CONNECT.';
-        codePreview = this.currentCode ? 'Connection code ready' : '';
+        status = 'Press COPY and send the offer code to the other player.';
+        prompt = 'When they send back their response code, paste it below and press CONNECT.';
         visibleButtons.push('copy', 'connect');
         showTextarea = true;
         break;
@@ -429,7 +454,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
         status = 'Connected — verifying connection…';
         break;
       case OnlineConnectionState.GUEST_WAITING_FOR_OFFER:
-        status = 'Paste the host connection code below, then CREATE RESPONSE.';
+        status = 'Paste the offer code from the host below.';
+        prompt = 'Then press CREATE RESPONSE and send the response code back to the host.';
         visibleButtons.push('createResponse');
         showTextarea = true;
         break;
@@ -437,16 +463,19 @@ export class OnlineConnectionScene extends Phaser.Scene {
         status = 'Creating response code…';
         break;
       case OnlineConnectionState.GUEST_WAITING_FOR_HOST:
-        status = 'Send this response code back to the host.';
-        prompt = 'WAITING FOR HOST… (connection opens automatically once the host accepts)';
-        codePreview = this.currentCode ? 'Response code ready' : '';
+        status = 'Press COPY and send this response code to the host.';
+        prompt = 'The connection opens automatically once the host accepts.';
         visibleButtons.push('copy');
+        // textarea 切只读展示 Response 码：HTTP 局域网非 secure context，
+        // 移动端无 clipboard API，COPY 必然降级 —— DOM 文本长按选中复制
+        // 是手机侧唯一可靠复制路径
+        showTextarea = true;
         break;
       case OnlineConnectionState.VERIFIED:
         status = 'CONNECTION VERIFIED — ENTER BATTLE';
         prompt =
           this.lobbyNotice ??
-          'Opponent connected. The match starts when both players press ENTER BATTLE.';
+          'You can enter the game now — press ENTER BATTLE.';
         visibleButtons.length = 0;
         visibleButtons.push('enterBattle', 'backToMenu');
         break;
@@ -481,12 +510,38 @@ export class OnlineConnectionScene extends Phaser.Scene {
 
     this.statusLine.setText(status);
     this.promptLine.setText(prompt);
-    this.codeLine.setText(codePreview);
     this.setTextareaVisible(showTextarea);
-    this.relayoutForState(state);
+    this.syncTextareaForState(state);
   }
 
   // ---- textarea（DOM 层，真实文本交互） ----------------------------------
+
+  /** textarea 分状态语义：粘贴输入（editable）或只读展示本端连接码。
+   *  Guest 的 Response 码必须在 DOM 文本里展示 —— 移动端 HTTP 无
+   *  clipboard API，长按选中复制是唯一路径；离开展示态时清空恢复粘贴。 */
+  private syncTextareaForState(state: OnlineConnectionState): void {
+    const el = this.textarea;
+    if (el === null) {
+      return;
+    }
+    const showCode =
+      state === OnlineConnectionState.GUEST_WAITING_FOR_HOST && this.currentCode !== null;
+    if (showCode) {
+      if (!this.textareaHoldsCode) {
+        el.value = this.currentCode ?? '';
+        this.textareaHoldsCode = true;
+      }
+      el.readOnly = true;
+      el.placeholder = 'Response code — long-press to select & copy';
+    } else {
+      if (this.textareaHoldsCode) {
+        el.value = '';
+        this.textareaHoldsCode = false;
+      }
+      el.readOnly = false;
+      el.placeholder = 'Paste connection code here';
+    }
+  }
 
   private setTextareaVisible(visible: boolean): void {
     if (visible && this.textarea === null) {
@@ -514,13 +569,18 @@ export class OnlineConnectionScene extends Phaser.Scene {
     if (!el) {
       return;
     }
-    const { safeArea } = this.viewport.current;
+    const { height, safeArea, uiScale } = this.viewport.current;
+    const dpr = window.devicePixelRatio || 1;
     el.style.position = 'fixed';
     el.style.left = '10%';
     el.style.width = '80%';
-    el.style.height = '72px';
-    // 底部抬高：避开底部按钮行与 Home Indicator（Safe Area）
-    const bottomPx = safeArea.bottom / (window.devicePixelRatio || 1) + 220;
+    el.style.height = '64px';
+    // 与 reposition() 的动作行（CONNECT / CREATE RESPONSE / COPY）同源：
+    // 输入框底边停在动作行顶沿上方 12 CSS px —— 保证不与按钮、不与顶部
+    // 文案区重叠（旧布局 220px 固定抬高在手机上顶进说明文字区）
+    const bottomRowCss = (height - safeArea.bottom - (32 + 32) * uiScale) / dpr;
+    const actionTopCss = bottomRowCss - 40 - 32; // 动作行中心在 bottomRow 上方 40，半高 32
+    const bottomPx = height / dpr - actionTopCss + 12;
     el.style.bottom = `${bottomPx}px`;
     el.style.zIndex = '10';
     el.style.resize = 'none';
@@ -542,20 +602,26 @@ export class OnlineConnectionScene extends Phaser.Scene {
   private reposition(): void {
     const { width, height, safeArea, uiScale } = this.viewport.current;
     this.title.setFontSize(TITLE_FONT * uiScale);
-    this.title.setPosition(width / 2, safeArea.top + 60 * uiScale + TITLE_FONT * 0.6 * uiScale);
+    this.title.setPosition(width / 2, safeArea.top + (44 + TITLE_FONT * 0.5) * uiScale);
 
+    // 文案区固定在标题下方（曾按状态挪到中部 —— 与 DOM textarea 相互遮挡）
+    const statusY = safeArea.top + 100 * uiScale;
     this.statusLine.setFontSize(TEXT_FONT * uiScale);
     this.promptLine.setFontSize(TEXT_FONT * uiScale);
-    this.codeLine.setFontSize(TEXT_FONT * uiScale);
+    this.statusLine.setPosition(width / 2, statusY);
+    this.promptLine.setPosition(width / 2, statusY + 34 * uiScale);
 
     const buttonH = 64 * uiScale;
     const bottomRow = height - safeArea.bottom - 32 * uiScale - buttonH / 2;
     const centerX = width / 2;
+    const actionRowY = bottomRow - 40 * uiScale;
 
     this.buttons.create?.setPosition(centerX, height * 0.42);
     this.buttons.join?.setPosition(centerX, height * 0.42 + (buttonH + 20 * uiScale));
-    this.buttons.connect?.setPosition(centerX, bottomRow - 40 * uiScale);
-    this.buttons.createResponse?.setPosition(centerX, bottomRow - 40 * uiScale);
+    // 动作行：Host 页 CONNECT 与 COPY 并排；Guest 两个动作各占中央
+    this.buttons.connect?.setPosition(centerX - 160 * uiScale, actionRowY);
+    this.buttons.createResponse?.setPosition(centerX, actionRowY);
+    this.buttons.copy?.setPosition(centerX + 170 * uiScale, actionRowY);
     this.buttons.tryAgain?.setPosition(centerX, height * 0.6);
     this.buttons.enterBattle?.setPosition(centerX, height * 0.58);
     this.buttons.back?.setPosition(
@@ -563,26 +629,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
       bottomRow
     );
     this.buttons.backToMenu?.setPosition(centerX, height * 0.72);
-    this.buttons.copy?.setPosition(centerX, height * 0.56);
 
     this.positionTextarea();
-    this.relayoutForState(this.controller.currentState);
-  }
-
-  /** 状态相关文本行布局（textarea 下方 / 按钮上方） */
-  private relayoutForState(state: OnlineConnectionState): void {
-    const { width, height, uiScale } = this.viewport.current;
-    const centerX = width / 2;
-    const needsTextarea =
-      state === OnlineConnectionState.HOST_WAITING_FOR_ANSWER ||
-      state === OnlineConnectionState.GUEST_WAITING_FOR_OFFER;
-
-    const textTop = needsTextarea
-      ? height - 380 * uiScale + 100 * uiScale
-      : height * 0.3;
-    this.statusLine.setPosition(centerX, textTop);
-    this.codeLine.setPosition(centerX, textTop + TEXT_FONT * 1.6 * uiScale);
-    this.promptLine.setPosition(centerX, textTop + TEXT_FONT * 3.2 * uiScale);
   }
 
   // ---- E2E / 调试 ---------------------------------------------------------

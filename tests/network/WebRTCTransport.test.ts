@@ -401,6 +401,20 @@ describe('WebRTCTransport', () => {
     expect((await expectRejection(bundle.transport.connect())).reason).toBe('TRANSPORT_CLOSED');
   });
 
+  it('⑦b connect(Infinity)：无 open 超时，远超 10s 后通道 open 仍正常 CONNECTED', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const bundle = makeTransport('guest');
+    await bundle.transport.acceptOffer(JSON.stringify({ type: 'offer', sdp: 'fake:offer-sdp' }));
+    const pending = bundle.transport.connect(Infinity); // Phase 13 Guest 手动传码：开放等待
+    expect(bundle.transport.state).toBe(TransportState.CONNECTING);
+    await vi.advanceTimersByTimeAsync(180_000); // Host 人肉应用 Answer 的分钟级窗口
+    expect(bundle.transport.state).toBe(TransportState.CONNECTING); // 不得 FAILED
+    const channel = bundle.pc.dataChannels[0];
+    channel?.simulateOpen();
+    await pending;
+    expect(bundle.transport.state).toBe(TransportState.CONNECTED);
+  });
+
   it('⑦ 握手期 pc failed：connect reject CONNECT_FAILED 且状态 FAILED', async () => {
     const bundle = makeTransport('host');
     const pending = bundle.transport.connect();

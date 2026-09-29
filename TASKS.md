@@ -1367,6 +1367,82 @@ Host：Paste Answer → Connected ✅
 - OnlineSessionManager 目前由 OnlineConnectionScene 持有 —— Phase 14
   BattleScene 接管前需上提到跨 Scene 容器（reviewer 建议）
 
+## 真机修复轮（2026-09-29，Mac ↔ iPhone 配对实测反馈）
+
+症状：手机 Guest 粘贴 Offer 点 CREATE RESPONSE 后直接显示 Connecting，
+Answer 码从未显示，配对必然超时失败。三处叠加根因（全部已修）：
+
+- [x] **Answer 码被瞬时状态顶掉**：runGuestAnswer 生成码后同步调
+      connectAndVerify()（立即置 CONNECTING）→ Scene 永远渲染不出
+      GUEST_WAITING_FOR_HOST 页面；且 Scene 的 currentCode 在状态回调
+      之后才赋值、无补渲染。E2E 经 debug 句柄读码测不出（真人才踩）。
+      修复：connectAndVerify(waitForHost) —— Guest 停留
+      GUEST_WAITING_FOR_HOST 开放等待；Scene 码就绪后补 renderState()
+- [x] **Guest 超时预算对人肉传码不现实**：transport.connect 10s open
+      超时 + controller 20s 总预算从生成 Answer 码即倒计时，真人微信
+      传码必然超时。修复：connect(timeoutMs=Infinity) 开放等待
+      （失败仍由 ICE failed / close 兜底 reject）；Host 路径预算不变
+- [x] **移动端 HTTP 无复制路径**：局域网 http 非 secure context，
+      navigator.clipboard 不存在 → COPY 必失败，降级 select() 选中
+      的是隐藏 textarea（拿不到码）。修复：GUEST_WAITING_FOR_HOST 态
+      textarea 只读展示 Response 码（长按选中复制 = 手机侧可靠路径）
+- [x] 单测：test8 Guest 状态序列去掉 CONNECTING + 8b 开放等待回归
+      （120s 不失败、Host 延迟应用仍 VERIFIED）+ ⑦b connect(Infinity)
+      回归；总 442 全绿
+- [x] **E2E macOS 移植**：BROWSER_CANDIDATES 补 Mac Chrome 路径；
+      实测本机 headless Chrome 的 mDNS host 候选（.local 假名）解析
+      失败（本地网络多播疑似被权限挡）+ STUN 被网络劫持（srflx 为
+      128.1.x.x 垃圾地址）→ 双页 ICE 永远失败（提交版原样复现，
+      非 Phase 14 回归）；`--disable-features=WebRtcHideLocalIpsWithMdns`
+      让 host 候选输出真实 IP 后直连成功 —— 已加入 e2e 启动参数，
+      118/118 在 Mac 全绿（Windows 行为不变）
+- [ ] **真机 ICE 注意**：正常启动的桌面 Chrome 仍有 mDNS 假名候选，
+      若手机配对卡在 Connecting，用
+      `open -a "Google Chrome" --args --disable-features=WebRtcHideLocalIpsWithMdns http://localhost:5173`
+      冷启动 Chrome（先 ⌘Q 退干净）—— 单侧真实 IP 候选即可建链
+      （对端 check 打向真实 IP 即成对）；或在 系统设置 → 隐私与安全 →
+      本地网络 给 Chrome 授权后走 mDNS。待真机复测确认。
+
+## 真机修复轮 · 第二轮（2026-09-29，首次真机配对成功后的反馈）
+
+- [x] **连接预算 20s → 2 分钟**：第二次配对时延不够（手机后台化 /
+      传码节奏）→ CONNECT_TOTAL_TIMEOUT_MS=120s，Host 侧 transport 与
+      controller 兜底同预算；Guest 侧保持开放等待不变；test11 同步
+      120s 推进
+- [x] **连接页文案重写（按试玩话术）**：Host 等 Answer 页 "Press COPY
+      and send the offer code to the other player."；Guest 粘贴页
+      "Paste the offer code from the host below." + "Then press
+      CREATE RESPONSE and send the response code back to the host."；
+      Guest Response 页 "Press COPY and send this response code to
+      the host."；VERIFIED 页 prompt 改 "You can enter the game now —
+      press ENTER BATTLE."（UI 语言保持英文与全游戏一致，中文话术
+      如需可再切换）
+- [x] **连接页遮挡修复（实测算出来重叠）**：旧布局在粘贴 / 展示码状态
+      把说明文字排在 H−280 附近 —— 恰好被 DOM textarea（H−292..H−220）
+      完全盖住（桌面与手机同病）；固定 +220 CSS 底距在手机横屏
+      （390 CSS 高）把输入框顶进文案区。新布局：文案区固定在标题下方
+      （safeArea.top+100ui），textarea 底边 = 动作行（CONNECT/CREATE
+      RESPONSE/COPY 槽位）顶沿 −12 CSS（与按钮行同源计算），Host 页
+      CONNECT 与 COPY 并排一行（320+260 ≤ 手机 844 CSS 宽），删除冗余
+      codeLine（"code ready" 行，零信息量且占垂直预算）
+- [x] 验证：typecheck / test 442 / build / e2e 118 全绿（E2E 按钮坐标
+      动态读 rect，布局变更零脚本改动）
+- [x] **COPY 降级链修复（真机反馈：Host 点 COPY 显示成功却贴出空白）**：
+      探针实锤调用链 = writeText(码) → NotAllowedError（写权限被拒 /
+      LAN HTTP 下 API 整个缺失）→ 降级 execCommand —— 但第一版降级
+      select() 的是页面上那个输入框，Host 侧它承载待粘贴 Answer
+      （此刻为空）→ 复制空内容且按钮显示 COPIED!（引入性缺陷）。
+      修复：legacyCopy() —— 临时不可见 textarea（fixed + opacity 0 +
+      readonly，iOS 要求屏幕内）装载【码本身】，setSelectionRange 全选
+      后 execCommand('copy')。探针双环境验证：localhost（writeText 拒
+      → 降级 → 剪贴板 readText === 连接码）+ LAN URL（API 缺失 → 同步
+      抛 → 降级 execCommand true）。副产品：手机做 Host 的 COPY 路径
+      一并打通。E2E 不经 COPY 路径，typecheck/test/build + online
+      配对 smoke 6/6 复验绿
+- [ ] **彻底解法（未做）**：dev server 上 HTTPS（@vitejs/plugin-basic-ssl）
+      → 全平台获得安全上下文，navigator.clipboard 原生可用，降级链仅作
+      兜底；需要时再上
+
 ---
 
 # Phase 14 — P2P Gameplay Synchronization ✅

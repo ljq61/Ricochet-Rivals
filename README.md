@@ -3,13 +3,13 @@
 横版 2D 回合制弹道对战网页游戏。
 Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
-当前进度：**Phase 0 ～ Phase 14 完成**（见 `TASKS.md`）——含 **WebRTC P2P 联机对战**（Host Authoritative）。
+当前进度：**Phase 0 ～ Phase 14 完成**（见 `TASKS.md`）——含 **WebRTC P2P 联机对战**（Host Authoritative），**真机 Mac ↔ iPhone 配对 + 完整对战实测跑通**（2026-09-29 真机修复轮，见 TASKS.md Phase 13 节）。
 
 ## 技术栈
 
 - TypeScript (strict) + Vite
 - Phaser 4.x + Matter Physics
-- Vitest（440 单测）+ puppeteer-core E2E（118 项，双浏览器真实 WebRTC 对战）
+- Vitest（442 单测）+ puppeteer-core E2E（118 项，Windows / macOS 双平台，双浏览器真实 WebRTC 对战）
 - WebRTC RTCDataChannel P2P 联机（HOST AUTHORITATIVE，已落地）
 
 ## 开发
@@ -19,7 +19,7 @@ npm install --include=dev   # 本机 npm 全局 omit=dev，必须带 --include=d
 
 npm run dev        # 启动开发服务器
 npm run typecheck  # tsc --noEmit（strict）
-npm run test       # vitest run（440 项）
+npm run test       # vitest run（442 项）
 npm run build      # 类型检查 + 生产构建
 npm run preview    # 预览构建产物
 npm run e2e        # 全量 E2E（desktop / mobile / sp / online 配对 / online 对战）
@@ -30,7 +30,7 @@ npm run e2e        # 全量 E2E（desktop / mobile / sp / online 配对 / online
 
 - **Single Player**：P1 vs AI（三档难度：easy / normal / hard，seeded RNG，纯函数决策）
 - **Local 2 Player**：热座双人（共用键鼠 / 触屏，回合切换横幅提示）
-- **Online P2P**：手动配对（Host 生成连接码 ↔ 微信等渠道互发 ↔ Guest 应答），真实 WebRTC DataChannel 直连；**Host = P1 = 权威**，Guest 为意图客户端（本地仅做表现播放，HP / 伤害 / 回合切换一律以 Host 广播为准）
+- **Online P2P**：手动配对（Host 生成连接码 ↔ 微信等渠道互发 ↔ Guest 应答），真实 WebRTC DataChannel 直连；**Host = P1 = 权威**，Guest 为意图客户端（本地仅做表现播放，HP / 伤害 / 回合切换一律以 Host 广播为准）。真机优化：Guest Response 码页面内展示（HTTP 下长按复制）、等待 Host 应用无时限、Host 侧 2 分钟连接预算、COPY 按钮剪贴板双路径（clipboard API → execCommand 降级，跨平台可靠复制）
 
 ## 玩法要点
 
@@ -86,6 +86,6 @@ src/
     random/               # SeededRandom（Mulberry32）
     ui/                   # AimButton / AimRenderer / TurnBanner / PlayerHud / DebugOverlay
     utils/                # MathUtils
-tests/                    # Vitest 纯逻辑测试（38 文件 440 项，含双端 loopback 集成）
+tests/                    # Vitest 纯逻辑测试（38 文件 442 项，含双端 loopback 集成）
 scripts/e2e.mjs           # E2E（desktop / mobile / sp / online 配对 / online 对战）
 ```

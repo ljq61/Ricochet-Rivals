@@ -30,6 +30,8 @@ const BROWSER_CANDIDATES = [
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
 ];
 
 const GROUND_TOP_Y = 960;
@@ -1583,6 +1585,11 @@ async function main() {
       '--disable-background-timer-throttling',
       '--disable-renderer-backgrounding',
       '--disable-backgrounding-occluded-windows',
+      // macOS 实测（2026-09-29）：Chrome 的 mDNS host 候选（.local 假名）在
+      // 本机/测试环境解析失败（疑似本地网络多播被权限挡），双页 ICE 永远
+      // checking→failed；关掉 mDNS 混淆后 host 候选变真实 IP，直连立即成功。
+      // Windows 上该 flag 同样无害（真实 IP 候选同样可连）。
+      '--disable-features=WebRtcHideLocalIpsWithMdns',
     ],
   });
 

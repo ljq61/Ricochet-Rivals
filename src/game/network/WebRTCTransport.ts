@@ -151,8 +151,11 @@ export class WebRTCTransport implements NetworkTransport {
     return this.transportState === TransportState.CONNECTED;
   }
 
-  /** 等 dataChannel 'open'；超时迁移 FAILED + reject TransportError('CONNECT_FAILED') */
-  connect(): Promise<void> {
+  /** 等 dataChannel 'open'；超时迁移 FAILED + reject TransportError('CONNECT_FAILED')。
+   *  timeoutMs = Infinity：开放等待（Phase 13 手动配对 Guest —— Host 应用
+   *  Answer 前通道不可能 open，人肉传码是分钟级窗口，不受 open 超时约束；
+   *  失败仍由 ICE/连接 failed 与 close() 兜底 reject）。 */
+  connect(timeoutMs: number = CONNECT_TIMEOUT_MS): Promise<void> {
     if (this.transportState === TransportState.CONNECTED) {
       return Promise.resolve();
     }
@@ -173,11 +176,14 @@ export class WebRTCTransport implements NetworkTransport {
       this.connectReject = reject;
     });
     this.connectPromise = promise;
-    this.connectTimer = setTimeout(() => {
-      this.failConnect(
-        new TransportError('CONNECT_FAILED', '[WebRTCTransport] connect timed out: data channel never opened'),
-      );
-    }, CONNECT_TIMEOUT_MS);
+    // setTimeout(fn, Infinity) 会被浏览器当 0 立即触发 —— 非有限值不挂 timer
+    if (Number.isFinite(timeoutMs)) {
+      this.connectTimer = setTimeout(() => {
+        this.failConnect(
+          new TransportError('CONNECT_FAILED', '[WebRTCTransport] connect timed out: data channel never opened'),
+        );
+      }, timeoutMs);
+    }
     if (this.dataChannel !== null && this.dataChannel.readyState === 'open') {
       this.handleChannelOpen(); // open 事件先于 connect()：直接完成
     }

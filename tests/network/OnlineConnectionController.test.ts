@@ -160,15 +160,52 @@ describe('OnlineConnectionController', () => {
       OnlineConnectionState.GUEST_WAITING_FOR_OFFER,
       OnlineConnectionState.GUEST_CREATING_ANSWER,
       OnlineConnectionState.GUEST_WAITING_FOR_HOST,
-      OnlineConnectionState.CONNECTING,
       OnlineConnectionState.CONNECTED,
       OnlineConnectionState.VERIFIED,
     ]) {
       expect(guest.states).toContain(expected);
     }
+    // Guest 不经过 CONNECTING：Response 码必须留在 GUEST_WAITING_FOR_HOST
+    // 页面供回传（曾因瞬时 CONNECTING 顶掉 Answer 码页面，真机无法配对）
+    expect(guest.states).not.toContain(OnlineConnectionState.CONNECTING);
     expect(guestSessionManager.current?.localPlayerId).toBe('P2');
     expect(guestSessionManager.current?.remotePlayerId).toBe('P1');
     expect(host.controller.currentState).toBe(OnlineConnectionState.VERIFIED);
+  });
+
+  it('8b. Guest 开放等待：Response 生成后无超时预算，Host 分钟级延迟应用仍 VERIFIED', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { host, guest } = makePair();
+
+    const offerPending = host.controller.createHostSession();
+    await vi.advanceTimersByTimeAsync(1);
+    host.pc.completeIceGathering();
+    const { connectionCode } = await offerPending;
+
+    const answerPending = guest.controller.submitOfferCode(connectionCode);
+    await vi.advanceTimersByTimeAsync(1);
+    guest.pc.completeIceGathering();
+    const { responseCode } = await answerPending;
+
+    // 手动传码窗口：远超 10s transport open 超时与 20s 总预算 —— 不得失败
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(guest.controller.currentState).toBe(OnlineConnectionState.GUEST_WAITING_FOR_HOST);
+    expect(guest.failures).toHaveLength(0);
+
+    // Host 拿到码后应用 → 通道 open → Guest 后台等待就位 → VERIFIED
+    void host.controller.submitAnswerCode(responseCode);
+    const hostChannel = host.pc.dataChannels[0];
+    const guestChannel = guest.pc.dataChannels[0];
+    if (!hostChannel || !guestChannel) {
+      throw new Error('fake channels missing');
+    }
+    bridgeChannels(hostChannel, guestChannel);
+    hostChannel.simulateOpen();
+    guestChannel.simulateOpen();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(host.controller.currentState).toBe(OnlineConnectionState.VERIFIED);
+    expect(guest.controller.currentState).toBe(OnlineConnectionState.VERIFIED);
   });
 
   it('9. Retry：彻底销毁旧会话重建（旧 pc closed、factory 二次调用、回 CHOOSE_ROLE）', async () => {
@@ -211,7 +248,7 @@ describe('OnlineConnectionController', () => {
     const { responseCode } = await answerPending;
 
     void host.controller.submitAnswerCode(responseCode); // CONNECTING；通道不 open
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(120_000); // 连接预算 2 分钟（2026-09-29 真机反馈）
 
     expect(host.controller.currentState).toBe(OnlineConnectionState.FAILED);
     expect(host.failures).toContain('Connection timed out');

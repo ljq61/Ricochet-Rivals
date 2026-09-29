@@ -21,9 +21,10 @@ import { decodeSignaling } from './signaling/SignalingCodec';
  * 职责：Host / Guest 双流程、状态机转移、连接码桥接、连接超时兜底、
  * PING/PONG 验证、retry / back 彻底清理、防重复动作。
  *
- * 超时分层：transport.connect 自带 10s（通道打开主超时）；
- * 本类 CONNECT_TOTAL_TIMEOUT_MS=20s 为 transport 事件缺失的兜底预算；
- * 验证阶段 VERIFICATION_TIMEOUT_MS=10s 内无 PONG → FAILED。
+ * 超时分层：transport.connect 由本类传入连接预算（缺省 2 分钟 ——
+ * 真机传码 / 手机页面后台化等真实时延下 10s/20s 不够，2026-09-29 真机
+ * 反馈调整）；本类 CONNECT_TOTAL_TIMEOUT_MS 同值为 transport 事件缺失的
+ * 兜底预算；验证阶段 VERIFICATION_TIMEOUT_MS=10s 内无 PONG → FAILED。
  *
  * Host = P1 / Guest = P2 固定（Phase 13 规则）。
  */
@@ -32,7 +33,7 @@ export interface OnlineConnectionControllerOptions {
   /** 每次会话新建 transport 的工厂（retry 重建用；测试注入 fake RTC） */
   readonly createTransport: (role: PeerRole) => WebRTCTransport;
   readonly matchId: MatchId;
-  /** 连接总预算（默认 20s，15~30s 区间） */
+  /** 连接总预算（默认 2 分钟） */
   readonly connectTimeoutMs?: number;
 }
 
@@ -46,8 +47,8 @@ export const ONLINE_FAILURE_MESSAGES = {
   verificationFailed: 'Connection unstable — verification failed',
 } as const;
 
-/** 连接总预算兜底（transport.connect 自身 10s 为主超时） */
-const CONNECT_TOTAL_TIMEOUT_MS = 20_000;
+/** 连接总预算（真机传码 / 手机后台化时延；transport 事件缺失的兜底同值） */
+const CONNECT_TOTAL_TIMEOUT_MS = 120_000;
 /** CONNECTED 后 PING/PONG 验证窗口 */
 const VERIFICATION_TIMEOUT_MS = 10_000;
 
@@ -225,8 +226,12 @@ export class OnlineConnectionController {
       const sdp = this.extractSdp(signalingJson, 'answer');
       const responseCode = encodeConnectionCode({ version: 1, kind: 'answer', sdp });
       this.setState(OnlineConnectionState.GUEST_WAITING_FOR_HOST);
-      // Response 已可回传 Host；连接在后台推进（Host acceptAnswer 后通道打开）
-      void this.connectAndVerify();
+      // Response 已可回传 Host；Guest 停留本态开放等待（手动传码是分钟级
+      // 人肉窗口 —— Host 应用 Answer 前通道不可能 open）。Host 接受后
+      // 通道打开 → CONNECTED。曾因这里立即推进 CONNECTING，Answer 码页面
+      // 被瞬时顶掉，真机永远显示不出可回传的码（E2E 经 debug 句柄读码
+      // 测不出），故状态必须留在 GUEST_WAITING_FOR_HOST。
+      void this.connectAndVerify(true);
       return { responseCode };
     } catch (error) {
       this.failWith(error, 'setupFailed');
@@ -236,22 +241,36 @@ export class OnlineConnectionController {
 
   // ---- 连接 + 验证 ---------------------------------------------------------
 
-  /** CONNECTING → (connect) → CONNECTED → ping/pong → VERIFIED；失败走 fail() */
-  private async connectAndVerify(): Promise<void> {
-    this.setState(OnlineConnectionState.CONNECTING);
+  /**
+   * 连接 + PING/PONG 验证。
+   * - waitForHost=false（Host）：Answer 已应用 → CONNECTING；transport 与
+   *   本类兜底均用同一连接预算（缺省 2 分钟）。
+   * - waitForHost=true（Guest）：Answer 码已生成、Host 尚未应用 —— 停留
+   *   GUEST_WAITING_FOR_HOST 开放等待：transport.connect(Infinity) 无 open
+   *   超时、无总预算（手动传码分钟级；失败由 ICE/连接 failed →
+   *   connect reject 兜底）。通道打开 → CONNECTED → 验证（10s PONG 窗口不变）。
+   */
+  private async connectAndVerify(waitForHost = false): Promise<void> {
+    const waitState = waitForHost
+      ? OnlineConnectionState.GUEST_WAITING_FOR_HOST
+      : OnlineConnectionState.CONNECTING;
+    const budgetMs = this.options.connectTimeoutMs ?? CONNECT_TOTAL_TIMEOUT_MS;
+    if (!waitForHost) {
+      this.setState(OnlineConnectionState.CONNECTING);
 
-    // 总预算兜底（transport.connect 自身 10s 为主要超时；timer 触发即 FAILED）
-    this.connectTimer = setTimeout(() => {
-      this.fail(ONLINE_FAILURE_MESSAGES.timedOut);
-    }, this.options.connectTimeoutMs ?? CONNECT_TOTAL_TIMEOUT_MS);
+      // 兜底预算（transport 事件缺失时兜住；timer 触发即 FAILED）
+      this.connectTimer = setTimeout(() => {
+        this.fail(ONLINE_FAILURE_MESSAGES.timedOut);
+      }, budgetMs);
+    }
 
     try {
-      await this.transport?.connect();
+      await this.transport?.connect(waitForHost ? Infinity : budgetMs);
     } catch (error) {
       this.failWith(error, 'timedOut');
       return;
     }
-    if (this.state !== OnlineConnectionState.CONNECTING) {
+    if (this.state !== waitState) {
       return; // 期间已被 fail / back 接管
     }
     this.setState(OnlineConnectionState.CONNECTED);
