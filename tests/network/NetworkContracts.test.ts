@@ -23,6 +23,7 @@ describe('Network contracts (Phase 12)', () => {
       'COMMAND_REJECTED',
       'STATE_SYNC_REQUEST',
       'STATE_SNAPSHOT',
+      'TURN_RESULT_ACK',
       'REMATCH',
       'DISCONNECT',
     ]);

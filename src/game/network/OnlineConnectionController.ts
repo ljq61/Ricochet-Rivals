@@ -24,7 +24,8 @@ import { decodeSignaling } from './signaling/SignalingCodec';
  * 超时分层：transport.connect 由本类传入连接预算（缺省 2 分钟 ——
  * 真机传码 / 手机页面后台化等真实时延下 10s/20s 不够，2026-09-29 真机
  * 反馈调整）；本类 CONNECT_TOTAL_TIMEOUT_MS 同值为 transport 事件缺失的
- * 兜底预算；验证阶段 VERIFICATION_TIMEOUT_MS=10s 内无 PONG → FAILED。
+ * 兜底预算；验证阶段 VERIFICATION_TIMEOUT_MS（2 分钟，同税制）内无
+ * PONG → FAILED（手机后台化场景 PONG 依赖回前台）。
  *
  * Host = P1 / Guest = P2 固定（Phase 13 规则）。
  */
@@ -49,8 +50,14 @@ export const ONLINE_FAILURE_MESSAGES = {
 
 /** 连接总预算（真机传码 / 手机后台化时延；transport 事件缺失的兜底同值） */
 const CONNECT_TOTAL_TIMEOUT_MS = 120_000;
-/** CONNECTED 后 PING/PONG 验证窗口 */
-const VERIFICATION_TIMEOUT_MS = 10_000;
+/**
+ * CONNECTED 后 PING/PONG 验证窗口。2026-09-29 真机反馈：Guest 复制完
+ * 连接码切微信（页面后台化，移动端 JS 挂起）→ Host CONNECT 后通道已开、
+ * PING 无 PONG → 10s 即 "Connection unstable" —— 表现为"刚连上就失败"。
+ * 放宽至与连接预算同税制（手机回前台即 PONG，正常场景毫秒级完成；
+ * 通道真坏时最终由本窗口兜底 FAILED，不无限等）。
+ */
+const VERIFICATION_TIMEOUT_MS = 120_000;
 
 type StateHandler = (state: OnlineConnectionState) => void;
 type FailureHandler = (userMessage: string) => void;
@@ -248,7 +255,8 @@ export class OnlineConnectionController {
    * - waitForHost=true（Guest）：Answer 码已生成、Host 尚未应用 —— 停留
    *   GUEST_WAITING_FOR_HOST 开放等待：transport.connect(Infinity) 无 open
    *   超时、无总预算（手动传码分钟级；失败由 ICE/连接 failed →
-   *   connect reject 兜底）。通道打开 → CONNECTED → 验证（10s PONG 窗口不变）。
+   *   connect reject 兜底）。通道打开 → CONNECTED → 验证（PONG 窗口
+   *   同 2 分钟 —— 手机后台化回前台才回 PONG，见 VERIFICATION_TIMEOUT_MS）。
    */
   private async connectAndVerify(waitForHost = false): Promise<void> {
     const waitState = waitForHost
@@ -275,7 +283,8 @@ export class OnlineConnectionController {
     }
     this.setState(OnlineConnectionState.CONNECTED);
 
-    // PING/PONG 验证：10s 内无 PONG → FAILED（connection unstable）
+    // PING/PONG 验证：窗口内无 PONG → FAILED（connection unstable）。
+    // 手机 Guest 复制码后页面后台化（JS 挂起）—— PONG 依赖其回前台。
     this.verificationTimer = setTimeout(() => {
       this.fail(ONLINE_FAILURE_MESSAGES.verificationFailed);
     }, VERIFICATION_TIMEOUT_MS);

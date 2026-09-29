@@ -35,6 +35,7 @@ import { MainMenuScene } from './MainMenuScene';
 import { DEBUG_GAME, DEBUG_NETWORK } from '../config/DebugConfig';
 import { MenuButton } from '../ui/MenuButton';
 import { stateFromSnapshot } from '../network/online/AuthoritativeState';
+import { OnlineSyncState } from '../network/online/sync/OnlineSyncState';
 import type {
   CommandRejectedPayload,
   OnlineBattleBootstrap,
@@ -116,6 +117,10 @@ export class BattleScene extends Phaser.Scene {
   private onlineBootstrap: OnlineBattleBootstrap | null = null;
   /** 通道中断冻结（OPPONENT DISCONNECTED 后禁输入） */
   private connectionLost = false;
+  /** Phase 15：Guest desync 恢复期间输入锁（coordinator setSyncLock 驱动） */
+  private syncLocked = false;
+  /** Phase 15：SYNC_FAILED 终局（onSyncFailure 后禁重复处理） */
+  private syncFailed = false;
   /** 断线后的返回菜单按钮（懒创建） */
   private disconnectButton: MenuButton | null = null;
   /** COMMAND_REJECTED 轻量提示防刷屏 */
@@ -161,6 +166,8 @@ export class BattleScene extends Phaser.Scene {
     this.bannerTurnKey = null;
     this.bannerGameOverShown = false;
     this.connectionLost = false;
+    this.syncLocked = false;
+    this.syncFailed = false;
     this.disconnectButton = null;
     this.lastRejectedToastMs = 0;
   }
@@ -206,11 +213,31 @@ export class BattleScene extends Phaser.Scene {
         commandBus: this.commandBus,
         gameLogic: this.gameLogic,
         turnManager: this.turnManager,
-        resumeNextTurn: () => this.beginNextTurnTransition(),
+        // Phase 15 双语义：Guest = TURN_END 已由 channel 应用
+        //（applyRemoteTurnEnd），只做相机转场收尾；Host = ACK 后到补驱
+        //（dwell 曾返回 waiting），TURN_END 已由 channel 发出，本地权威
+        // endTurn 仍归场景 —— 与 'proceed' 返回值路径等价收尾。
+        resumeNextTurn: () => {
+          if (this.online?.role === 'host') {
+            this.turnManager.endTurn();
+          }
+          this.beginNextTurnTransition();
+        },
         showAuthoritativeDamage: (result) =>
           this.damageNumbers.show(result, this.state.players),
         showRejected: (payload) => this.showOnlineRejected(payload),
         onDisconnected: () => this.handleOnlineDisconnected(),
+        // Phase 15：Guest 恢复期间锁 Move/Aim/Fire（复用远程回合输入锁口径，
+        // syncLocked 并入 isRemoteControlledTurn —— 相机自由观察保留）
+        setSyncLock: (locked) => {
+          this.syncLocked = locked;
+        },
+        onSyncStateChange: (state, detail) => {
+          this.handleOnlineSyncStateChange(state, detail);
+        },
+        onSyncFailure: () => {
+          this.handleOnlineSyncFailure();
+        },
       });
       this.online.startKeepAlive();
     }
@@ -406,17 +433,27 @@ export class BattleScene extends Phaser.Scene {
       this.state.phase === TurnPhase.ACTION
     ) {
       this.bannerTurnKey = turnKey;
-      if (this.online !== null) {
-        const label =
-          this.state.currentPlayerId === this.online.localPlayerId
-            ? `YOUR TURN · 第 ${this.state.turnId} 回合`
-            : `OPPONENT'S TURN · 第 ${this.state.turnId} 回合`;
-        this.turnBanner.showTurn(this.state.currentPlayerId, this.state.turnId, label);
-      } else {
-        this.turnBanner.showTurn(this.state.currentPlayerId, this.state.turnId);
+      // 断线 / 同步失败后不再弹回合横幅 —— 迟到的转场 showTurn 会
+      // 覆盖 OPPONENT DISCONNECTED / SYNC FAILED 提示（E2E 实测 flaky
+      // 25% 暴露；横幅是玩家对局状态感知的唯一来源，覆盖即误导）
+      if (!this.connectionLost && !this.syncFailed) {
+        if (this.online !== null) {
+          const label =
+            this.state.currentPlayerId === this.online.localPlayerId
+              ? `YOUR TURN · 第 ${this.state.turnId} 回合`
+              : `OPPONENT'S TURN · 第 ${this.state.turnId} 回合`;
+          this.turnBanner.showTurn(this.state.currentPlayerId, this.state.turnId, label);
+        } else {
+          this.turnBanner.showTurn(this.state.currentPlayerId, this.state.turnId);
+        }
       }
     }
     if (!this.bannerGameOverShown && this.state.gameOver) {
+      // Phase 15：Guest 终局 hash 门 —— 未确认前不收口（避免双端胜负
+      // 显示不一致；确认路径：gameOver TURN_RESULT hash 匹配或快照恢复）
+      if (this.online !== null && this.online.role === 'guest' && !this.online.isFinalStateConfirmed()) {
+        return;
+      }
       this.bannerGameOverShown = true;
       this.turnBanner.showGameOver(this.state.winnerId);
       // Phase 11：胜负横幅停留 ~1.6s → 淡出 → ResultScene。
@@ -531,6 +568,7 @@ export class BattleScene extends Phaser.Scene {
   private isRemoteControlledTurn(): boolean {
     return (
       this.connectionLost ||
+      this.syncLocked || // Phase 15：desync 恢复期间锁 Move/Aim/Fire
       (this.online !== null && !this.online.isLocalTurn())
     );
   }
@@ -651,6 +689,42 @@ export class BattleScene extends Phaser.Scene {
     }
   }
 
+  /** Phase 15：同步状态迁移展示（DESYNC/SYNCING 提示；SYNCED 类不打扰） */
+  private handleOnlineSyncStateChange(state: OnlineSyncState, detail?: string): void {
+    if (state === OnlineSyncState.DESYNC_DETECTED || state === OnlineSyncState.SYNC_REQUESTED) {
+      this.turnBanner.showMessage('SYNCHRONIZING…', 0xffc24d);
+    } else if (state === OnlineSyncState.SYNC_FAILED) {
+      this.handleOnlineSyncFailure();
+    }
+    // SYNCED / APPLYING_SNAPSHOT / SYNCED_AFTER_RECOVERY：无横幅
+    // （恢复期通常亚秒级，横幅闪烁比静默更伤体验）；诊断走 DebugOverlay
+    if (DEBUG_NETWORK && detail !== undefined) {
+      this.logCameraEvent(`sync=${state}:${detail}`);
+    }
+  }
+
+  /** Phase 15：同步彻底失败（重试耗尽）—— 终止比赛回菜单，禁止继续错局 */
+  private handleOnlineSyncFailure(): void {
+    if (this.syncFailed || this.connectionLost) {
+      return;
+    }
+    this.syncFailed = true;
+    this.syncLocked = true;
+    this.controls.setEnabled(false);
+    this.turnBanner.showMessage('CONNECTION SYNC FAILED', 0xff5063);
+    if (this.disconnectButton === null) {
+      this.disconnectButton = new MenuButton(this, {
+        router: this.inputRouter,
+        id: 'battle-back-to-menu',
+        viewport: this.viewportService,
+        label: 'BACK TO MENU',
+        onTap: () => this.leaveToMainMenu(),
+      });
+      const { width, height } = this.viewportService.current;
+      this.disconnectButton.setPosition(width / 2, height * 0.62);
+    }
+  }
+
   /** 断线 / 退出返回主菜单（fade + rAF 冻结兜底，幂等） */
   private leaveToMainMenu(): void {
     let started = false;
@@ -740,6 +814,24 @@ export class BattleScene extends Phaser.Scene {
       /** Phase 14：联机诊断快照（离线 null） */
       get online(): object | null {
         return self.online !== null ? self.online.debugInfo() : null;
+      },
+      /** Phase 15：同步状态 / 恢复诊断（离线 null；E2E 断言恢复链用） */
+      get syncState(): string | null {
+        return self.online !== null ? self.online.syncState : null;
+      },
+      get recoveryCount(): number | null {
+        return self.online !== null ? self.online.getSyncDiagnostics().recoveryCount : null;
+      },
+      get lastSyncReason(): string | null {
+        return self.online !== null ? self.online.getSyncDiagnostics().lastSyncReason : null;
+      },
+      /**
+       * Phase 15 DEBUG 工具：故意篡改 Guest 本地 turnId 制造 desync ——
+       * 下一次 TURN_RESULT 边界自动检测 → 快照恢复闭环（E2E / 真机验收
+       * 用；仅联机 Guest 生效，建议在对方回合触发）。
+       */
+      forceDesync(): void {
+        self.online?.debugForceDesync();
       },
       get onlineRole(): string | null {
         return self.online?.role ?? null;

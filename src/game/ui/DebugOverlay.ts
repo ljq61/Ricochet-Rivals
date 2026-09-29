@@ -50,13 +50,18 @@ export class DebugOverlay {
       return;
     }
     const ui = Math.max(1, window.devicePixelRatio || 1);
+    // 触屏设备整体 ×0.5：DPR 3 手机上 15px×3 字号 + 诊断行实测遮挡近半
+    // 屏（真机反馈）；桌面鼠标档位保持原尺寸。按 pointer capability 判定
+    //（与 DeviceProfile 同哲学，不用 User Agent）。
+    const coarse = window.matchMedia?.('(pointer: coarse)').matches ?? false;
+    const debugUi = coarse ? ui * 0.5 : ui;
     this.label = scene.add
-      .text(16 * ui, 16 * ui, '', {
+      .text(16 * debugUi, 16 * debugUi, '', {
         fontFamily: 'monospace',
-        fontSize: `${15 * ui}px`,
+        fontSize: `${15 * debugUi}px`,
         color: '#8fe3a0',
         backgroundColor: 'rgba(10, 14, 22, 0.65)',
-        padding: { x: 10 * ui, y: 8 * ui },
+        padding: { x: 10 * debugUi, y: 8 * debugUi },
       })
       .setScrollFactor(0)
       .setDepth(1000);
@@ -92,6 +97,18 @@ export class DebugOverlay {
         `Net      ${net.role} ${net.netState} ${ping}`,
         `Local    ${net.localPlayerId} vs ${net.remotePlayerId}`,
         `Match    ${net.matchId ?? '…'} rx=${net.lastRxType ?? '…'} tx=${net.lastTxType ?? '…'}`,
+      );
+      // Phase 15：SYNC 段（STATE / RECOVERY / REASON / HASH 双端对比）
+      const syncState = net.syncState ?? '—';
+      const recovery = net.recoveryCount ?? 0;
+      const reason = net.lastSyncReason ?? '—';
+      const localH = net.localHash ?? '…';
+      const hostH = net.hostHash ?? '…';
+      const hashMatch = net.localHash !== null && net.localHash === net.hostHash;
+      lines.push(
+        `Sync     ${syncState} recover=${recovery}`,
+        `Reason   ${reason}`,
+        `Hash     ${localH} / ${hostH}${hashMatch ? ' =' : ' ≠'}`,
       );
     }
     this.label.setText(lines.join('\n'));

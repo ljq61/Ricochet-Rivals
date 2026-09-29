@@ -14,6 +14,7 @@ import type { NetworkTransport } from '../NetworkTransport';
 import type { OnlineSession } from '../OnlineSession';
 import type { PeerRole } from '../PeerRole';
 import type { TransportState } from '../TransportState';
+import type { OnlineSyncState } from './sync/OnlineSyncState';
 
 /**
  * Phase 14 联机协议契约（HOST AUTHORITATIVE，CODELY.md §5/§6）。
@@ -192,6 +193,59 @@ export interface DisconnectPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 15 —— Desync 检测与状态恢复（Turn Boundary 同步）
+// ---------------------------------------------------------------------------
+
+/** Guest 检测到状态偏差的原因（诊断 + Host 决策用） */
+export type StateSyncReason =
+  | 'HASH_MISMATCH'
+  | 'MISSING_TURN_RESULT'
+  | 'INVALID_LOCAL_STATE'
+  | 'MANUAL_DEBUG';
+
+/** STATE_SYNC_REQUEST（Guest → Host）：请求权威快照恢复本地状态 */
+export interface StateSyncRequestPayload {
+  /** Guest 发起恢复时的本地 turnId（Host 据此校验请求合理性） */
+  readonly expectedTurnId: number;
+  /** Guest 本地重算 hash（诊断：Host 可记录两端差异） */
+  readonly localStateHash: string;
+  /** Guest 观察到的 Host 权威 hash（来自 TURN_RESULT.stateHash） */
+  readonly authoritativeHash: string;
+  readonly reason: StateSyncReason;
+}
+
+/** STATE_SNAPSHOT（Host → Guest）：权威快照回复 */
+export interface StateSnapshotPayload {
+  readonly snapshot: AuthoritativeGameSnapshot;
+  /** Host 对该快照重算的 hash —— Guest apply 后必须复验一致 */
+  readonly stateHash: string;
+  /** 快照生成时的权威 turnId（Guest 据此拒收过期快照） */
+  readonly generatedAtTurnId: number;
+}
+
+/** TURN_RESULT_ACK（Guest → Host）：Sync Barrier 确认（Phase 15） */
+export interface TurnResultAckPayload {
+  /** 被确认的 TURN_RESULT.turnId */
+  readonly turnId: number;
+  /** Guest apply 后复验一致的 hash */
+  readonly stateHash: string;
+  /** true = 经历了 snapshot 恢复后才确认 */
+  readonly recovered: boolean;
+}
+
+/** Phase 15 同步诊断口径（getSyncDiagnostics 与 OnlineDebugInfo 并联） */
+export interface StateSyncDiagnostics {
+  /** 成功的 snapshot 恢复次数（Host 恒 0 —— 权威端无需恢复） */
+  readonly recoveryCount: number;
+  /** 最近一次同步事件原因（null = 本局尚未发生任何同步事件；粘性，不随干净边界清除） */
+  readonly lastSyncReason: string | null;
+  /** 本端最近一次边界重算 hash */
+  readonly localHash: string | null;
+  /** 对端权威 hash（Guest = TURN_RESULT.stateHash / SNAPSHOT.stateHash；Host = 收到的 ACK hash） */
+  readonly hostHash: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Bootstrap（Lobby → BattleScene 携带）
 // ---------------------------------------------------------------------------
 
@@ -242,6 +296,16 @@ export interface OnlineBattleDeps {
   showRejected(payload: CommandRejectedPayload): void;
   /** Battle 期通道中断（场景冻结输入并展示 OPPONENT DISCONNECTED） */
   onDisconnected(reason?: string): void;
+  /**
+   * Phase 15 desync 恢复接线（BattleScene 注入）。可选 = 接线完成前保持
+   * 编译绿；接线后即生效。
+   */
+  /** Guest 恢复期间锁 Move/Aim/Fire（Host 等 ACK 期无需锁） */
+  setSyncLock?(locked: boolean): void;
+  /** 同步状态变化（场景显示 SYNCING / SYNC_FAILED 提示） */
+  onSyncStateChange?(state: OnlineSyncState, detail?: string): void;
+  /** SYNC_FAILED 终局（场景终止比赛回菜单；每场恰一次） */
+  onSyncFailure?(): void;
 }
 
 export interface OnlineCoordinatorOptions {
@@ -253,6 +317,8 @@ export interface OnlineCoordinatorOptions {
    * Date.now / Math.random / crypto 均可；测试注入固定值。
    */
   readonly createMatchIdentity: () => { matchId: string; seed: number };
+  /** Phase 15：Host TURN_RESULT → ACK 等待超时（默认 8s；测试注入短值） */
+  readonly hostAckTimeoutMs?: number;
 }
 
 /** DEBUG_NETWORK overlay + E2E 观测快照 */
@@ -269,6 +335,12 @@ export interface OnlineDebugInfo {
   readonly rejectedCount: number;
   /** Guest 侧收到的 TURN_RESULT stateHash 与本地计算是否一致 */
   readonly lastHashMatch: boolean | null;
+  /** Phase 15 desync 诊断（battle 期前为初始值；字段与 StateSyncDiagnostics 对齐） */
+  readonly syncState?: OnlineSyncState;
+  readonly recoveryCount?: number;
+  readonly lastSyncReason?: string | null;
+  readonly localHash?: string | null;
+  readonly hostHash?: string | null;
 }
 
 /**
@@ -323,6 +395,21 @@ export interface OnlineGameCoordinatorApi {
    * （Guest 由 update 循环的 gameOver 检测接管收口）。
    */
   onLocalAttackResolved(): 'proceed' | 'waiting';
+
+  /** Phase 15：当前同步状态（SYNCED / 恢复链各态 / SYNC_FAILED；单一事实源） */
+  readonly syncState: OnlineSyncState;
+  /**
+   * Phase 15 终局 gate：Guest 在 gameOver TURN_RESULT hash 确认后为 true
+   * （场景 update 循环消费 → 转 Result）；Host 权威 gameOver 即 true。
+   */
+  isFinalStateConfirmed(): boolean;
+  /** Phase 15 desync 诊断（DEBUG_NETWORK / E2E） */
+  getSyncDiagnostics(): StateSyncDiagnostics;
+  /**
+   * DEBUG_GAME 专用：Guest 篡改本地状态制造 desync —— 下一次
+   * TURN_RESULT 边界自动 mismatch 并走完整恢复链。Host 调用为 no-op。
+   */
+  debugForceDesync(): void;
 
   /** Battle 期保活（2s PING；测试不调用即零定时器） */
   startKeepAlive(): void;

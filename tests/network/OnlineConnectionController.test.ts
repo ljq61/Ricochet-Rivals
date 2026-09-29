@@ -294,7 +294,8 @@ describe('OnlineConnectionController', () => {
     await vi.advanceTimersByTimeAsync(1);
 
     expect(host.controller.currentState).toBe(OnlineConnectionState.CONNECTED);
-    await vi.advanceTimersByTimeAsync(10_000); // 验证窗口耗尽
+    // 验证窗口 2 分钟（2026-09-29 真机反馈：手机后台化 PONG 依赖回前台）
+    await vi.advanceTimersByTimeAsync(120_000); // 验证窗口耗尽
     expect(host.controller.currentState).toBe(OnlineConnectionState.FAILED);
     expect(host.failures).toContain('Connection unstable — verification failed');
   });

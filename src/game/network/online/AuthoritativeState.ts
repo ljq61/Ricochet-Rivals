@@ -200,12 +200,79 @@ export function synthesizeAuthoritativeDamage(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Phase 15 —— Desync 恢复：位置归一化 + 原子快照应用
+// ---------------------------------------------------------------------------
+
+/**
+ * 位置归一化（0.01 精度）。物理 / 插值来源的坐标可能带微小浮点误差
+ * （450.00000001 vs 449.99999998 是同一 gameplay 值）——只用于 x / y；
+ * hp / turnId / moveRemaining 是整数语义字段，直接取值（wire 侧
+ * isIntegerNumber 守卫已保证），不做浮点处理。
+ */
+export function normalizePosition(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * hash 契约版本前缀。v2 = 位置归一化版（Phase 15）；v1 = Phase 14 无
+ * 归一化版（已废弃）。未来新增 authoritative 字段进 hash 必须递增本
+ * 版本 —— 两端不同 build 会显式 mismatch 而非静默不同源。
+ */
+export const STATE_HASH_VERSION = 'v2';
+
+/**
+ * Guest：原子应用权威快照（Phase 15 desync 恢复）。与 applyTurnResult
+ * 的区别：快照是全量权威状态 —— turnId / currentPlayerId / phase /
+ * seed / matchId 一并恢复（Guest 本地状态已不可信，无"部分覆写"可言）。
+ * 原地覆写不新建对象（不重启 Match / 表现层 —— 表现重建由通道层经
+ * deps 回调驱动）。items 数组保持原引用（场景层可能持有）。
+ * 入参假定已过 SnapshotValidator（形状 + 语义 + 自洽 hash）。
+ * 返回应用后本地重算 hash（供 ACK / 复验对账）。
+ */
+export function applyAuthoritativeSnapshot(
+  state: GameState,
+  snapshot: AuthoritativeGameSnapshot,
+): { stateHash: string } {
+  state.matchId = snapshot.matchId;
+  state.seed = snapshot.seed;
+  state.turnId = snapshot.turnId;
+  state.currentPlayerId = snapshot.currentPlayerId;
+  state.phase = snapshot.phase;
+  for (const playerId of PLAYER_IDS) {
+    const s = snapshot.players[playerId];
+    const p = state.players[playerId];
+    p.id = s.id;
+    p.side = s.side;
+    p.x = s.x;
+    p.y = s.y;
+    p.hp = s.hp;
+    p.maxHp = s.maxHp;
+    p.moveRemaining = s.moveRemaining;
+    p.hasFired = s.hasFired;
+    p.isAlive = s.isAlive;
+    p.weaponId = s.weaponId;
+  }
+  state.items.length = 0; // V0.1 恒空；保持数组引用不变
+  for (const item of snapshot.items) {
+    state.items.push({ ...item });
+  }
+  state.gameOver = snapshot.gameOver;
+  state.winnerId = snapshot.winnerId;
+  return { stateHash: computeStateHash(state) };
+}
+
 /**
  * 确定性状态哈希（FNV-1a 32 位）。双端必须字节一致：
  * * 手工拼接规范串（PLAYER_IDS 固定序，不受对象键序影响）
  * * 整数取 Math.trunc；hasFired / isAlive / gameOver 以 0/1 表达
+ * * 位置经 normalizePosition（0.01 精度，Phase 15）—— 物理 / 插值来源的
+ *   双端微小浮点差不构成 gameplay 差异，不得触发 desync
  * * 数值经模板字符串（ECMA-262 Number::toString 规范化，双端一致）
  * * 禁 Math.random / toLocaleString / JSON.stringify 键序
+ * * 规范串以 STATE_HASH_VERSION 前缀开头 —— hash 契约版本化，未来新增
+ *   authoritative 字段必须递增版本（两端不同 build 显式 mismatch，
+ *   而非静默不同源）
  *
  * 不纳入 matchId / seed / items：matchId+seed 已由 GAME_START 锁定双方
  * 同源；items V0.1 恒空（Phase 17 定型后再评估纳入）。
@@ -214,6 +281,7 @@ export function synthesizeAuthoritativeDamage(
  */
 export function computeStateHash(state: GameState): string {
   const parts: string[] = [
+    STATE_HASH_VERSION,
     `turn=${Math.trunc(state.turnId)}`,
     `cur=${state.currentPlayerId}`,
     `phase=${state.phase}`,
@@ -221,7 +289,7 @@ export function computeStateHash(state: GameState): string {
   for (const playerId of PLAYER_IDS) {
     const p = state.players[playerId];
     parts.push(
-      `${playerId}:${p.hp},${p.x},${p.y},${p.isAlive ? 1 : 0},${p.moveRemaining},${p.hasFired ? 1 : 0}`,
+      `${playerId}:${p.hp},${normalizePosition(p.x)},${normalizePosition(p.y)},${p.isAlive ? 1 : 0},${p.moveRemaining},${p.hasFired ? 1 : 0}`,
     );
   }
   parts.push(`over=${state.gameOver ? 1 : 0}`);

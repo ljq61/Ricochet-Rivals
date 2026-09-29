@@ -394,7 +394,11 @@ describe('TURN_RESULT 权威覆写', () => {
 });
 
 describe('Turn Barrier（Host 控制回合切换）', () => {
-  /** 把双端推到 RESOLVE（模拟炮弹已发射并结算完成） */
+  /**
+   * 把双端推到 RESOLVE 并走真实 TURN_RESULT 收口（Phase 15 ACK Barrier 契约：
+   * TURN_END 前必须有 TURN_RESULT + Guest ACK；resolveOnly 仅推 phase 不发
+   * TURN_RESULT —— MISSING_TURN_RESULT 用例专用）。
+   */
   function resolveBothSides(): void {
     h.hostTurn.notifyProjectileLaunched();
     h.guestTurn.notifyProjectileLaunched();
@@ -402,13 +406,20 @@ describe('Turn Barrier（Host 控制回合切换）', () => {
     h.guestTurn.notifyProjectileResolved(null);
   }
 
-  it('⑱-A Guest dwell 先完成 → waiting；TURN_END 到达后推进 + resume 恰一次', async () => {
+  /** resolveBothSides + Host 发 TURN_RESULT + flush（Guest 应用并 ACK 回 Host） */
+  async function resolveAndAck(): Promise<void> {
     resolveBothSides();
+    h.hostCoord.notifyTurnResolved(null, null);
+    await h.flush();
+  }
+
+  it('⑱-A Guest dwell 先完成 → waiting；TURN_END 到达后推进 + resume 恰一次', async () => {
+    await resolveAndAck();
     expect(h.guestCoord.onLocalAttackResolved()).toBe('waiting');
     expect(h.guestState.currentPlayerId).toBe('P1'); // 未推进
     expect(h.guestResume).not.toHaveBeenCalled();
 
-    expect(h.hostCoord.onLocalAttackResolved()).toBe('proceed'); // 发 TURN_END
+    expect(h.hostCoord.onLocalAttackResolved()).toBe('proceed'); // ACK 已到 → 发 TURN_END
     await h.flush();
     expect(h.guestState.currentPlayerId).toBe('P2');
     expect(h.guestState.turnId).toBe(2);
@@ -417,7 +428,7 @@ describe('Turn Barrier（Host 控制回合切换）', () => {
   });
 
   it('⑱-B Host 先发 TURN_END（Guest 未 dwell）→ 缓存不推进；Guest dwell 后推进', async () => {
-    resolveBothSides();
+    await resolveAndAck();
     expect(h.hostCoord.onLocalAttackResolved()).toBe('proceed');
     await h.flush();
     // TURN_END 已到但本地 dwell 未完成：不推进
@@ -433,7 +444,7 @@ describe('Turn Barrier（Host 控制回合切换）', () => {
   it('⑲ TURN_END nextPlayerId 异常（与当前相同）→ warn 后仍按 Host 值应用', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      resolveBothSides();
+      await resolveAndAck();
       h.guestCoord.onLocalAttackResolved(); // dwellComplete = true
       h.hostNm.setTurnId(1);
       h.hostNm.send(NetworkMessageType.TURN_END, { nextPlayerId: 'P1', nextTurnId: 2 });

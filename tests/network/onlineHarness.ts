@@ -53,6 +53,12 @@ export interface OnlineHarness {
   readonly guestRejected: Mock<(payload: CommandRejectedPayload) => void>;
   readonly hostDisconnected: Mock<(reason?: string) => void>;
   readonly guestDisconnected: Mock<(reason?: string) => void>;
+  /** Phase 15：同步锁 / 同步状态 / 恢复失败 spies（Guest 侧锁，双端状态迁移） */
+  readonly hostSyncStateChange: Mock<(state: unknown, detail?: string) => void>;
+  readonly guestSyncStateChange: Mock<(state: unknown, detail?: string) => void>;
+  readonly hostSyncFailure: Mock<() => void>;
+  readonly guestSyncFailure: Mock<() => void>;
+  readonly guestSetSyncLock: Mock<(locked: boolean) => void>;
   readonly hostBoot: OnlineBattleBootstrap;
   readonly guestBoot: OnlineBattleBootstrap;
   /** onStart 各自触发次数（幂等回归断言用） */
@@ -67,6 +73,8 @@ export interface OnlineHarness {
 export interface OnlineHarnessOptions {
   /** false：完成 Lobby 握手但不 attach（测 attach 前置守卫用） */
   readonly attach?: boolean;
+  /** Phase 15：Host ACK 超时（缺省 8s；测试注入短值走重试阶梯） */
+  readonly hostAckTimeoutMs?: number;
 }
 
 /** loopback 投递为 setTimeout(0) macrotask：每轮冲洗一跳链 */
@@ -104,7 +112,11 @@ export async function createOnlineHarness(
   };
   const createMatchIdentity = () => ({ matchId: 'm', seed: 7 });
 
-  const hostCoord = new OnlineGameCoordinator({ session: hostSession, createMatchIdentity });
+  const hostCoord = new OnlineGameCoordinator({
+    session: hostSession,
+    createMatchIdentity,
+    ...(options.hostAckTimeoutMs !== undefined ? { hostAckTimeoutMs: options.hostAckTimeoutMs } : {}),
+  });
   const guestCoord = new OnlineGameCoordinator({ session: guestSession, createMatchIdentity });
 
   // 2. Lobby：双方 PLAYER_READY → Host 汇齐 → GAME_START
@@ -163,6 +175,11 @@ export async function createOnlineHarness(
   const guestShowDamage: Mock<(result: DamageResult) => void> = vi.fn();
   const hostRejected: Mock<(payload: CommandRejectedPayload) => void> = vi.fn();
   const guestRejected: Mock<(payload: CommandRejectedPayload) => void> = vi.fn();
+  const hostSyncStateChange: Mock<(state: unknown, detail?: string) => void> = vi.fn();
+  const guestSyncStateChange: Mock<(state: unknown, detail?: string) => void> = vi.fn();
+  const hostSyncFailure: Mock<() => void> = vi.fn();
+  const guestSyncFailure: Mock<() => void> = vi.fn();
+  const guestSetSyncLock: Mock<(locked: boolean) => void> = vi.fn();
 
   if (attach) {
     hostCoord.attach({
@@ -174,6 +191,8 @@ export async function createOnlineHarness(
       showAuthoritativeDamage: hostShowDamage,
       showRejected: hostRejected,
       onDisconnected: hostDisconnected,
+      onSyncStateChange: hostSyncStateChange,
+      onSyncFailure: hostSyncFailure,
     });
     guestCoord.attach({
       getState: () => guestState,
@@ -184,6 +203,9 @@ export async function createOnlineHarness(
       showAuthoritativeDamage: guestShowDamage,
       showRejected: guestRejected,
       onDisconnected: guestDisconnected,
+      setSyncLock: guestSetSyncLock,
+      onSyncStateChange: guestSyncStateChange,
+      onSyncFailure: guestSyncFailure,
     });
     await flushLoopback(1);
   }
@@ -213,6 +235,11 @@ export async function createOnlineHarness(
     guestRejected,
     hostDisconnected,
     guestDisconnected,
+    hostSyncStateChange,
+    guestSyncStateChange,
+    hostSyncFailure,
+    guestSyncFailure,
+    guestSetSyncLock,
     hostBoot,
     guestBoot,
     hostBootCount: hostBoots.length,

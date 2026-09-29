@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
-> 状态：**Phase 0 ～ Phase 14 已完成（2026-09-29，Phase 14 经 test-reviewer PASS WITH ISSUES 验收 —— 联机 P2P Gameplay Sync 全量落地）**
-> 验证：`npm run typecheck` / `npm run test` / `npm run build` / `npm run e2e` 全部通过。
+> 状态：**Phase 0 ～ Phase 15 已完成（2026-09-29，Phase 15 Desync Detection & State Recovery 落地——Guest 状态偏差自动检测 → 快照恢复 → 对局继续；待 test-reviewer 独立验收）**
+> 验证：`npm run typecheck` / `npm run test`（475）/ `npm run build` / `npm run e2e`（123）全部通过。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
 ---
@@ -1442,6 +1442,15 @@ Answer 码从未显示，配对必然超时失败。三处叠加根因（全部�
 - [ ] **彻底解法（未做）**：dev server 上 HTTPS（@vitejs/plugin-basic-ssl）
       → 全平台获得安全上下文，navigator.clipboard 原生可用，降级链仅作
       兜底；需要时再上
+- [x] **验证窗口 10s → 2 分钟（2026-09-29 第二轮真机反馈："复制 code
+      的时间又变短了"）**：根因不是连接预算（120s 未被 Phase 15 触碰），
+      而是 CONNECTED 后的 PING/PONG 验证窗口 VERIFICATION_TIMEOUT_MS
+      =10s——Guest 复制完连接码切微信（移动端页面后台化 JS 挂起）→
+      Host CONNECT 通道已开 → PING 无 PONG → 10s 即 "Connection
+      unstable — verification failed"，表现为"刚连上很快就失败"。
+      放宽至与连接预算同税制 120s（正常场景 PONG 毫秒级完成验证；
+      通道真坏时窗口兜底 FAILED 不无限等）；test13 假时钟同步推进；
+      typecheck / test 475 / build / online 配对 smoke 6/6 复验绿
 
 ---
 
@@ -1560,43 +1569,120 @@ Projectile / Damage / Camera（禁止 Online 专用 Gameplay）。
 
 ---
 
-# Phase 15 — Desync Protection
+# Phase 15 — Desync Detection & State Recovery ✅
 
-每个 TurnResult 包含：
+**目标**：Online Match 出现状态偏差时 —— 自动检测 → 请求权威状态 →
+恢复 Guest GameState → 继续下一回合，而不是整局报废。**Host 永远权威，
+Guest 永远对齐 Host**（不平均、不比时间戳、不信任 Guest 的 HP/Turn/Winner）。
 
-stateHash。
+## 实现落地（2026-09-29）
 
-Hash 至少覆盖：
+- **协议层（Main Agent 补尾，network-engineer 委托①截断）**：
+  - `computeStateHash` **v2**：位置经 `normalizePosition`（0.01 精度）——
+    物理/插值来源的双端浮点微差不触发假 desync；规范串以
+    `STATE_HASH_VERSION='v2'` 前缀（hash 契约版本化，两端不同 build 显式
+    mismatch）；hp/turnId/moveRemaining 整数语义字段不做浮点处理
+  - 新契约 + 形状守卫：`STATE_SYNC_REQUEST`（reason 四值枚举，
+    hasOwnProperty 防原型链伪造）/ `STATE_SNAPSHOT` / `TURN_RESULT_ACK`
+    （NetworkMessageType 新增 TURN_RESULT_ACK，契约锁定测试同步）
+  - `applyAuthoritativeSnapshot`：原子全量应用（含 turnId / phase /
+    currentPlayerId / seed / matchId——与 applyTurnResult 的部分覆写
+    不同，恢复场景本地状态不可信无"部分"可言）；原地覆写不新建对象；
+    items 数组保持引用
+  - `SnapshotValidator`：形状 → matchId → turnId/phase → 数值范围
+    （hp∈[0,maxHp] / moveRemaining≥0 / 有限位置）→ gameOver↔winnerId
+    联动 → **hash 自洽重算**（防篡改/坏数据）六道防线；reason 可读字符串
+- **通道层（network-engineer 委托② 4/6 落盘 + Main Agent 补尾去重）**：
+  - `OnlineSyncState` 六态：SYNCED / DESYNC_DETECTED / SYNC_REQUESTED /
+    APPLYING_SNAPSHOT / SYNCED_AFTER_RECOVERY（粘性诊断态）/ SYNC_FAILED
+  - **Guest 恢复链**（OnlineGuestChannel）：TURN_RESULT hash mismatch →
+    锁输入 → STATE_SYNC_REQUEST → STATE_SNAPSHOT → validator →
+    applyAuthoritativeSnapshot → 复验 → ACK(recovered:true) → 解锁；
+    **MISSING_TURN_RESULT**（TURN_END 先到无本回合结算）与
+    **INVALID_LOCAL_STATE**（envelope.turnId 跳号）同样触发恢复；
+    validator 拒收有限重试（2 次）后 SYNC_FAILED；恢复即视为 post-turn
+    表现完成（dwellComplete 置位——篡改 turnId 后 FIRE 被 WRONG_TURN
+    拒的本地无炮弹场景，Force Desync E2E 实测）
+  - **Host ACK Barrier**（OnlineHostChannel）：TURN_RESULT 后等
+    TURN_RESULT_ACK（turnId + hash 双校验）才放行 TURN_END；ACK 后到
+    经 resumeNextTurn 补驱（与 'proceed' 路径互斥无双驱动）；
+    **超时阶梯 8s×3**：重发 TURN_RESULT → 主动推 STATE_SNAPSHOT →
+    SYNC_FAILED（onSyncFailure 恰一次，coordinator 去重）
+  - gameOver：Guest hash 确认终局（`isFinalStateConfirmed` gate）后才
+    收口 ResultScene——避免双端胜负显示不一致；Host 转场不被 ACK 阻塞
+  - `debugForceDesync()`：Guest 本地 turnId+1（唯一可靠篡改面——hp/x/
+    hasFired 会被 applyTurnResult 在 hash 比较前覆写自愈）
+- **场景接线（Main Agent）**：BattleScene deps 新增 setSyncLock
+  （syncLocked 并入 isRemoteControlledTurn，锁 Move/Aim/Fire、保留相机
+  自由观察）/ onSyncStateChange（SYNCHRONIZING 横幅）/ onSyncFailure
+  （SYNC FAILED 横幅 + BACK TO MENU，禁继续错局）；**Host resumeNextTurn
+  双语义**（Host=endTurn+转场；Guest=仅转场）；update 循环 gameOver gate；
+  **断线/同步失败后不再弹回合横幅**（迟到的转场 showTurn 会覆盖
+  OPPONENT DISCONNECTED——25% flaky E2E 实测暴露的产品级缺陷）；
+  DebugOverlay SYNC 段（state/recovery/reason/双端 hash 对比）
 
-turnId
+## 测试（Phase 15 新增 33 个，总 475）
 
-currentPlayer
+- Phase15Protocol 20：hash v2 确定性/敏感性/浮点微差同 hash/键序无关/
+  versioning；validator 全 reason 矩阵（matchId/turnId/phase/hp 越界/
+  winner 联动/自洽）；applyAuthoritativeSnapshot 原地全量+引用保持；
+  三守卫正负用例（含原型链伪造拒）
+- Phase15Sync 13（loopback 双端真实协调器）：ACK 先到/后到双序 barrier；
+  篡改 turnId → HASH_MISMATCH 请求+锁；全链恢复 parity + recoveryCount +
+  ACK(recovered)；锁 true→false；Host 超时阶梯 3 段恰一次 onSyncFailure；
+  重复快照幂等；错 matchId 拒收；MISSING_TURN_RESULT；future TURN_END；
+  gameOver 终局确认无 TURN_END；debugForceDesync 全流程（恢复后第二回合
+  干净 ACK(recovered:false)）；Guest 坏快照重试上限 SYNC_FAILED
+- E2E 118 → **123**：真实 WebRTC Force Desync 全链（篡改 → 边界检测 →
+  turn3 快照恢复 → Barrier 放行 → P2 Turn 4 继续 → 双端 HP/位置一致 →
+  诊断记录）+ 既有 118 全绿（Offline 95 + Online 28）
+- 既有 barrier 单测按新 ACK 契约适配（resolveAndAck 前置）
 
-P1 position
+## 委托记录（Subagent 工作流）
 
-P2 position
+- network-engineer ①：**截断**（15 tool uses/87s 零落盘，result 为中途
+  思考片段）→ Main Agent 按其任务规格补尾全部协议层
+- network-engineer ②：**completed_partial**（核心流程 A/B/C 落盘；
+  Coordinator 五处修改/harness/测试未做；HostChannel 存在 replace 假
+  阴性重试产生的 7 处重复方法块——第三次实测该模式）→ Main Agent 去重
+  + 补尾 Coordinator 确认已由 subagent 落盘 + harness 扩展 + 13 用例
+  测试 + 时序修复（fake timers 与 loopback 冲突 / TurnManager phase 链
+  需 notifyProjectileLaunched+notifyTurnTransitionComplete 完整驱动）
 
-P1 HP
+## 验收
 
-P2 HP
+- [x] npm run typecheck
+- [x] npm run test（475 tests / 40 files）
+- [x] npm run build
+- [x] npm run e2e（123 项：Offline 95 + Online 28，含 Force Desync 恢复）
+- [x] **DEBUG Force Desync 自动恢复验证**（loopback 13 用例 + 真实
+      WebRTC E2E 全链）
+- [x] Single Player / Local 2P / Mobile 无回归（Offline 95 全绿）
+- [x] Offline 隔离：TurnManager / Gameplay 系统零 sync 感知（sync 全部
+      在 network/online/sync/ + channel 层）
+- [x] test-reviewer 独立验收：**PASS**（17/17 验收点全过、零 Critical/
+      High/Medium；三命令独立复跑全绿；4 项 Low 均文档注释级——
+      StateSnapshotPayload.generatedAtTurnId / expectedTurnId JSDoc 与
+      实际"仅诊断"行为不一致（stale-turnId 防线已有 Known Issue 追踪）、
+      normalizePosition 0.005 边界量化固有、Sync ⑦ recoveryCount 宽松
+      断言——随 Phase 16 顺手处理，不阻塞）
 
-active items
+## Known Issues（非阻塞）
 
-Guest：
-
-计算 state hash。
-
-如果不同：
-
-发送：
-
-STATE_SYNC_REQUEST
-
-Host：
-
-返回：
-
-STATE_SNAPSHOT。
+- [ ] **[协议缺口→Phase 16]** SnapshotValidator 无 stale turnId 时序检查
+      （generatedAtTurnId 低于 Guest 当前 turn 仍可 apply——权威模型下
+      "回退恢复"合法但病态；真实触发需 Guest 领先 Host，仅页面后台化
+      ACK 超时级联才可能出现）—— Phase 16+ 评估加 turn 时序防线
+      （test-reviewer Low #1/#2 同源：两处 JSDoc 声称"据此校验/拒收"，
+      实际仅诊断 —— 补防线或修注释二选一）
+- [ ] **[环境限制]** INTERNET RECOVERY NOT VERIFIED（恢复验证为局域网
+      同机双页真实 WebRTC + loopback；Wi-Fi ↔ 5G 外网恢复未测——
+      Phase 14 起的外网验证债延续）
+- [ ] **[行为变化]** Host TURN_END 现等 Guest ACK（8s 超时兜底）——
+      极端网络下回合切换比 Phase 14 慢（设计如此：Turn Sync Barrier
+      保证双端同步点）
+- [ ] **[Info]** 恢复链触发时 SYNCHRONIZING 横幅可能闪现（恢复通常
+      亚秒级；SYNC_FAILED 有持久横幅 + 返回菜单出口）
 
 ---
 

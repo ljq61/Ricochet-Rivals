@@ -13,7 +13,11 @@ import type {
   MovePayload,
   MoveRequestPayload,
   PlayerReadyPayload,
+  StateSnapshotPayload,
+  StateSyncReason,
+  StateSyncRequestPayload,
   TurnEndPayload,
+  TurnResultAckPayload,
   TurnResultPayload,
   TurnResultPlayerPayload,
 } from './OnlineTypes';
@@ -292,6 +296,62 @@ export function isTurnEndPayload(value: unknown): value is TurnEndPayload {
     return false;
   }
   return isPlayerId(value.nextPlayerId) && isIntegerNumber(value.nextTurnId);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15 —— Desync 恢复 payload 守卫
+// ---------------------------------------------------------------------------
+
+/** StateSyncReason 白名单（编译期穷举 + 运行时 hasOwnProperty 防原型链） */
+const STATE_SYNC_REASON_FLAGS: Readonly<Record<StateSyncReason, true>> = {
+  HASH_MISMATCH: true,
+  MISSING_TURN_RESULT: true,
+  INVALID_LOCAL_STATE: true,
+  MANUAL_DEBUG: true,
+};
+
+export function isStateSyncReason(value: unknown): value is StateSyncReason {
+  return (
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(STATE_SYNC_REASON_FLAGS, value)
+  );
+}
+
+/** STATE_SYNC_REQUEST（Guest → Host）：expectedTurnId 整数 + 双 hash 非空 + reason 枚举 */
+export function isStateSyncRequestPayload(value: unknown): value is StateSyncRequestPayload {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  return (
+    isIntegerNumber(value.expectedTurnId) &&
+    isNonEmptyString(value.localStateHash) &&
+    isNonEmptyString(value.authoritativeHash) &&
+    isStateSyncReason(value.reason)
+  );
+}
+
+/** STATE_SNAPSHOT（Host → Guest）：深校验 snapshot + hash 自洽由 SnapshotValidator 负责 */
+export function isStateSnapshotPayload(value: unknown): value is StateSnapshotPayload {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  return (
+    isAuthoritativeGameSnapshot(value.snapshot) &&
+    isNonEmptyString(value.stateHash) &&
+    isIntegerNumber(value.generatedAtTurnId)
+  );
+}
+
+/** TURN_RESULT_ACK（Guest → Host）：Sync Barrier 确认 */
+export function isTurnResultAckPayload(value: unknown): value is TurnResultAckPayload {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  return (
+    isIntegerNumber(value.turnId) &&
+    isNonEmptyString(value.stateHash) &&
+    isBoolean(value.recovered)
+  );
 }
 
 // ---------------------------------------------------------------------------

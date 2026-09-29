@@ -13,6 +13,7 @@ import {
 } from './OnlineHostChannel';
 import { GuestAuthoritativeDamage, OnlineGuestChannel } from './OnlineGuestChannel';
 import { isGameStartPayload, isPlayerReadyPayload } from './OnlinePayloads';
+import { OnlineSyncState } from './sync/OnlineSyncState';
 import type {
   GameStartPayload,
   OnlineBattleBootstrap,
@@ -21,6 +22,7 @@ import type {
   OnlineDebugInfo,
   OnlineGameCoordinatorApi,
   OnlineLobbyHandlers,
+  StateSyncDiagnostics,
 } from './OnlineTypes';
 import type { CommandRejectedReason } from './CommandRejectedReason';
 import type { DamageResult } from '../../state/DamageResult';
@@ -28,7 +30,7 @@ import type { ProjectileImpact } from '../../state/ExplosionEvent';
 import type { PlayerId } from '../../state/ids';
 
 /**
- * OnlineGameCoordinator（Phase 14）—— 联机协调器生命周期壳。
+ * OnlineGameCoordinator（Phase 14/15）—— 联机协调器生命周期壳。
  *
  * 架构位置：BattleScene 只经本类（OnlineGameCoordinatorApi）与网络层交互；
  * TurnManager / Movement / Projectile 系统内零 if (isHost)。Host / Guest
@@ -36,7 +38,8 @@ import type { PlayerId } from '../../state/ids';
  *
  * * Lobby 握手（PLAYER_READY → Host 汇齐 → GAME_START）
  * * Battle attach（按角色装配 channel / inputBus / damageSystem）
- * * 诊断（debugInfo / RTT / 保活）与断线路由
+ * * Phase 15 同步状态机单一事实源（setSyncState → deps 转发 + 终局去重）
+ * * 诊断（debugInfo / RTT / 保活 / getSyncDiagnostics）与断线路由
  * * 入站三防线与统一出站口（OnlineChannelUtils 实现，两 channel 复用）
  *
  * 生命周期：enterLobby → sendPlayerReady → attach → dispose。
@@ -76,6 +79,12 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
    */
   private readyRetryTimer: ReturnType<typeof setInterval> | null = null;
 
+  /** Phase 15：同步状态单一事实源（channel 经 setSyncState 驱动） */
+  private syncStateValue: OnlineSyncState = OnlineSyncState.SYNCED;
+  /** onSyncFailure 终局去重（每场恰一次） */
+  private syncFailureNotified = false;
+  private readonly hostAckTimeoutMs: number;
+
   private inputBusValue: CommandBus | null = null;
   private damageSystemValue: DamageSystem | null = null;
 
@@ -83,6 +92,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
     this.session = options.session;
     this.nm = options.session.networkManager;
     this.createMatchIdentity = options.createMatchIdentity;
+    this.hostAckTimeoutMs = options.hostAckTimeoutMs ?? 8_000;
     // 通道中断订阅与生命周期同寿（Lobby / Battle 各自回调槽转发）
     this.cancels.push(this.nm.onDisconnect((reason) => this.handleDisconnect(reason)));
   }
@@ -227,11 +237,17 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
     if (this.role === 'host') {
       this.inputBusValue = deps.commandBus; // Host：本地权威执行，outcome 负责广播
       this.damageSystemValue = new ConcreteDamageSystem();
-      this.hostChannel = new OnlineHostChannel(this.nm, this, {
-        getState: deps.getState,
-        commandBus: deps.commandBus,
-        gameLogic: deps.gameLogic,
-      });
+      this.hostChannel = new OnlineHostChannel(
+        this.nm,
+        this,
+        {
+          getState: deps.getState,
+          commandBus: deps.commandBus,
+          gameLogic: deps.gameLogic,
+          resumeNextTurn: deps.resumeNextTurn,
+        },
+        { ackTimeoutMs: this.hostAckTimeoutMs },
+      );
       this.cancels.push(this.hostChannel.attach());
       return;
     }
@@ -250,6 +266,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
       resumeNextTurn: deps.resumeNextTurn,
       showAuthoritativeDamage: deps.showAuthoritativeDamage,
       showRejected: deps.showRejected,
+      setSyncLock: deps.setSyncLock,
     });
     this.cancels.push(this.guestChannel.attach());
   }
@@ -306,7 +323,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
     this.guestChannel?.notifyLocalResolve(impact);
   }
 
-  /** Host：发 TURN_END 并 'proceed'；Guest：Turn Barrier 双条件判定 */
+  /** Host：ACK Barrier 判定；Guest：Turn Barrier 双条件判定 */
   onLocalAttackResolved(): 'proceed' | 'waiting' {
     this.requireBattleDeps();
     if (this.hostChannel !== null) {
@@ -316,6 +333,48 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
       return this.guestChannel.onDwellComplete();
     }
     return 'waiting'; // 不可达（attach 必建其一）——防御收口
+  }
+
+  // ---- Phase 15：同步状态机 / 诊断 / DEBUG ------------------------------
+
+  get syncState(): OnlineSyncState {
+    return this.syncStateValue;
+  }
+
+  /** channel 驱动入口：记录 → 转发 onSyncStateChange；SYNC_FAILED 首次进入恰一次 onSyncFailure */
+  setSyncState(next: OnlineSyncState, detail?: string): void {
+    this.syncStateValue = next;
+    this.battleDeps?.onSyncStateChange?.(next, detail);
+    if (next === OnlineSyncState.SYNC_FAILED && !this.syncFailureNotified) {
+      this.syncFailureNotified = true;
+      this.battleDeps?.onSyncFailure?.();
+    }
+  }
+
+  /** Guest：gameOver TURN_RESULT hash 确认；Host：权威 gameOver 即 true */
+  isFinalStateConfirmed(): boolean {
+    if (this.role === 'host') {
+      return this.requireBattleDeps().getState().gameOver;
+    }
+    return this.guestChannel?.isFinalStateConfirmed ?? false;
+  }
+
+  getSyncDiagnostics(): StateSyncDiagnostics {
+    const fromChannel =
+      this.guestChannel?.syncDiagnostics ?? this.hostChannel?.syncDiagnostics;
+    return (
+      fromChannel ?? {
+        recoveryCount: 0,
+        lastSyncReason: null,
+        localHash: null,
+        hostHash: null,
+      }
+    );
+  }
+
+  /** DEBUG_GAME：Guest 侧制造 desync（下一次 TURN_RESULT 边界自动恢复）；Host no-op */
+  debugForceDesync(): void {
+    this.guestChannel?.debugForceDesync();
   }
 
   // ---- 断线 / 生命周期 --------------------------------------------------
@@ -338,6 +397,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
   }
 
   debugInfo(): OnlineDebugInfo {
+    const sync = this.getSyncDiagnostics();
     return {
       role: this.role,
       localPlayerId: this.localPlayerId,
@@ -349,6 +409,11 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
       lastTxType: this.lastTxType,
       rejectedCount: this.rejectedCount,
       lastHashMatch: this.guestChannel?.lastHashMatch ?? null,
+      syncState: this.syncStateValue,
+      recoveryCount: sync.recoveryCount,
+      lastSyncReason: sync.lastSyncReason,
+      localHash: sync.localHash,
+      hostHash: sync.hostHash,
     };
   }
 

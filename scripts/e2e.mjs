@@ -1535,6 +1535,90 @@ async function runOnlineBattle(browser) {
     gFinal?.online?.lastHashMatch === true
   );
 
+  // —— Phase 15：Force Desync → 自动检测 → 快照恢复 → 对局继续 ——
+  // P1 Turn 3（Host 回合）内篡改 Guest 本地 turnId（唯一可靠篡改面）：
+  // 下一次 TURN_RESULT 边界 hash mismatch → STATE_SYNC_REQUEST →
+  // STATE_SNAPSHOT → Guest apply → ACK(recovered) → TURN_END 放行
+  await pageGuest.evaluate(() => window.__RR_DEBUG__.forceDesync());
+  const hostP2x2 = (await hostD()).players.P2;
+  await pageHost.bringToFront(); // 后台页 rAF 冻结：瞄准/炮弹物理必须前台
+  await fireFortyFiveShot(pageHost, 1280, 800, hostP2x2);
+  // Guest 恢复为事件驱动（不依赖前台）；断言收紧到本回合的恢复记录
+  //（防早期回合偶发恢复的 SYNCED_AFTER_RECOVERY 遗留误判）
+  const guestRecovered = await waitFor(
+    pageGuest,
+    async () => {
+      const d = await guestD();
+      return (
+        d.syncState === 'SYNCED_AFTER_RECOVERY' &&
+        typeof d.lastSyncReason === 'string' &&
+        d.lastSyncReason.includes('RECOVERED(turn:3')
+      );
+    },
+    25000,
+    'Guest desync 自动恢复'
+  ).catch(async () => {
+    const d = await guestD();
+    console.log(
+      '[recovery-guest-diag]',
+      JSON.stringify({
+        cur: d.currentPlayerId, turn: d.turnId, phase: d.phase,
+        cam: d.cameraMode, sync: d.syncState, reason: d.lastSyncReason,
+        recovery: d.recoveryCount, lastRx: d.online?.lastRxType,
+      })
+    );
+    return null;
+  });
+  check(
+    'Force Desync：TURN_RESULT 边界检测 mismatch → 快照恢复（turn3 快照）',
+    guestRecovered !== null
+  );
+  // Host 保持前台直到回合切换完成（炮弹物理 + TR + TURN_END 全链 rAF），
+  // 之后才切 Guest 断言推进 —— 双页 rAF 冻结的既有 E2E 轮换纪律
+  const hostContinued = await waitFor(
+    pageHost,
+    async () => {
+      const d = await hostD();
+      return d.currentPlayerId === 'P2' && d.turnId === 4;
+    },
+    25000,
+    'Host 同步进入 P2 Turn 4'
+  ).catch(async () => {
+    const hd = await hostD();
+    console.log(
+      '[recovery-host-diag]',
+      JSON.stringify({
+        cur: hd.currentPlayerId, turn: hd.turnId, phase: hd.phase,
+        cam: hd.cameraMode, lastTx: hd.online?.lastTxType, sync: hd.syncState,
+        reason: hd.lastSyncReason,
+      })
+    );
+    return null;
+  });
+  check('恢复后对局继续（Turn Barrier 放行 → P2 Turn 4）', hostContinued);
+  await pageGuest.bringToFront();
+  const guestContinueAfterRecovery = await waitFor(
+    pageGuest,
+    async () => {
+      const d = await guestD();
+      return d.currentPlayerId === 'P2' && d.phase === 'ACTION' && d.turnId === 4;
+    },
+    25000,
+    'Guest 恢复后继续 P2 Turn 4'
+  );
+  check('恢复后双端回合一致（Guest 应用授权回合）', guestContinueAfterRecovery);
+  const hPost = await hostD();
+  const gPost = await guestD();
+  check(
+    '恢复后双端 HP / 位置一致（Host 权威快照生效）',
+    JSON.stringify(hPost.hp) === JSON.stringify(gPost.hp) &&
+      JSON.stringify(hPost.players) === JSON.stringify(gPost.players)
+  );
+  check(
+    '恢复诊断：lastSyncReason 记录 desync 事件',
+    typeof gPost.lastSyncReason === 'string' && gPost.lastSyncReason.length > 0
+  );
+
   // —— Disconnect：Guest 优雅关闭通道（真实关标签页路径）→ Host 感知 ——
   // 进程异常崩溃只到 ICE 'disconnected'（瞬态，Phase 12 防误杀设计），
   // 'failed' 终局需数十秒 —— E2E 走确定性优雅关闭路径。
@@ -1553,6 +1637,19 @@ async function runOnlineBattle(browser) {
     5000,
     '断线横幅'
   ).catch(() => null);
+  if (hostLost && lostBanner === null) {
+    // Phase 15 ACK barrier 后引入的时序 flaky 诊断：断线已感知但横幅未现
+    const diag = await hostD();
+    console.log(
+      `[disconnect-flaky-diag] banner=${JSON.stringify(diag.lastBannerText)}`,
+      `sync=${diag.syncState ?? 'n/a'}`,
+      `reason=${diag.lastSyncReason ?? 'n/a'}`,
+      `recovery=${diag.recoveryCount ?? 'n/a'}`,
+      `hp=${JSON.stringify(diag.hp)}`,
+      `turn=${diag.turnId}`,
+      `gameOver=${diag.gameOver}`,
+    );
+  }
   check(
     'Disconnect 基本处理：冻结输入 + OPPONENT DISCONNECTED 横幅',
     hostLost && lostBanner !== null
