@@ -189,6 +189,9 @@ async function shotAimPoses(browser) {
   await waitFor(async () => (await dbg(page)).hasFired, 3000, 'hasFired');
   await new Promise((r) => setTimeout(r, 350));
   await page.screenshot({ path: `${OUT_DIR}/05-projectile-flight.png` });
+  // 06：弹道末段（相机跟随至 P2 阵地 —— 红方基地甲板对齐抽查）
+  await new Promise((r) => setTimeout(r, 2200));
+  await page.screenshot({ path: `${OUT_DIR}/06-red-base-follow.png` });
   await page.close();
 }
 

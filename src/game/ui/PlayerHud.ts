@@ -1,24 +1,38 @@
 import Phaser from 'phaser';
 import { GAME_CONFIG } from '../config/GameConfig';
-import { PALETTE, playerColor, toCssColor } from '../config/Palette';
+import { PALETTE, playerColor } from '../config/Palette';
+import { ART } from '../config/ArtAssets';
 import type { ViewportService } from '../platform/ViewportService';
 import type { PlayerState } from '../state/PlayerState';
 import type { PlayerId } from '../state/ids';
 
+/**
+ * 真机反馈轮（Phase 17）：HP HUD 按 concept_UI 玩家卡语言重做 ——
+ * 铆钉深色钢板 + 队色角签（P1/P2）+ 头像（生成素材，缺失回退无像）+
+ * 10 段血格（HP=10 天然分段）+ n/10 数值。
+ * 旧实现（连续填充条）见 git 历史。
+ */
+
 /** 屏幕手感常量（CSS px，运行时 ×uiScale） */
-const BAR_WIDTH = 150;
-const BAR_HEIGHT = 16;
-const LABEL_X = 0;
-const BAR_X = 34;
-const HP_TEXT_X = BAR_X + BAR_WIDTH + 10;
-const HUD_HEIGHT = 20;
-const EDGE_MARGIN = 20;
+const AVATAR_SIZE = 30;
+const AVATAR_X = 0;
+const SEG_X = 42;
+const SEG_WIDTH = 13;
+const SEG_GAP = 3;
+const SEG_HEIGHT = 14;
+const HP_TEXT_X = SEG_X + GAME_CONFIG.player.maxHp * (SEG_WIDTH + SEG_GAP) - SEG_GAP + 10;
+/** 板内边距（左 -8 / 上下 ±20）与总宽 */
+const PLATE_PAD_X = 8;
+const PLATE_WIDTH = HP_TEXT_X + 44;
 const HP_TWEEN_MS = 350;
 
 interface HudEntry {
   container: Phaser.GameObjects.Container;
-  label: Phaser.GameObjects.Text;
-  bar: Phaser.GameObjects.Graphics;
+  /** 头像（缺素材 = null，框内回退队色底） */
+  avatar: Phaser.GameObjects.Image | null;
+  /** 板 + 框 + 角签 + 血格（全 Graphics） */
+  plate: Phaser.GameObjects.Graphics;
+  tag: Phaser.GameObjects.Text;
   hpText: Phaser.GameObjects.Text;
   /** 上次展示的 HP（变化检测 → 动画）；null = 尚未初始化 */
   displayedHp: number | null;
@@ -28,10 +42,10 @@ interface HudEntry {
 }
 
 /**
- * HP HUD（Phase 7 反馈）：双方血条 + 数值。
+ * HP HUD（Phase 7 反馈；真机反馈轮 concept_UI 化）：
  * - 左上 P1 / 右上 P2（Safe Area 内边距），resize / 旋转 / DPR 变化自动重排
  * - 每帧从 PlayerState 刷新（State 是唯一数据源），
- *   HP 变化时播放过渡动画（血条宽度 Tween + 数值闪红）
+ *   HP 变化时播放过渡动画（血格段数 Tween + 数值闪红）
  * - 阵亡后置灰；HP 只由 DamageSystem 修改，本类只读
  * - 真机修复：尺寸 / 字号经 uiScale（= DPR）换算（游戏坐标 = 物理像素）
  */
@@ -85,31 +99,35 @@ export class PlayerHud {
   // ---- 创建与布局 --------------------------------------------------------
 
   private createEntry(playerId: PlayerId): HudEntry {
-    const color = playerColor(playerId);
     const container = this.scene.add.container(0, 0).setScrollFactor(0).setDepth(950);
-
-    const label = this.scene.add
-      .text(LABEL_X, 0, playerId, {
+    const avatarKey = playerId === 'P1' ? ART.avatarP1 : ART.avatarP2;
+    const avatar =
+      this.scene.textures.exists(avatarKey)
+        ? this.scene.add.image(0, 0, avatarKey)
+        : null;
+    const plate = this.scene.add.graphics();
+    const tag = this.scene.add
+      .text(0, 0, playerId, {
         fontFamily: 'monospace',
-        color: toCssColor(color),
+        color: '#fff4db',
       })
-      .setOrigin(0, 0.5);
-
-    const bar = this.scene.add.graphics();
-
+      .setOrigin(0.5);
     const hpText = this.scene.add
-      .text(HP_TEXT_X, 0, '', {
+      .text(0, 0, '', {
         fontFamily: 'monospace',
         color: '#e8eef7',
       })
       .setOrigin(0, 0.5);
-
-    container.add([bar, label, hpText]);
+    container.add([plate, tag, hpText]);
+    if (avatar) {
+      container.add(avatar);
+    }
 
     return {
       container,
-      label,
-      bar,
+      avatar,
+      plate,
+      tag,
       hpText,
       displayedHp: null,
       shownHp: GAME_CONFIG.player.maxHp,
@@ -119,18 +137,22 @@ export class PlayerHud {
 
   private reposition(): void {
     const { width, safeArea, uiScale } = this.viewport.current;
-    const y = safeArea.top + EDGE_MARGIN * uiScale + (HUD_HEIGHT * uiScale) / 2;
-    // P1 左上；P2 右上（整体宽度 = HP_TEXT_X + 文本宽度估算）
-    const totalWidth = (HP_TEXT_X + 52) * uiScale;
-    this.entries.P1.container.setPosition(safeArea.left + EDGE_MARGIN * uiScale, y);
+    const halfHeight = 20 * uiScale;
+    const y = safeArea.top + 24 * uiScale + halfHeight;
+    const totalWidth = (PLATE_WIDTH + PLATE_PAD_X) * uiScale;
+    this.entries.P1.container.setPosition(safeArea.left + 16 * uiScale, y);
     this.entries.P2.container.setPosition(
-      width - safeArea.right - EDGE_MARGIN * uiScale - totalWidth,
+      width - safeArea.right - 16 * uiScale - totalWidth,
       y
     );
-    // 字号跟随 uiScale（DPR 变化时同步）
     for (const entry of Object.values(this.entries)) {
-      entry.label.setFontSize(18 * uiScale);
-      entry.hpText.setFontSize(16 * uiScale);
+      entry.tag.setFontSize(11 * uiScale);
+      entry.hpText.setFontSize(14 * uiScale);
+      entry.avatar?.setDisplaySize(AVATAR_SIZE * uiScale, AVATAR_SIZE * uiScale);
+      entry.avatar?.setPosition(
+        (AVATAR_X + AVATAR_SIZE / 2) * uiScale,
+        0
+      );
     }
   }
 
@@ -139,41 +161,88 @@ export class PlayerHud {
   private drawEntry(entry: HudEntry, player: PlayerState): void {
     const ui = this.viewport.current.uiScale;
     const color = playerColor(player.id);
-    const barWidth = BAR_WIDTH * ui;
-    const barHeight = BAR_HEIGHT * ui;
-    const barX = BAR_X * ui;
-    const radius = 5 * ui;
-    const ratio =
-      player.maxHp > 0 ? Math.max(0, entry.shownHp) / player.maxHp : 0;
+    const maxHp = player.maxHp;
+    const segStep = (SEG_WIDTH + SEG_GAP) * ui;
+    const segW = SEG_WIDTH * ui;
+    const segH = SEG_HEIGHT * ui;
 
-    entry.bar.clear();
-    entry.bar.fillStyle(0x151c22, 0.94);
-    entry.bar.fillRoundedRect(-8 * ui, -20 * ui, (HP_TEXT_X + 64) * ui, 40 * ui, 3 * ui);
-    entry.bar.lineStyle(2 * ui, 0xb4b6ad, 0.8);
-    entry.bar.strokeRoundedRect(-8 * ui, -20 * ui, (HP_TEXT_X + 64) * ui, 40 * ui, 3 * ui);
-    entry.bar.fillStyle(0x0d1420, 0.8);
-    entry.bar.fillRoundedRect(barX, -barHeight / 2, barWidth, barHeight, radius);
-    if (ratio > 0) {
-      entry.bar.fillStyle(player.isAlive ? color : PALETTE.zoneLine, 0.95);
-      entry.bar.fillRoundedRect(
-        barX,
-        -barHeight / 2,
-        Math.max(barHeight, barWidth * ratio),
-        barHeight,
-        radius
-      );
+    entry.plate.clear();
+    // 铆钉深色钢板（concept_UI 玩家卡语言）
+    const plateW = PLATE_WIDTH * ui;
+    const plateH = 40 * ui;
+    const radius = 4 * ui;
+    entry.plate.fillStyle(0x080d12, 0.94);
+    entry.plate.fillRoundedRect(-PLATE_PAD_X * ui, -plateH / 2, plateW, plateH, radius);
+    entry.plate.lineStyle(2 * ui, 0xb4b6ad, 0.85);
+    entry.plate.strokeRoundedRect(-PLATE_PAD_X * ui, -plateH / 2, plateW, plateH, radius);
+    entry.plate.lineStyle(2 * ui, 0xffe19a, 0.5);
+    entry.plate.lineBetween(
+      -PLATE_PAD_X * ui + 8 * ui,
+      -plateH / 2 + 5 * ui,
+      plateW - PLATE_PAD_X * ui - 8 * ui,
+      -plateH / 2 + 5 * ui
+    );
+    entry.plate.fillStyle(0x151c22, 1);
+    for (const x of [-1, 1]) {
+      for (const y of [-1, 1]) {
+        entry.plate.fillCircle(
+          -PLATE_PAD_X * ui + x * (plateW / 2 - 8 * ui),
+          y * (plateH / 2 - 8 * ui),
+          2 * ui
+        );
+      }
     }
-    entry.bar.lineStyle(1 * ui, 0x56698a, 0.8);
-    entry.bar.strokeRoundedRect(barX, -barHeight / 2, barWidth, barHeight, radius);
+    // 队色角签（concept_UI：左上角小色块标队伍）
+    entry.plate.fillStyle(color, 1);
+    entry.plate.fillRoundedRect(
+      -PLATE_PAD_X * ui,
+      -plateH / 2,
+      18 * ui,
+      14 * ui,
+      2 * ui
+    );
 
-    entry.hpText.setX((HP_TEXT_X) * ui);
+    // 头像框（缺素材 = 队色底占位）
+    const av = AVATAR_SIZE * ui;
+    const avX = AVATAR_X * ui;
+    entry.plate.fillStyle(0x0d1420, 1);
+    entry.plate.fillRoundedRect(avX - 2 * ui, -av / 2 - 2 * ui, av + 4 * ui, av + 4 * ui, 3 * ui);
+    entry.plate.lineStyle(2 * ui, color, 0.9);
+    entry.plate.strokeRoundedRect(avX - 2 * ui, -av / 2 - 2 * ui, av + 4 * ui, av + 4 * ui, 3 * ui);
+    if (entry.avatar === null) {
+      entry.plate.fillStyle(color, 0.5);
+      entry.plate.fillRoundedRect(avX, -av / 2, av, av, 3 * ui);
+    }
+    entry.tag.setPosition(avX + av / 2, plateH / 2 - 6 * ui);
+
+    // 10 段血格：满格 = 队色（存活）/ 灰（阵亡），当前段随 Tween 部分填充
+    const segY = -segH / 2;
+    for (let i = 0; i < maxHp; i++) {
+      const sx = SEG_X * ui + i * segStep;
+      entry.plate.fillStyle(0x0d1420, 0.9);
+      entry.plate.fillRoundedRect(sx, segY, segW, segH, 2 * ui);
+      const remain = entry.shownHp - i;
+      if (remain <= 0) {
+        continue;
+      }
+      const fillW = Math.min(1, remain) * segW;
+      entry.plate.fillStyle(player.isAlive ? color : PALETTE.zoneLine, 0.95);
+      entry.plate.fillRoundedRect(sx, segY, fillW, segH, 2 * ui);
+    }
+    entry.plate.lineStyle(1 * ui, 0x56698a, 0.7);
+    for (let i = 0; i < maxHp; i++) {
+      const sx = SEG_X * ui + i * segStep;
+      entry.plate.strokeRoundedRect(sx, segY, segW, segH, 2 * ui);
+    }
+
+    entry.hpText.setX(HP_TEXT_X * ui);
     entry.hpText.setText(
       `${Math.max(0, Math.round(entry.shownHp))}/${player.maxHp}`
     );
     entry.hpText.setColor(player.isAlive ? '#e8eef7' : '#63769b');
   }
 
-  /** HP 变化动画：血条宽度收缩 + 数值闪红 */
+  /** HP 变化动画：血格段数收缩 + 数值闪红 */
   private animateTo(
     entry: HudEntry,
     player: PlayerState,
@@ -183,7 +252,7 @@ export class PlayerHud {
 
     const decreasing = player.hp < previousHp;
     if (decreasing) {
-      // 受击闪红一拍（血条本体收缩由 Tween 驱动）
+      // 受击闪红一拍（血格收缩由 Tween 驱动）
       entry.hpText.setColor('#ff5063');
       entry.hpText.setScale(1.25);
       this.scene.tweens.add({

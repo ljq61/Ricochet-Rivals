@@ -355,9 +355,10 @@ export class BattleScene extends Phaser.Scene {
     //     停留结束 / 出界 → 回合收口（endTurn / TURN_TRANSITION / GAME_OVER）
     this.projectileSystem.onLaunched(() => {
       this.logCameraEvent(`launched`);
-      // Phase 17 Juice：发射口哨循环随发射启动，impact / 出界停
+      // Phase 17 Juice：发射音 + 飞行口哨各播一次（真机反馈：口哨循环
+      // 在 desync 清场路径下停不掉且听感重复 —— 单次播放，无循环句柄）
       this.sfx.play(SFX.launch);
-      this.sfx.startLoop(SFX.projectile);
+      this.sfx.play(SFX.projectile);
       this.turnManager.notifyProjectileLaunched();
       this.cameraController.followProjectile(() => {
         const projectile = this.projectileSystem.activeProjectiles[0];
@@ -371,8 +372,7 @@ export class BattleScene extends Phaser.Scene {
       const result = this.explosionSystem.explode(this.state, impact);
       this.turnManager.notifyProjectileResolved(result);
       this.cameraController.shake();
-      // Phase 17 Juice：停飞行口哨 + 爆炸；有命中再加 hit 反馈音
-      this.sfx.stopLoop();
+      // Phase 17 Juice：爆炸；有命中再加 hit 反馈音
       this.sfx.play(SFX.explosion);
       if (result.players.some((entry) => entry.damage > 0)) {
         this.sfx.play(SFX.hit);
@@ -396,7 +396,6 @@ export class BattleScene extends Phaser.Scene {
     });
     this.projectileSystem.onOutOfBounds(() => {
       this.logCameraEvent('outOfBounds');
-      this.sfx.stopLoop();
       // 出界：无爆炸无伤害，同样进入 RESOLVE 并收口回合
       this.turnManager.notifyProjectileResolved(null);
       this.online?.notifyTurnResolved(null, null);
@@ -559,6 +558,9 @@ export class BattleScene extends Phaser.Scene {
     if (!this.turnManager.requestAim()) {
       return;
     }
+    // Phase 17 真机反馈轮：瞄准激活 = 上弹音（按钮 / Space 统一入口，
+    // 守卫全过后才响 —— no-op 点击不播）
+    this.sfx.play(SFX.load);
     this.logCameraEvent(`requestAim→cam=${this.cameraController.currentMode}`);
     this.cameraController.requestAim(
       () => this.state.players[this.state.currentPlayerId].x
@@ -964,7 +966,6 @@ export class BattleScene extends Phaser.Scene {
     this.aimController.destroy();
     this.aimButton.destroy();
     this.aimRenderer.destroy();
-    this.sfx.destroy();
     this.playerHud.destroy();
     this.turnBanner.destroy();
     this.projectileSystem.destroy();

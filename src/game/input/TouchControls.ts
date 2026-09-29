@@ -280,17 +280,21 @@ export class TouchControls implements InputSource {
   }
 
   private drawHoldButton(button: TouchButton): void {
-    const { width, height, pressed } = button;
+    const { width, pressed } = button;
     const ui = this.deps.viewport.current.uiScale;
     const accent = PALETTE.P1;
-    const radius = 16 * ui;
+    // 真机反馈轮（Phase 17）：移动按钮改 concept01 §06 扁平圆形 ——
+    // 半透明深炭圆盘 + 细浅灰描边 + 实心白三角；按下点亮 team 色
+    const r = width / 2;
     button.bg.clear();
     button.bg.fillStyle(0x0d1420, 0.75);
-    button.bg.fillRoundedRect(-width / 2, -height / 2, width, height, radius);
-    button.bg.fillStyle(accent, pressed ? 0.85 : 0.35);
-    button.bg.fillRoundedRect(-width / 2, -height / 2, width, height, radius);
-    button.bg.lineStyle(2 * ui, accent, pressed ? 1 : 0.7);
-    button.bg.strokeRoundedRect(-width / 2, -height / 2, width, height, radius);
+    button.bg.fillCircle(0, 0, r);
+    if (pressed) {
+      button.bg.fillStyle(accent, 0.35);
+      button.bg.fillCircle(0, 0, r);
+    }
+    button.bg.lineStyle(2 * ui, pressed ? accent : 0x9aa7b5, pressed ? 1 : 0.8);
+    button.bg.strokeCircle(0, 0, r);
     // Phase 9 反馈 ②：常驻半透明，按下抬亮（反馈仍在但不再抢视觉）
     button.container.setAlpha(pressed ? MOVE_BUTTON_PRESSED_ALPHA : MOVE_BUTTON_ALPHA);
   }

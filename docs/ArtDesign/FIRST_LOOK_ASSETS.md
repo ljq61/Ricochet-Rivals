@@ -7,9 +7,18 @@
 | `harbor.png` | 1672 × 941 | 菜单背景、战场远景 | 内置 image_gen，新生成、不透明 |
 | `blue-chibi.png` | 1254 × 1254 | 蓝队二头身角色、菜单装饰 | 内置 image_gen 编辑，真实透明 |
 | `red-chibi.png` | 1254 × 1254 | 红队二头身角色、菜单装饰 | 内置 image_gen 编辑，真实透明 |
-| `harbor-tower.png` | 1254 × 1254 | 左右端机械塔楼装饰 | 内置 image_gen，新生成、真实透明；右侧镜像复用 |
+| `harbor-tower.png` | 1254 × 1254 | 塔楼装饰（基地素材缺失时的回退） | 内置 image_gen，新生成、真实透明；右侧镜像复用 |
 | `normal-projectile.png` | 1254 × 1254 | NORMAL 投射物视觉，运行时显示 165 × 165 世界像素（内容可见宽 ~60） | 内置 image_gen，新生成、真实透明；中心旋转轴 |
 | `explosion-impact.png` | 1254 × 1254 | 命中爆炸视觉，运行时按伤害半径放大 | 内置 image_gen，新生成、真实透明；中心锚点 |
+| `blue-aim15/30/45/60/75.png` | 1024 × 1024 | 蓝方抬枪姿态序列（锚点见下文） | 全能日辉，参考 blue-chibi 生成，真实透明 |
+| `red-aim15/30/45/60/75.png` | 1024 × 1024 | 红方抬枪姿态序列（锚点见下文） | 全能日辉，参考 red-chibi 生成，真实透明 |
+| `aim-ready.png` | 2048 × 2048 | 触屏瞄准按钮：待命态（金色准星金属盘） | seedream + 原生分割，参考 projectile 调性 |
+| `aim-active.png` | 2048 × 2048 | 触屏瞄准按钮：激活态（红热准星 + 中心上膛炮弹 + 呼吸脉冲） | seedream + 原生分割 |
+| `base-blue.png` | 2048 × 2048 | 蓝方基地（concept01 §05 废铁要塞，甲板贴画布底 → 锚点 0.99） | seedream + 原生分割，参考 concept01 整图 |
+| `base-red.png` | 2048 × 2048 | 红方基地（concept01 §05 工坊，甲板下支柱区 → 锚点 0.86 宁沉勿浮） | seedream + 原生分割，参考 concept01 整图 |
+| `avatar-blue.png` / `avatar-red.png` | 1024 × 1024 | HUD 头像（concept_UI 玩家卡；框与角签程序绘制） | 全能日辉，参考 chibi 生成，真实透明 |
+| `logo.png` | 1328 × 496 | 主菜单标题（拼写多模态校验通过；O 为准星造型） | 全能日辉，参考 concept_UI，真实透明 |
+| `button-gold.png` / `button-steel.png` | 4096 × 1024 | 菜单按钮 9-slice 无字底板（金=主操作 / 钢=次要；切片比例 x15%/y25%） | seedream + 原生分割，参考 concept_UI |
 
 六张 PNG 共约 7.1 MiB。当前保留生成原图作为可追溯制作源；未做纹理压缩与图集打包，也没有分层绘画工程。来源为本次 AI 生成记录。
 

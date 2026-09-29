@@ -6,6 +6,20 @@ export const ART = {
   P2: 'art-red',
   projectile: 'art-projectile',
   explosion: 'art-explosion',
+  /** 真机反馈轮：触屏瞄准两态图标（金=可瞄准 / 红热+上膛=瞄准中） */
+  aimReady: 'art-aim-ready',
+  aimActive: 'art-aim-active',
+  /** 真机反馈轮：双方基地（concept01 §05，底部平整甲板=走线） */
+  baseP1: 'art-base-p1',
+  baseP2: 'art-base-p2',
+  /** 真机反馈轮：HUD 头像（concept_UI 玩家卡语言，铆钉框程序绘制） */
+  avatarP1: 'art-avatar-p1',
+  avatarP2: 'art-avatar-p2',
+  /** 真机反馈轮：主菜单 Logo（concept_UI 标题页风格） */
+  logo: 'art-logo',
+  /** 真机反馈轮：菜单按钮 9-slice 无字底板（金=主操作 / 钢=次要） */
+  buttonGold: 'art-button-gold',
+  buttonSteel: 'art-button-steel',
 } as const;
 
 export const ART_FILES = [
@@ -15,7 +29,23 @@ export const ART_FILES = [
   [ART.P2, 'red-chibi.png'],
   [ART.projectile, 'normal-projectile.png'],
   [ART.explosion, 'explosion-impact.png'],
+  [ART.aimReady, 'aim-ready.png'],
+  [ART.aimActive, 'aim-active.png'],
+  [ART.baseP1, 'base-blue.png'],
+  [ART.baseP2, 'base-red.png'],
+  [ART.avatarP1, 'avatar-blue.png'],
+  [ART.avatarP2, 'avatar-red.png'],
+  [ART.logo, 'logo.png'],
+  [ART.buttonGold, 'button-gold.png'],
+  [ART.buttonSteel, 'button-steel.png'],
 ] as const;
+
+/**
+ * 按钮 9-slice 切片余量（源尺寸比例）：胶囊边缘细节（外缘 + 高光 +
+ * 角部铆钉）约占宽 15% / 高 25%（视觉实测，seedream 输出 4096×1024）——
+ * 按比例切可兼容任意生成尺寸；中部纯平可拉伸。
+ */
+export const BUTTON_SLICE = { x: 0.15, y: 0.25 } as const;
 
 /** Opaque top and sole positions measured from the generated 1254px sprites. */
 export const PLAYER_ART_BOUNDS = {

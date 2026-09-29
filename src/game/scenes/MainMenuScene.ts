@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { MenuArtwork } from '../ui/MenuArtwork';
 import { DEBUG_GAME } from '../config/DebugConfig';
+import { ART } from '../config/ArtAssets';
 import { createMatchSetup } from '../match/MatchFactory';
 import type { MatchSetup } from '../match/MatchSetup';
 import { ViewportService } from '../platform/ViewportService';
@@ -37,7 +38,8 @@ export class MainMenuScene extends Phaser.Scene {
 
   private viewport!: ViewportService;
   private inputRouter!: InputRouter;
-  private title!: Phaser.GameObjects.Text;
+  /** 真机反馈轮：Logo 图优先；素材缺失回退文本标题 */
+  private title!: Phaser.GameObjects.Image | Phaser.GameObjects.Text;
   private artwork!: MenuArtwork;
   private modeButtons!: Record<
     'singlePlayer' | 'local2p' | 'online',
@@ -61,16 +63,25 @@ export class MainMenuScene extends Phaser.Scene {
     this.cameras.main.fadeIn(220, 0, 0, 0);
     this.artwork = new MenuArtwork(this);
 
-    this.title = this.add
-      .text(0, 0, 'RICOCHET RIVALS', {
-        fontFamily: 'Georgia, serif',
-        fontStyle: 'bold',
-        color: '#ffca59',
-        stroke: '#151c22',
-        strokeThickness: 6,
-      })
-      .setOrigin(0.5)
-      .setDepth(900);
+    // 真机反馈轮：生成 Logo（concept_UI 标题页风格）替代文字标题；
+    // 素材缺失保留原 Georgia 文本（E2E 不断言菜单标题）
+    if (this.textures.exists(ART.logo)) {
+      this.title = this.add
+        .image(0, 0, ART.logo)
+        .setOrigin(0.5)
+        .setDepth(900);
+    } else {
+      this.title = this.add
+        .text(0, 0, 'RICOCHET RIVALS', {
+          fontFamily: 'Georgia, serif',
+          fontStyle: 'bold',
+          color: '#ffca59',
+          stroke: '#151c22',
+          strokeThickness: 6,
+        })
+        .setOrigin(0.5)
+        .setDepth(900);
+    }
 
     this.modeButtons = {
       singlePlayer: new MenuButton(this, {
@@ -181,11 +192,19 @@ export class MainMenuScene extends Phaser.Scene {
     const { width, height, safeArea, uiScale } = this.viewport.current;
     this.artwork.layout(width, height, uiScale);
 
-    this.title.setFontSize(Math.min(TITLE_FONT, width / uiScale / 14) * uiScale);
-    this.title.setPosition(
-      width / 2,
-      safeArea.top + (height / uiScale < 540 ? 28 : EDGE_MARGIN + TITLE_FONT * 0.6) * uiScale
-    );
+    const titleY =
+      safeArea.top + (height / uiScale < 540 ? 28 : EDGE_MARGIN + TITLE_FONT * 0.6) * uiScale;
+    if (this.title instanceof Phaser.GameObjects.Image) {
+      // Logo：宽 ≤ 视口 62%，等比；窄屏再随宽收
+      const logoCssWidth = Math.min(560, (width / uiScale) * 0.62);
+      const source = this.textures.get(ART.logo).getSourceImage();
+      this.title
+        .setDisplaySize(logoCssWidth * uiScale, (logoCssWidth * source.height / source.width) * uiScale)
+        .setPosition(width / 2, titleY);
+    } else {
+      this.title.setFontSize(Math.min(TITLE_FONT, width / uiScale / 14) * uiScale);
+      this.title.setPosition(width / 2, titleY);
+    }
 
     const gap = (height / uiScale < 540 ? 0 : MODE_GAP) * uiScale;
     const buttonH = 64 * uiScale;

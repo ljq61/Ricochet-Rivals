@@ -84,27 +84,39 @@ export class WorldBuilder {
       const bounds = left ? GAME_CONFIG.player.leftBounds : GAME_CONFIG.player.rightBounds;
       const color = playerColor(id);
       const flagX = left ? bounds.minX + 40 : bounds.maxX - 40;
-      if (this.scene.textures.exists(ART.tower)) {
+      // 真机反馈轮（Phase 17）：concept01 §05 基地（底部平整甲板=走线，
+      // 双方独立成体 —— 中间天然断开为开阔码头）；素材缺失回退塔楼+旗杆占位。
+      // 甲板锚点 per-side：蓝方甲板贴画布底（0.99 微沉被地面条覆盖）；
+      // 红方甲板下有支柱区（甲板线约在画布 88% 高）→ 0.86 略沉 —— 宁沉勿浮
+      //（浮起 = 甲板与走线间露缝穿帮；下沉被不透明地面 Graphics 遮盖）
+      const baseKey = left ? ART.baseP1 : ART.baseP2;
+      const baseOriginY = left ? 0.99 : 0.86;
+      if (this.scene.textures.exists(baseKey)) {
+        this.scene.add.image(left ? 380 : width - 380, top, baseKey)
+          .setDisplaySize(760, 760).setOrigin(0.5, baseOriginY).setDepth(-20);
+      } else if (this.scene.textures.exists(ART.tower)) {
         this.scene.add.image(left ? 140 : width - 140, top, ART.tower)
           .setDisplaySize(520, 520).setOrigin(0.5, 0.966)
           .setFlipX(!left).setDepth(-20);
+      } else {
+        g.lineStyle(5, 0x151c22);
+        g.lineBetween(flagX, top, flagX, top - 220);
+        g.fillStyle(color);
+        g.fillRect(flagX, top - 220, 76, 48);
+        g.lineStyle(3, 0xffdfa0);
+        g.strokeRect(flagX, top - 220, 76, 48);
       }
+      // 走线高亮（角色实际站立的横条）+ 移动边界 + 阵营标识 —— 功能层保留
       g.fillStyle(color);
       g.fillRect(bounds.minX, top + 5, bounds.maxX - bounds.minX, 5);
-      g.lineStyle(5, 0x151c22);
-      g.lineBetween(flagX, top, flagX, top - 220);
-      g.fillStyle(color);
-      g.fillRect(flagX, top - 220, 76, 48);
-      g.lineStyle(3, 0xffdfa0);
-      g.strokeRect(flagX, top - 220, 76, 48);
-      this.scene.add.text(flagX + 38, top - 196, id, {
+      g.lineStyle(3, color, 0.8);
+      for (const x of [bounds.minX, bounds.maxX]) {
+        g.lineBetween(x, top - 25, x, top);
+      }
+      this.scene.add.text(left ? bounds.minX + 44 : bounds.maxX - 44, top - 40, id, {
         fontFamily: 'monospace', fontSize: '24px', fontStyle: 'bold', color: '#ffffff',
         stroke: '#151c22', strokeThickness: 4,
       }).setOrigin(0.5).setDepth(-9);
-      for (const x of [bounds.minX, bounds.maxX]) {
-        g.lineStyle(3, color, 0.8);
-        g.lineBetween(x, top - 25, x, top);
-      }
     }
   }
 

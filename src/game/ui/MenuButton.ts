@@ -1,11 +1,14 @@
 import Phaser from 'phaser';
 import type { ViewportService } from '../platform/ViewportService';
 import type { InputRouter } from '../input/InputRouter';
+import { ART, BUTTON_SLICE } from '../config/ArtAssets';
 
 /** 屏幕手感常量（CSS px，运行时 ×uiScale）；高度 64 ≥ 56 触控目标下限 */
 const DEFAULT_WIDTH = 320;
 const DEFAULT_HEIGHT = 64;
 const FONT_SIZE = 22;
+/** 9-slice 底板启用阈值（CSS px）：小件（64 icon）切片退化，保持程序绘制 */
+const ART_MIN_WIDTH = 150;
 
 export interface MenuButtonDeps {
   /** 手势路由（与 Battle HUD 同一管线：UI zone 优先级、坐标已归一化到画布空间、统一鼠标/触摸） */
@@ -43,6 +46,8 @@ export class MenuButton {
   private readonly deps: MenuButtonDeps;
   private readonly container: Phaser.GameObjects.Container;
   private readonly bg: Phaser.GameObjects.Graphics;
+  /** 真机反馈轮：9-slice 生成底板（金/钢）；素材缺失或小件 = null 走 Graphics */
+  private readonly art: Phaser.GameObjects.NineSlice | null;
   private readonly label: Phaser.GameObjects.Text;
   private width: number;
   private height: number;
@@ -54,6 +59,29 @@ export class MenuButton {
   constructor(scene: Phaser.Scene, deps: MenuButtonDeps) {
     this.deps = deps;
 
+    const baseWidth = deps.baseWidth ?? DEFAULT_WIDTH;
+    const artKey = deps.accent === undefined ? ART.buttonGold : ART.buttonSteel;
+    let art: Phaser.GameObjects.NineSlice | null = null;
+    if (baseWidth >= ART_MIN_WIDTH && scene.textures.exists(artKey)) {
+      // 切片余量按源尺寸比例（生成尺寸不定：1024~4096 均可）
+      const src = scene.textures.get(artKey).getSourceImage();
+      const sliceX = Math.round(src.width * BUTTON_SLICE.x);
+      const sliceY = Math.round(src.height * BUTTON_SLICE.y);
+      art = scene.add.nineslice(
+        0,
+        0,
+        artKey,
+        undefined,
+        baseWidth,
+        DEFAULT_HEIGHT,
+        sliceX,
+        sliceX,
+        sliceY,
+        sliceY
+      );
+    }
+    this.art = art;
+
     this.bg = scene.add.graphics();
     this.label = scene.add
       .text(0, 0, deps.label, {
@@ -62,10 +90,10 @@ export class MenuButton {
       })
       .setOrigin(0.5);
     this.container = scene.add
-      .container(0, 0, [this.bg, this.label])
+      .container(0, 0, this.art ? [this.art, this.label] : [this.bg, this.label])
       .setDepth(900);
 
-    this.width = deps.baseWidth ?? DEFAULT_WIDTH;
+    this.width = baseWidth;
     this.height = DEFAULT_HEIGHT;
 
     deps.router.registerZone({
@@ -139,11 +167,22 @@ export class MenuButton {
     this.width = (this.deps.baseWidth ?? DEFAULT_WIDTH) * ui;
     this.height = DEFAULT_HEIGHT * ui;
     this.label.setFontSize(FONT_SIZE * ui);
+    if (this.art !== null) {
+      // 9-slice 底板：直接设显示尺寸（切片随源比例缩放）
+      this.art.setSize(this.width, this.height);
+    }
     this.draw();
   }
 
   private draw(): void {
     const ui = this.deps.viewport.current.uiScale;
+    if (this.art !== null) {
+      // 生成底板路径：按下压暗一拍（label 色 / 加粗沿用现有逻辑）
+      this.art.setTint(this.pressed ? 0xcfcfcf : 0xffffff);
+      this.label.setColor(this.deps.accent === undefined ? '#151c22' : '#fff4db');
+      this.label.setFontStyle('bold');
+      return;
+    }
     const accent = this.deps.accent ?? 0xf3a725;
     const radius = 4 * ui;
     const { width, height } = this;

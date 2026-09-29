@@ -124,8 +124,11 @@ export class Projectile {
 
       this.visual.setPosition(this.state.x, this.state.y);
       if (this.usesProjectileArt) {
-        // 资源默认朝右；跟随速度方向旋转，左右飞行保持可读轮廓。
-        this.visual.setRotation(Math.atan2(this.state.velocityY, this.state.velocityX));
+        // 资源喷嘴端默认朝右：弹头（圆端）朝飞行方向 → 速度角 +180°，
+        // 喷嘴拖尾（真机反馈：喷嘴在前 = 双方头尾反了）
+        this.visual.setRotation(
+          Math.atan2(this.state.velocityY, this.state.velocityX) + Math.PI
+        );
       } else {
         this.visual.rotation = this.body.angle;
       }
@@ -145,10 +148,14 @@ export class Projectile {
         1,
         this.explodeElapsedMs / GAME_CONFIG.projectile.explodeDurationMs
       );
-      // 占位爆炸：本体快速扩大并淡出
-      const scale = 1 + progress * 2.2;
-      this.visual.setScale(scale);
-      this.visual.setAlpha(1 - progress);
+      // 占位爆炸（仅 Graphics 回退路径）：本体快速扩大并淡出。
+      // 美术路径弹体在 beginImpact 已隐藏 —— 爆炸视觉归 explosion 图层，
+      // 弹体不得随爆炸放大重现（真机反馈修正）
+      if (!this.usesProjectileArt) {
+        const scale = 1 + progress * 2.2;
+        this.visual.setScale(scale);
+        this.visual.setAlpha(1 - progress);
+      }
       if (progress >= 1) {
         this.state.status = 'destroyed';
       }
@@ -177,7 +184,7 @@ export class Projectile {
 
     // 爆炸视觉：优先显示像素爆炸资源；缺失时回退原有范围圈。
     if (this.usesProjectileArt) {
-      this.visual.setAlpha(0);
+      this.visual.setVisible(false); // 弹体即隐：爆炸视觉归 explosion 图层
     } else {
       const fallback = this.visual as Phaser.GameObjects.Graphics;
       const radius = GAME_CONFIG.projectile.radius;

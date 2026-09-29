@@ -1872,12 +1872,54 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 
 ## Juice 音效轮（2026-09-29）
 
+## 美术批次轮（真机反馈，2026-09-29，concept01 / concept_UI 驱动）
+
+- [x] **双方基地**（concept01 §05）：蓝方废铁要塞（瓦楞钢板+蓝爪印
+  横幅+油桶/木箱/管道杂物）/ 红方工坊（烟囱群+天线桅+吊车臂+兔子头
+  红横幅+货柜），760 世界 px 显示、**底部平整甲板=角色走线**、双方
+  独立成体中间开阔断开（塔楼占位退役为回退）；甲板锚点 per-side
+  （蓝 0.99 贴底 / 红 0.86 支柱区补偿 —— 宁沉勿浮，下沉被不透明地面
+  条遮盖）；多模态截图复核双方甲板与走线齐平、走线连续
+- [x] **HP HUD concept_UI 化**：铆钉深色钢板 + 顶部高光线 + 队色角签
+  （P1/P2）+ 生成头像（缺素材队色占位）+ **10 段血格**（掉血逐格收缩
+  + 数值闪红动画保留）
+- [x] **手机移动按钮**（concept01 §06）：圆角矩形 → 扁平半透明圆形 +
+  细描边 + 实心白三角，按下点亮队色
+- [x] **触屏瞄准两态图标**（生成）：金准星金属盘=待命；红热准星+
+  中心上膛炮弹+**呼吸脉冲**=瞄准中（弃用斜杠禁止符语义）
+- [x] **主菜单 Logo**（生成，"RICOCHET RIVALS" 拼写多模态校验通过，
+  O 为准星造型；缺素材回退 Georgia 文本）
+- [x] **菜单按钮 9-slice 底板**（生成无字：金=主操作 / 钢=次要；切片
+  按源尺寸比例 x15%/y25% 兼容任意生成尺寸；≥150 CSS 宽启用，64 icon
+  小件保持程序绘制；动态文案与 E2E rect 断言零影响）
+- [x] **瞄准上弹音效**：素材落地（sonilo 同 prompt 首发挂 20 分钟失败、
+  重发成功）；requestAim 守卫全过后播（no-op 不响）
+- [x] 视觉抽查脚本扩至 7 帧（+Online icon 手机帧、+弹道末段红方基地
+  对齐帧）；资产台账更新见 `docs/ArtDesign/FIRST_LOOK_ASSETS.md`
+- [ ] 全量 E2E 回归（改 WorldBuilder/MenuButton/PlayerHud/
+      TouchControls 共享组件，跑中）
+
+### 真机试玩反馈轮（2026-09-29，Mac ↔ iPhone 联机实测）
+
+- [x] **飞行口哨无限循环修复**：真机复现「Host 发射命中后 Guest 端口哨
+  不断重复」——循环只在 impact/out-of-bounds 停，而 desync 恢复
+  clearInFlightSimulations 静默清场无 impact 事件 → 循环永不停止；
+  用户拍板**飞行音效单次播放**，SfxBus 循环句柄机制整体删除（该
+  bug 类连根拔除；发射时 whistle 播一次）
+- [x] **弹体头尾朝向修复**：素材喷嘴端默认朝右 + 速度角原样旋转 →
+  喷嘴冲前（双方都反）；速度角 **+180°**——圆头（弹头）朝飞行方向、
+  喷嘴拖尾（多模态截图复核：上升段 nose 领先 up-right ✓，下降段随
+  速度自动转头）
+- [x] **爆炸期弹体隐藏**：exploding 分支无条件 setScale/setAlpha 把
+  beginImpact 已隐藏的弹体抬回 alpha≈1 随爆炸放大——改为仅 Graphics
+  回退路径保留占位放大；美术路径 beginImpact `setVisible(false)`
+  弹体即隐，爆炸视觉全归 explosion 图层
+
 - [x] **7 个音效全部生成并接入**（generate_sound_effect，sonilo 模型，
   复古街机卡通风与像素海港美术同调；`public/assets/sfx/*.mp3`，7 文件
   md5 全不同）：
   - launch（发射 pneumatic THOOMP）→ `ProjectileSystem.onLaunched`
-  - projectile（飞行口哨，loop 随发射启停）→ onLaunched / onImpact /
-    onOutOfBounds
+  - projectile（飞行口哨，发射时单次播放）→ onLaunched
   - explosion（爆炸 boom）→ onImpact
   - hit（命中金属 clank+thud，有伤害才播）→ onImpact 结算
   - turn（回合切换双音上行）→ 回合横幅（断线/同步失败时不播）
