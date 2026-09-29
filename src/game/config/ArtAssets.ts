@@ -40,13 +40,6 @@ export const ART_FILES = [
   [ART.buttonSteel, 'button-steel.png'],
 ] as const;
 
-/**
- * 按钮 9-slice 切片余量（源尺寸比例）：胶囊边缘细节（外缘 + 高光 +
- * 角部铆钉）约占宽 15% / 高 25%（视觉实测，seedream 输出 4096×1024）——
- * 按比例切可兼容任意生成尺寸；中部纯平可拉伸。
- */
-export const BUTTON_SLICE = { x: 0.15, y: 0.25 } as const;
-
 /** Opaque top and sole positions measured from the generated 1254px sprites. */
 export const PLAYER_ART_BOUNDS = {
   P1: { top: 136, bottom: 1229, sourceHeight: 1254 },

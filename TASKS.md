@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
-> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验）；Phase 17 进行中：首屏美术样片 + 用户反馈 4 项修复轮 + 7 音效 Juice 轮完成（含 desync 恢复遗留相机滞留的产品级 bug 修复），hit stop / 粒子 / 角色反应 / UI transitions 待续。**
-> 当前验证：`npm run typecheck` / `npm run test`（487）/ `npm run build` 已通过；修复 + 音效轮后 `npm run e2e` 全量 **130 passed / 0 failed**（desync 恢复清炮弹修复后；恢复前同点连续三次 123/124）。
+> 状态：**Phase 0 ～ Phase 16 已完成（2026-09-29，Phase 16 Online Rematch 落地；test-reviewer 验收 PASS WITH ISSUES → Medium×2 已修复复验）；Phase 17 进行中：首屏美术样片 + 用户反馈 4 项修复轮 + 7 音效 Juice 轮 + 美术批次轮（基地/HP HUD/菜单/触控）+ 真机反馈修复各轮完成（含 desync 恢复遗留相机滞留的产品级 bug 修复），hit stop / 粒子 / 角色反应 / UI transitions 待续。**
+> 当前验证：`npm run typecheck` / `npm run test`（487）/ `npm run build` 已通过；美术批次 + 反馈修复轮后 `npm run e2e` 全量 **130 passed / 0 failed** 复验全绿（desync 恢复清炮弹修复前曾同点连续三次 123/124）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
 ---
@@ -1896,8 +1896,9 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
   重发成功）；requestAim 守卫全过后播（no-op 不响）
 - [x] 视觉抽查脚本扩至 7 帧（+Online icon 手机帧、+弹道末段红方基地
   对齐帧）；资产台账更新见 `docs/ArtDesign/FIRST_LOOK_ASSETS.md`
-- [ ] 全量 E2E 回归（改 WorldBuilder/MenuButton/PlayerHud/
-      TouchControls 共享组件，跑中）
+- [x] 全量 E2E 回归（改 WorldBuilder/MenuButton/PlayerHud/
+      TouchControls 共享组件）：含反馈修复轮后终验复跑
+      **130 passed / 0 failed** 全绿
 
 ### 真机试玩反馈轮（2026-09-29，Mac ↔ iPhone 联机实测）
 
@@ -1949,6 +1950,24 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 这里重点优化：
 
 “命中爽感”。
+
+### 美术反馈修复轮（2026-09-29，第二批真机反馈）
+
+- [x] **菜单上下压暗条移除**：上压暗框 + 副标题装饰（"HARBOR
+      SKIRMISH / 01"）+ 底部深色条全部移除 —— MenuArtwork 只保留
+      海港背景与蓝红角色构图
+- [x] **按钮底板弃 NineSlice 改 Image 等比**：NineSlice 真机实测
+      渲染 2.5 倍超标（~150px 高、压住输入框）；改 setDisplaySize
+      等比铺满命中区（素材自带透明边距，可见药丸 ~50px 紧凑）；
+      BUTTON_SLICE 常量与切片接线删除（ArtAssets / MenuButton）
+- [x] **蓝基地甲板硬切修复**：素材甲板层实测在图高 ~92% 而非贴底，
+      per-side 锚点（蓝 0.99 / 红 0.86）下蓝方甲板浮起 → 底边直切
+      穿帮；锚点统一沉 **0.90** —— 甲板没入不透明地面条被遮盖
+      （宁沉勿浮：下沉瑕疵被地面遮挡，浮起露缝必穿帮）
+- [x] **红基地重生成**：杂物去红化 —— 只留兔子头横幅 + 旗，
+      消除杂物群红色噪音（base-red.png 重生成替换）
+- [x] 验证：typecheck / test（487）/ build 全绿 + E2E 全量复跑
+      **130 passed / 0 failed**
 
 ---
 

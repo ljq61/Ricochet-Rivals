@@ -86,11 +86,11 @@ export class WorldBuilder {
       const flagX = left ? bounds.minX + 40 : bounds.maxX - 40;
       // 真机反馈轮（Phase 17）：concept01 §05 基地（底部平整甲板=走线，
       // 双方独立成体 —— 中间天然断开为开阔码头）；素材缺失回退塔楼+旗杆占位。
-      // 甲板锚点 per-side：蓝方甲板贴画布底（0.99 微沉被地面条覆盖）；
-      // 红方甲板下有支柱区（甲板线约在画布 88% 高）→ 0.86 略沉 —— 宁沉勿浮
-      //（浮起 = 甲板与走线间露缝穿帮；下沉被不透明地面 Graphics 遮盖）
+      // 甲板锚点 per-side —— 宁沉勿浮：素材甲板层实测不在画布底（蓝 ~92% 高），
+      // 锚点压到甲板层全部没入地面 Graphics 以下 → 木排末端切面不可见，
+      // 塔楼轮廓自然接地（浮起 = 甲板悬空 + 直切边穿帮）
       const baseKey = left ? ART.baseP1 : ART.baseP2;
-      const baseOriginY = left ? 0.99 : 0.86;
+      const baseOriginY = 0.9;
       if (this.scene.textures.exists(baseKey)) {
         this.scene.add.image(left ? 380 : width - 380, top, baseKey)
           .setDisplaySize(760, 760).setOrigin(0.5, baseOriginY).setDepth(-20);

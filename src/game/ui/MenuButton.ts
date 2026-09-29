@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import type { ViewportService } from '../platform/ViewportService';
 import type { InputRouter } from '../input/InputRouter';
-import { ART, BUTTON_SLICE } from '../config/ArtAssets';
+import { ART } from '../config/ArtAssets';
 
 /** 屏幕手感常量（CSS px，运行时 ×uiScale）；高度 64 ≥ 56 触控目标下限 */
 const DEFAULT_WIDTH = 320;
@@ -46,8 +46,10 @@ export class MenuButton {
   private readonly deps: MenuButtonDeps;
   private readonly container: Phaser.GameObjects.Container;
   private readonly bg: Phaser.GameObjects.Graphics;
-  /** 真机反馈轮：9-slice 生成底板（金/钢）；素材缺失或小件 = null 走 Graphics */
-  private readonly art: Phaser.GameObjects.NineSlice | null;
+  /** 真机反馈轮：生成底板图（金/钢）；素材缺失或小件 = null 走 Graphics。
+   *  注：试过 NineSlice —— Phaser 4 语义与预期不符（实测渲染 2.5 倍超标），
+   *  改用 Image 等比显示：素材自带上下透明边距，可见药丸反而更紧凑 */
+  private readonly art: Phaser.GameObjects.Image | null;
   private readonly label: Phaser.GameObjects.Text;
   private width: number;
   private height: number;
@@ -61,26 +63,10 @@ export class MenuButton {
 
     const baseWidth = deps.baseWidth ?? DEFAULT_WIDTH;
     const artKey = deps.accent === undefined ? ART.buttonGold : ART.buttonSteel;
-    let art: Phaser.GameObjects.NineSlice | null = null;
-    if (baseWidth >= ART_MIN_WIDTH && scene.textures.exists(artKey)) {
-      // 切片余量按源尺寸比例（生成尺寸不定：1024~4096 均可）
-      const src = scene.textures.get(artKey).getSourceImage();
-      const sliceX = Math.round(src.width * BUTTON_SLICE.x);
-      const sliceY = Math.round(src.height * BUTTON_SLICE.y);
-      art = scene.add.nineslice(
-        0,
-        0,
-        artKey,
-        undefined,
-        baseWidth,
-        DEFAULT_HEIGHT,
-        sliceX,
-        sliceX,
-        sliceY,
-        sliceY
-      );
-    }
-    this.art = art;
+    this.art =
+      baseWidth >= ART_MIN_WIDTH && scene.textures.exists(artKey)
+        ? scene.add.image(0, 0, artKey)
+        : null;
 
     this.bg = scene.add.graphics();
     this.label = scene.add
@@ -168,8 +154,8 @@ export class MenuButton {
     this.height = DEFAULT_HEIGHT * ui;
     this.label.setFontSize(FONT_SIZE * ui);
     if (this.art !== null) {
-      // 9-slice 底板：直接设显示尺寸（切片随源比例缩放）
-      this.art.setSize(this.width, this.height);
+      // 生成底板：等比铺满命中区（素材自带透明边距 → 可见药丸 ~70% 高）
+      this.art.setDisplaySize(this.width, this.height);
     }
     this.draw();
   }
