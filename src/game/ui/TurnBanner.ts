@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import { playerColor, toCssColor } from '../config/Palette';
 import type { ViewportService } from '../platform/ViewportService';
+import type { ViewportMetrics } from '../platform/viewportMath';
+import type { ScreenRect } from './touchControlLayout';
 import type { PlayerId } from '../state/ids';
 
 /** 屏幕手感常量（CSS px / ms，运行时 ×uiScale） */
@@ -39,8 +41,14 @@ export class TurnBanner {
 
   /** 最近一次展示的横幅文本（fade 后保留 —— E2E 断言用） */
   private lastText = '';
+  private fullText = '';
+  private pillSize = { width: 0, height: 0 };
+  private displayFontSize = 0;
+  private pillAccent = 0xffd24a;
+  private pillAlpha = 0.85;
 
-  constructor(scene: Phaser.Scene, viewport: ViewportService) {
+  constructor(scene: Phaser.Scene, viewport: ViewportService,
+    private readonly screenLayout?: (viewport: ViewportMetrics) => ScreenRect) {
     this.scene = scene;
     this.viewport = viewport;
 
@@ -60,9 +68,7 @@ export class TurnBanner {
       .setVisible(false);
 
     this.unsubscribeViewport = viewport.onChange(() => {
-      if (this.winnerActive) {
-        this.drawWinnerPill();
-      }
+      if (this.label.text.length > 0) this.redrawPill();
       this.reposition();
     });
     this.reposition();
@@ -73,7 +79,17 @@ export class TurnBanner {
   }
 
   get text(): string {
-    return this.label.text;
+    return this.fullText;
+  }
+
+  /** Actual screen bounds include the plate stroke; text/font reflect what is drawn. */
+  get layoutState(): { rect: ScreenRect; fontSize: number; text: string } {
+    const v = this.viewport.current;
+    const layout = this.screenLayout?.(v);
+    return { rect: { x: layout?.x ?? v.safeArea.left + (v.width - v.safeArea.left - v.safeArea.right) / 2,
+      y: layout?.y ?? v.safeArea.top + (TOP_MARGIN + PILL_HEIGHT / 2) * v.uiScale,
+      width: this.pillSize.width, height: this.pillSize.height },
+      fontSize: this.displayFontSize, text: this.label.getWrappedText().join('\n') };
   }
 
   get lastBannerText(): string {
@@ -91,6 +107,7 @@ export class TurnBanner {
     }
     const color = playerColor(playerId);
     this.label.setText(label ?? `${playerId} · 第 ${turnId} 回合`);
+    this.fullText = this.label.text;
     this.label.setFontSize(TURN_FONT_SIZE * this.viewport.current.uiScale);
     this.label.setColor(toCssColor(color));
     this.drawPill(color, 0.85);
@@ -106,6 +123,7 @@ export class TurnBanner {
       return;
     }
     this.label.setText(text);
+    this.fullText = text;
     this.label.setFontSize(TURN_FONT_SIZE * this.viewport.current.uiScale);
     this.label.setColor('#e8eef7');
     this.drawPill(accent, 0.85);
@@ -124,7 +142,7 @@ export class TurnBanner {
       hold: TURN_HOLD_MS,
       ease: 'Sine.easeInOut',
       onYoyo: () => {
-        this.lastText = this.label.text;
+        this.lastText = this.fullText;
       },
       onComplete: () => {
         this.container.setVisible(false);
@@ -132,7 +150,7 @@ export class TurnBanner {
         this.turnTween = null;
       },
     });
-    this.lastText = this.label.text;
+    this.lastText = this.fullText;
   }
 
   /** 游戏结束：持久展示胜负（null = 同归于尽平局） */
@@ -143,21 +161,21 @@ export class TurnBanner {
     this.winnerPulse = null;
     this.winnerActive = true;
 
-    const ui = this.viewport.current.uiScale;
     if (winnerId === null) {
       this.label.setText('平局 · 同归于尽');
+      this.fullText = this.label.text;
       this.label.setColor('#ffd24a');
       this.drawPill(0xffd24a, 0.9);
     } else {
       this.label.setText(`${winnerId} 获胜！`);
+      this.fullText = this.label.text;
       this.label.setColor(toCssColor(playerColor(winnerId)));
       this.drawPill(playerColor(winnerId), 0.9);
     }
-    this.label.setFontSize(WINNER_FONT_SIZE * ui);
     this.reposition();
 
     this.container.setVisible(true);
-    this.lastText = this.label.text;
+    this.lastText = this.fullText;
     this.container.setAlpha(0);
     this.scene.tweens.add({
       targets: this.container,
@@ -187,10 +205,35 @@ export class TurnBanner {
 
   /** 半透明药丸底（当前文本宽度自适应） */
   private drawPill(accent: number, fillAlpha: number): void {
-    const ui = this.viewport.current.uiScale;
+    this.pillAccent = accent;
+    this.pillAlpha = fillAlpha;
+    const { width, safeArea, uiScale: ui } = this.viewport.current;
+    const layout = this.screenLayout?.(this.viewport.current);
+    const compact = Boolean(layout && layout.height < PILL_HEIGHT * ui);
+    const baseFont = compact ? 12 * ui : (this.winnerActive ? WINNER_FONT_SIZE : TURN_FONT_SIZE) * ui;
+    this.label.setWordWrapWidth(0).setLineSpacing(0).setFontSize(baseFont).setText(this.fullText);
+    const padding = layout && layout.height < PILL_HEIGHT * ui ? 8 * ui : PILL_PADDING_X * ui;
+    const maxTextWidth = (layout?.width ?? width - safeArea.left - safeArea.right - 16 * ui) - padding * 2;
+    if (compact) {
+      this.label.setLineSpacing(-2 * ui).setWordWrapWidth(maxTextWidth, true);
+      const maxTextHeight = (layout?.height ?? PILL_HEIGHT * ui) - 2 * ui;
+      for (let font = 12; this.label.height > maxTextHeight && font > 10; font--) {
+        this.label.setFontSize((font - 1) * ui);
+      }
+      if (this.label.height > maxTextHeight) {
+        const lines = this.label.getWrappedText();
+        const count = Math.max(1, Math.floor(lines.length * maxTextHeight / this.label.height));
+        const visible = lines.slice(0, count);
+        const last = visible.pop() ?? '';
+        visible.push(last.slice(0, Math.max(1, last.length - 1)) + '…');
+        this.label.setText(visible.join('\n'));
+      }
+    } else if (this.label.width > maxTextWidth) this.label.setFontSize(Math.max(10 * ui, baseFont * maxTextWidth / this.label.width));
+    this.displayFontSize = Number.parseFloat(String(this.label.style.fontSize));
     const textWidth = this.label.width;
-    const w = textWidth + PILL_PADDING_X * 2 * ui;
-    const h = PILL_HEIGHT * ui;
+    const w = textWidth + padding * 2;
+    const h = layout?.height ?? PILL_HEIGHT * ui;
+    this.pillSize = { width: w + 3 * ui, height: h + 3 * ui };
     const radius = 4 * ui;
 
     this.bg.clear();
@@ -203,23 +246,23 @@ export class TurnBanner {
     for (const x of [-w / 2 + 9 * ui, w / 2 - 9 * ui]) this.bg.fillCircle(x, 0, 2 * ui);
   }
 
-  /** 胜负横幅：文本可能变长，重画底 */
-  private drawWinnerPill(): void {
+  /** 旋转或 DPR 变化后保留当前消息颜色并重算字体和底板。 */
+  private redrawPill(): void {
     if (this.label.text.length === 0) {
       return;
     }
-    const accent = this.label.text.includes('平局')
-      ? 0xffd24a
-      : this.label.text.startsWith('P1')
-        ? playerColor('P1')
-        : playerColor('P2');
-    this.drawPill(accent, 0.9);
+    this.drawPill(this.pillAccent, this.pillAlpha);
   }
 
   /** 顶部居中（Safe Area 内），随视口变化重算 */
   private reposition(): void {
-    const { width, safeArea, uiScale } = this.viewport.current;
-    const y = safeArea.top + TOP_MARGIN * uiScale + (PILL_HEIGHT * uiScale) / 2;
-    this.container.setPosition(width / 2, y);
+    const { width, height, safeArea, uiScale, zoom } = this.viewport.current;
+    const layout = this.screenLayout?.(this.viewport.current);
+    const y = layout?.y ?? safeArea.top + (TOP_MARGIN + PILL_HEIGHT / 2) * uiScale;
+    const x = layout?.x ?? safeArea.left + (width - safeArea.left - safeArea.right) / 2;
+    this.container.setScale(1 / zoom).setPosition(
+      width / 2 + (x - width / 2) / zoom,
+      height / 2 + (y - height / 2) / zoom,
+    );
   }
 }

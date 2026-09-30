@@ -60,8 +60,8 @@ export const ART_FILES = [
 /** Generated controls: measured alpha bounds, so visible art matches the input layout. */
 export const CONTROL_ART_FRAMES = {
   [ART.moveArrow]: { x: 55, y: 76, width: 1143, height: 1113 },
-  [ART.aimReady]: { x: 50, y: 59, width: 1154, height: 1140 },
-  [ART.aimActive]: { x: 49, y: 57, width: 1156, height: 1142 },
+  [ART.aimReady]: { x: 48, y: 57, width: 1160, height: 1143 },
+  [ART.aimActive]: { x: 48, y: 54, width: 1160, height: 1147 },
 } as const;
 
 /** Long-piling dock, measured alpha bounds; world and menu share the same aspect ratio. */

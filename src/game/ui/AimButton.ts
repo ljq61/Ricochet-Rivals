@@ -4,6 +4,7 @@ import { ART } from '../config/ArtAssets';
 import { touchAimRect } from './touchControlLayout';
 import type { ViewportService } from '../platform/ViewportService';
 import type { InputRouter } from '../input/InputRouter';
+import type { PlayerId } from '../state/ids';
 
 const DESKTOP_SIZE = { width: 360, height: 84 };
 const DESKTOP_BOTTOM_MARGIN = 76;
@@ -12,6 +13,7 @@ export interface AimButtonDeps {
   router: InputRouter;
   viewport: ViewportService;
   isTouchProfile: boolean;
+  getPlayerId: () => PlayerId;
   /** 点击行为由 BattleScene 决定（AIMING 时取消，否则发起瞄准） */
   onTap: () => void;
 }
@@ -23,7 +25,7 @@ export interface AimButtonDeps {
  *   setInteractive —— 一次手势生命周期只有一个 Owner
  * - AIMING 时点击 = 取消瞄准（触屏没有 Esc / 右键，按钮即取消入口）
  * - 两态生成图片：READY 金（可瞄准）/ AIMING 红（瞄准中），
- *   角色举枪与手指向下划动箭头示意实际操作；激活态加呼吸脉冲，
+ *   持枪黑影与右上向左下的手指箭头；红方水平镜像，激活态加呼吸脉冲，
  *   素材缺失回退程序绘制）
  * - 跟随 ViewportService 变化重定位（resize / 旋转 / DPR 变化）
  *
@@ -52,6 +54,10 @@ export class AimButton {
   /** 游戏像素命中矩形，供浏览器验证使用真实按钮位置。 */
   get screenBounds(): { x: number; y: number; width: number; height: number } {
     return { x: this.screenX, y: this.screenY, width: this.width, height: this.height };
+  }
+
+  get visualState(): { flipped: boolean; active: boolean } {
+    return { flipped: this.icon?.flipX ?? false, active: this.icon?.texture.key === ART.aimActive };
   }
 
   constructor(
@@ -111,6 +117,7 @@ export class AimButton {
    * 相机 Free View 仍可用）。离线不传 = 恒可交互，行为不变。
    */
   refresh(mode: CameraMode, interactable = true): void {
+    this.icon?.setFlipX(this.deps.getPlayerId() === 'P2');
     this.interactable = interactable;
     this.container.setVisible(interactable);
     if (!interactable) {

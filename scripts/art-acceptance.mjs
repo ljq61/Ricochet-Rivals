@@ -114,6 +114,26 @@ function aimDragEnd(originScreen, d, elevationDeg, dir, dragWorld = 150) {
 
 
 const pause = (ms) => new Promise(r => setTimeout(r, ms));
+
+function assertMinimap(d, width, height) {
+  const map = d.minimap;
+  if (!map || d.legacyFocusButtons !== false) throw new Error('Minimap must replace the old focus buttons');
+  const { x, y, width: w, height: h } = map.rect;
+  if (x - w / 2 < 0 || x + w / 2 > width * d.uiScale ||
+      y - h / 2 < 0 || y + h / 2 > height * d.uiScale) {
+    throw new Error('Minimap must stay inside the viewport');
+  }
+  for (const id of ['P1', 'P2']) {
+    const marker = map.players[id], base = map.bases[id];
+    if (Math.abs(marker.worldX - d.players[id]) > 0.01 || marker.x < base.left || marker.x > base.right) {
+      throw new Error(`Minimap ${id} marker is stale or outside its base`);
+    }
+  }
+  if (map.currentPlayerId !== d.currentPlayerId || map.bases.P1.right >= map.bases.P2.left) {
+    throw new Error('Minimap must preserve world order and active turn');
+  }
+}
+
 async function inspect(browser, mobile) {
   const page = await browser.newPage();
   const errors = [];
@@ -146,6 +166,9 @@ async function inspect(browser, mobile) {
   await waitFor(async () => (await dbg(page)).phase === 'ACTION', 10000, 'ACTION');
   await pause(400);
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-battle.png` });
+  const battle = await dbg(page);
+  assertMinimap(battle, W, H);
+  if (battle.aimIcon.flipped) throw new Error('Blue aim badge must retain its original direction');
   if (mobile) {
     const initial = await dbg(page);
     const sizes = initial.moveButtonSizes;
@@ -165,6 +188,11 @@ async function inspect(browser, mobile) {
     };
     await hold('right', 2100);
     const rightX = (await dbg(page)).players.P1;
+    const rightMap = await dbg(page);
+    assertMinimap(rightMap, W, H);
+    if (rightMap.minimap.players.P1.x <= initial.minimap.players.P1.x + 1) {
+      throw new Error('Minimap marker must follow movement to the right');
+    }
     if (rightX - initial.players.P1 <= 250 || rightX > 850) {
       throw new Error(`Unlimited movement did not reach the right base boundary: ${rightX}`);
     }
@@ -186,6 +214,7 @@ async function inspect(browser, mobile) {
   };
   await tap();
   await waitFor(async () => (await dbg(page)).cameraMode === 'AIMING', 3000, 'button enters AIMING');
+  if (!(await dbg(page)).aimIcon.active) throw new Error('Aiming must use the red active badge');
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-aim-cancel.png` });
   await tap();
   await waitFor(async () => (await dbg(page)).cameraMode === 'FREE_VIEW', 3000, 'button cancels AIMING');
@@ -218,6 +247,9 @@ async function inspect(browser, mobile) {
   await waitFor(async () => (await dbg(page)).currentPlayerId === 'P2' && (await dbg(page)).phase === 'ACTION', 7000, 'next turn');
   await pause(1300);
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-red-base.png` });
+  const red = await dbg(page);
+  assertMinimap(red, W, H);
+  if (!red.aimIcon.flipped || red.aimIcon.active) throw new Error('Red turn must use the mirrored ready badge');
   if (mobile) {
     const buttons = (await dbg(page)).moveButtons;
     if (Math.abs(buttons.left.y - buttons.right.y) > 1) {
@@ -227,6 +259,9 @@ async function inspect(browser, mobile) {
   if ((await dbg(page)).hp.P2 !== 8) throw new Error('Expected direct-hit damage and HP animation 10 -> 8');
   await tap();
   await waitFor(async () => (await dbg(page)).cameraMode === 'AIMING', 3000, 'P2 aim');
+  const redAim = await dbg(page);
+  if (!redAim.aimIcon.flipped || !redAim.aimIcon.active) throw new Error('Red aiming must mirror the active badge too');
+  await page.screenshot({ path: `${OUT_DIR}/${prefix}-red-aim.png` });
   await shoot(45, -1, 60);
   await waitFor(async () => (await dbg(page)).turnId === 3 && (await dbg(page)).phase === 'ACTION', 8000, 'sea miss resolves');
   const missed = await dbg(page);
@@ -274,6 +309,36 @@ async function main() {
   try {
     await inspect(browser, false);
     await inspect(browser, true);
+    for (const [width, height] of [[320, 180], [844, 180], [320, 240]]) {
+      const page = await browser.newPage();
+      // Enter through the normal menu size, then resize the active battle.
+      await page.setViewport({ width: 844, height: 390, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+      await page.goto(URL, { waitUntil: 'load' });
+      await waitForScene(page, 'MainMenuScene');
+      await tapMenuButton(page, 'local2p');
+      await waitForScene(page, 'BattleScene');
+      await waitFor(async () => (await dbg(page)).phase === 'ACTION', 10000, 'short-screen ACTION');
+      await page.setViewport({ width, height, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+      await pause(200);
+      const d = await dbg(page);
+      assertMinimap(d, width, height);
+      const banner = d.turnBannerLayout;
+      if (!banner.text || !Number.isFinite(banner.fontSize) || banner.fontSize / d.uiScale < 10) {
+        throw new Error('Short-screen turn text must stay readable');
+      }
+      const rect = banner.rect;
+      const intersects = (r) => Math.abs(r.x - rect.x) < (r.width + rect.width) / 2 - 0.01 &&
+        Math.abs(r.y - rect.y) < (r.height + rect.height) / 2 - 0.01;
+      const controls = Object.values(d.moveButtons).map(({ x, y }) => ({
+        x: x * d.uiScale, y: y * d.uiScale, width: d.moveButtonSizes.hit, height: d.moveButtonSizes.hit,
+      }));
+      if ([d.minimap.rect, d.aimButtonBounds, ...controls].some(intersects)) {
+        throw new Error(`Short-screen banner overlaps controls at ${width}x${height}`);
+      }
+      await page.screenshot({ path: `${OUT_DIR}/minimap-short-${width}x${height}.png` });
+      await page.close();
+    }
+    console.log('short-screen minimap/banner: 320x180, 844x180, 320x240 passed');
     for (const [width, height] of [[667, 320], [780, 360], [900, 520]]) {
       const page = await browser.newPage();
       await page.setViewport({ width, height, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });

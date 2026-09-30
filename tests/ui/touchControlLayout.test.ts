@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { computeViewportMetrics } from '../../src/game/platform/viewportMath';
 import { dockMoveButtonLayout, screenRectsOverlap, touchAimRect } from '../../src/game/ui/touchControlLayout';
+import { battleHudLayout } from '../../src/game/ui/miniMapMath';
 
 const sizes = [
-  [320, 568], [844, 390], [932, 430], [320, 180],
+  [320, 568], [844, 390], [932, 430], [320, 180], [480, 180], [600, 180], [844, 180],
   [320, 240], [320, 250], [320, 260],
   [844, 240], [844, 250], [844, 260],
 ] as const;
@@ -11,17 +12,16 @@ const sizes = [
 describe('dock movement controls', () => {
   it.each(sizes)('keeps separate touch targets inside %i × %i across DPR and camera pans', (width, height) => {
     for (const dpr of [1, 2]) for (const pan of [0, -1000, 1000, -5000, 5000]) {
-      const safe = { left: 4 * dpr, right: 4 * dpr, top: 0, bottom: 4 * dpr };
+      const safe = { left: 4 * dpr, right: 4 * dpr, top: 8 * dpr, bottom: 20 * dpr };
       const viewport = computeViewportMetrics(width * dpr, height * dpr, safe, undefined, dpr);
       const project = (x: number) => viewport.width / 2 + (x - 450 - pan) * viewport.zoom;
       const layout = dockMoveButtonLayout(viewport, project(25), project(925), height * dpr * 8 / 9, 180 * viewport.zoom);
       const aim = touchAimRect(viewport);
       const obstacles = [
         aim,
+        battleHudLayout(viewport).banner,
         // Test the rendered caption independently of the combined avoidance rectangle.
         { x: aim.x, y: aim.y + aim.height / 2 + 10 * dpr, width: 40 * dpr, height: 20 * dpr },
-        { x: viewport.width / 2 - 24 * dpr, y: viewport.height - safe.bottom - 32 * dpr, width: 48 * dpr, height: 48 * dpr },
-        { x: viewport.width / 2 + 24 * dpr, y: viewport.height - safe.bottom - 32 * dpr, width: 48 * dpr, height: 48 * dpr },
       ];
       expect(layout.hitSize / dpr).toBeGreaterThanOrEqual(48);
       expect(layout.visualSize).toBeCloseTo(180 * viewport.zoom * 0.82);
@@ -61,7 +61,7 @@ describe('dock movement controls', () => {
     }
   });
 
-  it.each([[10, 335], [509, 834]])('aligns both directions beside dock %i…%i despite the central focus controls', (dockLeft, dockRight) => {
+  it.each([[10, 335], [509, 834]])('aligns both directions beside dock %i…%i without moving above the deck', (dockLeft, dockRight) => {
     for (const dpr of [1, 2, 3]) {
       const viewport = computeViewportMetrics(844 * dpr, 390 * dpr, { left: 0, right: 0, top: 0, bottom: 0 }, undefined, dpr);
       const deck = 350 * dpr;
@@ -69,16 +69,15 @@ describe('dock movement controls', () => {
       const expectedY = deck - layout.visualSize / 2;
       expect(layout.left.y).toBeCloseTo(expectedY);
       expect(layout.right.y).toBeCloseTo(expectedY);
-      const focus = [-24, 24].map((offset) => ({
-        x: viewport.width / 2 + offset * dpr,
-        y: viewport.height - 32 * dpr,
-        width: 48 * dpr,
-        height: 48 * dpr,
-      }));
-      for (const button of [layout.left, layout.right]) {
-        expect(focus.some((other) => screenRectsOverlap(button, other, 8 * dpr))).toBe(false);
-      }
+
     }
+  });
+
+  it('uses the former bottom-center focus-button area when a dock edge is there', () => {
+    const viewport = computeViewportMetrics(844, 390, { left: 0, right: 0, top: 0, bottom: 0 });
+    const layout = dockMoveButtonLayout(viewport, 268, 380, 380, 65);
+    expect(layout.right.x).toBeCloseTo(380 + layout.visualSize / 2 + 8);
+    expect(layout.right.y).toBeCloseTo(380 - layout.visualSize / 2);
   });
 
   it('accepts an exact fractional gap while still rejecting meaningful overlap', () => {

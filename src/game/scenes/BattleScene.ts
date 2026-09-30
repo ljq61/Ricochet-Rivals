@@ -30,6 +30,8 @@ import { AimButton } from '../ui/AimButton';
 import { AimRenderer } from '../ui/AimRenderer';
 import { SfxBus, SFX, type SfxKey } from '../audio/SfxBus';
 import { PlayerHud } from '../ui/PlayerHud';
+import { BattleMiniMap } from '../ui/BattleMiniMap';
+import { battleHudLayout } from '../ui/miniMapMath';
 import { TurnBanner } from '../ui/TurnBanner';
 import { DamageNumbers } from '../ui/DamageNumbers';
 import { DebugOverlay } from '../ui/DebugOverlay';
@@ -114,6 +116,7 @@ export class BattleScene extends Phaser.Scene {
   /** Phase 17 Juice：音效总线（发射/飞行/爆炸/命中/回合/胜负） */
   private sfx!: SfxBus;
   private playerHud!: PlayerHud;
+  private miniMap!: BattleMiniMap;
   private turnBanner!: TurnBanner;
   private damageNumbers!: DamageNumbers;
   /** Phase 17 Juice：基地受损表现（烟/火随 HP 分档，State 驱动纯视觉） */
@@ -314,6 +317,7 @@ export class BattleScene extends Phaser.Scene {
       router: this.inputRouter,
       viewport: this.viewportService,
       isTouchProfile: isTouch,
+      getPlayerId: () => this.state.currentPlayerId,
       onTap: () => this.onAimButtonTap(),
     });
 
@@ -329,16 +333,6 @@ export class BattleScene extends Phaser.Scene {
         commandBus: inputBus,
         router: this.inputRouter,
         viewport: this.viewportService,
-        onFocusSelf: () =>
-          this.cameraController.panToX(
-            this.state.players[this.state.currentPlayerId].x
-          ),
-        onFocusEnemy: () => {
-          const enemyId: PlayerId =
-            this.state.currentPlayerId === 'P1' ? 'P2' : 'P1';
-          this.cameraController.panToX(this.state.players[enemyId].x);
-        },
-        getCameraMode: () => this.cameraController.currentMode,
       });
       this.controls = this.touchControls;
     } else {
@@ -443,7 +437,9 @@ export class BattleScene extends Phaser.Scene {
 
     // 12. HUD：HP 血条（伤害动画由 State 变化驱动）+ 回合横幅（Phase 9 热座）
     this.playerHud = new PlayerHud(this, this.viewportService);
-    this.turnBanner = new TurnBanner(this, this.viewportService);
+    this.miniMap = new BattleMiniMap(this, this.viewportService);
+    this.miniMap.refresh(this.state.players, this.state.currentPlayerId);
+    this.turnBanner = new TurnBanner(this, this.viewportService, (viewport) => battleHudLayout(viewport).banner);
     this.damageNumbers = new DamageNumbers(this, this.viewportService);
 
     // 13. Debug Overlay + E2E 观测句柄
@@ -479,8 +475,9 @@ export class BattleScene extends Phaser.Scene {
     // Phase 14：联机对手回合隐藏瞄准 / 移动按钮（相机 Free View 仍可用）
     const localControls = this.isLocalControlledTurn();
     this.aimButton.refresh(this.cameraController.currentMode, localControls);
-    this.touchControls?.refresh(this.cameraController.currentMode, localControls);
+    this.touchControls?.refresh(localControls);
     this.playerHud.refresh(this.state.players);
+    this.miniMap.refresh(this.state.players, this.state.currentPlayerId);
     this.baseDamageEffects.refresh(this.state.players);
     this.octopusTentacle.refresh(this.state.players);
 
@@ -1139,6 +1136,10 @@ export class BattleScene extends Phaser.Scene {
           ? self.touchControls.isMoveButtonsVisible
           : null;
       },
+      get minimap() { return self.miniMap.debugState; },
+      get turnBannerLayout() { return self.turnBanner.layoutState; },
+      get legacyFocusButtons(): boolean { return false; },
+      get aimIcon() { return self.aimButton.visualState; },
       get aimButtonBounds(): { x: number; y: number; width: number; height: number } {
         return self.aimButton.screenBounds;
       },
@@ -1196,6 +1197,7 @@ export class BattleScene extends Phaser.Scene {
     this.aimButton.destroy();
     this.aimRenderer.destroy();
     this.playerHud.destroy();
+    this.miniMap.destroy();
     this.turnBanner.destroy();
     this.projectileSystem.destroy();
     this.disconnectButton?.destroy();

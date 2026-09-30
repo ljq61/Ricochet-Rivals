@@ -1,6 +1,5 @@
 import Phaser from 'phaser';
-import { CameraMode } from '../camera/CameraMode';
-import { PALETTE, playerColor } from '../config/Palette';
+import { playerColor } from '../config/Palette';
 import { ART } from '../config/ArtAssets';
 import { GAME_CONFIG } from '../config/GameConfig';
 import { baseDockGeometry } from '../systems/WorldBuilder';
@@ -21,7 +20,6 @@ import type { GestureKind } from './gesture';
  * 组成（与 DesktopControls 同一 InputSource 门面，Gameplay 完全一致）：
  * - 大号 ◀ / ▶ 按住移动按钮（UI zone —— 屏幕实体按钮永远先于世界手势；
  *   多指各自追踪，按住加速 / 松开即停，与键盘共用 MoveInputCore 手感曲线）
- * - 「己方 / 敌方」相机快捷聚焦按钮（UI zone，仅 FREE_VIEW 激活）
  * - 控制目标 = 当前回合玩家（Phase 8 热座）
  * - 布局遵守 Safe Area（刘海 / 手势条方向 insets）
  *
@@ -38,39 +36,24 @@ import type { GestureKind } from './gesture';
 
 /** 屏幕手感常量（CSS px，运行时 ×uiScale） */
 const MOVE_BUTTON_SIZE = 48;
-/** Phase 9 反馈 ②：聚焦按钮右下角 → 底部居中，尺寸缩小 2/3（72 → 24）
- *  —— 视觉保持 24；Phase 18 Step 8 触控下限：命中区单独扩至 ≥48 CSS px */
-const FOCUS_BUTTON_SIZE = 24;
-/** Phase 18 Step 8：触控目标命中区下限（视觉可以小，命中区不能小） */
-const FOCUS_HIT_MIN = 48;
-const FOCUS_FONT = 10;
-const EDGE_MARGIN = 20;
-/** 48px 命中区不互相重叠所需的最小中心距（视觉 24 + 间 24 = 48） */
-const FOCUS_GAP = 24;
-
 interface TouchButton {
   id: string;
   kind: GestureKind;
   container: Phaser.GameObjects.Container;
   bg: Phaser.GameObjects.Graphics;
-  /** CSS px 基准尺寸（×uiScale 后为游戏像素尺寸） */
-  baseSize: number;
   /** 游戏像素尺寸（绘制用） */
   width: number;
   height: number;
-  /** 游戏像素命中区尺寸（zone contains 用；≥ 视觉尺寸，聚焦钮达 48 CSS px 下限） */
+  /** 游戏像素命中区尺寸（zone contains 用；≥ 视觉尺寸，命中区达 48 CSS px 下限） */
   hitWidth: number;
   hitHeight: number;
   /** 移动按钮方向（箭头重绘用） */
-  direction: 'left' | 'right' | null;
-  /** 移动按钮箭头 / 聚焦按钮文本（缩放重绘用） */
+  direction: 'left' | 'right';
+  /** 移动按钮箭头（缩放重绘用） */
   arrow: Phaser.GameObjects.Graphics | null;
   image: Phaser.GameObjects.Image | null;
-  text: Phaser.GameObjects.Text | null;
   /** 移动按钮当前按下视觉状态 */
   pressed: boolean;
-  /** zone 是否可命中（聚焦按钮仅 FREE_VIEW） */
-  enabled: boolean;
   /** 按住的 pointerId 集合（移动按钮多指追踪） */
   heldPointers: Set<number>;
   /** 画面坐标（相机缩放补偿前）；InputRouter 的 zone 直接使用此坐标。 */
@@ -83,12 +66,6 @@ export interface TouchControlsDeps {
   commandBus: CommandBus;
   router: InputRouter;
   viewport: ViewportService;
-  /** 点击「己方」聚焦（FREE_VIEW 内平移相机到当前玩家） */
-  onFocusSelf: () => void;
-  /** 点击「敌方」聚焦（平移相机到对方玩家） */
-  onFocusEnemy: () => void;
-  /** 聚焦按钮的激活条件（FREE_VIEW only） */
-  getCameraMode: () => CameraMode;
 }
 
 export class TouchControls implements InputSource {
@@ -99,8 +76,6 @@ export class TouchControls implements InputSource {
 
   private leftButton!: TouchButton;
   private rightButton!: TouchButton;
-  private focusSelfButton!: TouchButton;
-  private focusEnemyButton!: TouchButton;
   /**
    * ◀ / ▶ 移动按钮可见（Phase 9 Review Gate：仅 ACTION 相位显示 ——
    * 点击「回到炮手 / 瞄准」即位置锁定并隐藏按钮，取消瞄准恢复）
@@ -120,17 +95,6 @@ export class TouchControls implements InputSource {
 
     this.leftButton = this.createHoldButton('touch-move-left', 'left');
     this.rightButton = this.createHoldButton('touch-move-right', 'right');
-    this.focusSelfButton = this.createFocusButton(
-      'touch-focus-self',
-      '己方',
-      () => deps.onFocusSelf()
-    );
-    this.focusEnemyButton = this.createFocusButton(
-      'touch-focus-enemy',
-      '敌方',
-      () => deps.onFocusEnemy()
-    );
-
     this.reposition();
 
     this.unsubscribeViewport = deps.viewport.onChange(() => {
@@ -175,14 +139,13 @@ export class TouchControls implements InputSource {
 
   /**
    * 每帧由 BattleScene 驱动：
-   * - 聚焦按钮仅在 FREE_VIEW 可用
    * - ◀ / ▶ 移动按钮仅 ACTION 相位显示（Phase 9 Review Gate：
    *   点击瞄准按钮后位置锁定 —— MovementSystem 同步拒绝 RETURN_HOME /
    *   AIM 移动；按钮隐藏 + zone 失活，取消瞄准回 ACTION 自动恢复）
    * - moveAllowed（Phase 14 联机）：对手回合 = false → 移动按钮隐藏
-   *   （聚焦按钮保留 —— 对手回合仍允许 Free View 观察）；离线不传不变。
+   *   离线不传不变。
    */
-  refresh(cameraMode: CameraMode, moveAllowed = true): void {
+  refresh(moveAllowed = true): void {
     this.repositionMoveButtons();
     const visualPlayerId = this.deps.getState().currentPlayerId;
     if (visualPlayerId !== this.lastVisualPlayerId) {
@@ -190,14 +153,6 @@ export class TouchControls implements InputSource {
       this.drawHoldButton(this.leftButton);
       this.drawHoldButton(this.rightButton);
     }
-    const focusEnabled = cameraMode === CameraMode.FREE_VIEW;
-    for (const button of [this.focusSelfButton, this.focusEnemyButton]) {
-      if (button.enabled !== focusEnabled) {
-        button.enabled = focusEnabled;
-        this.drawFocusButton(button);
-      }
-    }
-
     const moveVisible =
       this.deps.getState().phase === TurnPhase.ACTION && moveAllowed;
     if (moveVisible !== this.moveButtonsVisible) {
@@ -247,37 +202,11 @@ export class TouchControls implements InputSource {
     return button;
   }
 
-  private createFocusButton(
-    id: string,
-    label: string,
-    onTap: () => void
-  ): TouchButton {
-    const button = this.createButton(id, 'UI', FOCUS_BUTTON_SIZE, null);
-    button.text = this.scene.add
-      .text(0, 0, label, {
-        fontFamily: 'monospace',
-        color: '#e8eef7',
-      })
-      .setOrigin(0.5);
-    button.container.add(button.text);
-    button.enabled = false; // 初始 FREE_VIEW 前不可用（refresh 会驱动）
-    this.drawFocusButton(button);
-
-    this.deps.router.registerZone({
-      id: button.id,
-      kind: button.kind,
-      isActive: () => button.enabled,
-      contains: (x, y) => containsButton(button, x, y),
-      onDown: () => onTap(),
-    });
-    return button;
-  }
-
   private createButton(
     id: string,
     kind: GestureKind,
     baseSize: number,
-    direction: 'left' | 'right' | null
+    direction: 'left' | 'right'
   ): TouchButton {
     const container = this.scene.add.container(0, 0).setScrollFactor(0).setDepth(900);
     const bg = this.scene.add.graphics();
@@ -288,7 +217,6 @@ export class TouchControls implements InputSource {
       kind,
       container,
       bg,
-      baseSize,
       width: baseSize,
       height: baseSize,
       hitWidth: baseSize,
@@ -296,9 +224,7 @@ export class TouchControls implements InputSource {
       direction,
       arrow: null,
       image: null,
-      text: null,
       pressed: false,
-      enabled: true,
       heldPointers: new Set<number>(),
       screenX: 0,
       screenY: 0,
@@ -349,70 +275,10 @@ export class TouchControls implements InputSource {
     button.container.setAlpha(1);
   }
 
-  private drawFocusButton(button: TouchButton): void {
-    const { width, height, enabled } = button;
-    const ui = this.deps.viewport.current.uiScale;
-    const accent = button.id === 'touch-focus-self' ? PALETTE.P1 : PALETTE.P2;
-    const radius = width / 2;
-    button.bg.clear();
-    button.bg.fillStyle(0x0d1420, 0.75);
-    button.bg.fillRoundedRect(-width / 2, -height / 2, width, height, radius);
-    button.bg.fillStyle(accent, enabled ? 0.5 : 0.12);
-    button.bg.fillRoundedRect(-width / 2, -height / 2, width, height, radius);
-    button.bg.lineStyle(2 * ui, accent, enabled ? 0.9 : 0.25);
-    button.bg.strokeRoundedRect(-width / 2, -height / 2, width, height, radius);
-    button.container.setAlpha(enabled ? 1 : 0.5);
-  }
-
   // ---- 布局（Safe Area + uiScale） ---------------------------------------
 
   private reposition(): void {
-    const { width, height, safeArea, uiScale } = this.deps.viewport.current;
-
-    // 尺寸重算（DPR 变化时按钮需重绘）
-    for (const button of this.allButtons()) {
-      const size = button.baseSize * uiScale;
-      // Phase 18 Step 8：命中区 ≥48 CSS px（聚焦钮视觉 24 保持不变；
-      // 中心距 48（FOCUS_GAP）保证相邻命中区不重叠）
-      const hit = button.direction
-        ? size
-        : Math.max(size, FOCUS_HIT_MIN * uiScale);
-      button.hitWidth = hit;
-      button.hitHeight = hit;
-      if (button.width !== size) {
-        button.width = size;
-        button.height = size;
-        if (button.arrow) {
-          this.drawArrow(button);
-        }
-        if (button.text) {
-          button.text.setFontSize(FOCUS_FONT * uiScale);
-        }
-        if (button.direction) {
-          this.drawHoldButton(button);
-        } else {
-          this.drawFocusButton(button);
-        }
-      }
-    }
-
-    const edge = EDGE_MARGIN * uiScale;
     this.repositionMoveButtons();
-
-    // 底部居中：己方 / 敌方 聚焦按钮（Phase 9 反馈 ②：右下角移中缩小）
-    const focusBottom = height - safeArea.bottom - edge;
-    const focusGap = FOCUS_GAP * uiScale;
-    const pairWidth =
-      this.focusSelfButton.width + focusGap + this.focusEnemyButton.width;
-    const pairLeft = width / 2 - pairWidth / 2;
-    this.placeOnScreen(this.focusSelfButton,
-      pairLeft + this.focusSelfButton.width / 2,
-      focusBottom - this.focusSelfButton.height / 2
-    );
-    this.placeOnScreen(this.focusEnemyButton,
-      pairLeft + pairWidth - this.focusEnemyButton.width / 2,
-      focusBottom - this.focusEnemyButton.height / 2
-    );
   }
 
   /** 当前基地甲板两端的方向按钮，跟随相机投影并避开固定 HUD。 */
@@ -460,8 +326,6 @@ export class TouchControls implements InputSource {
     return [
       this.leftButton,
       this.rightButton,
-      this.focusSelfButton,
-      this.focusEnemyButton,
     ];
   }
 
@@ -500,7 +364,7 @@ function containsButton(
 ): boolean {
   const cx = button.screenX;
   const cy = button.screenY;
-  // 命中区（hitWidth/hitHeight ≥ 视觉尺寸；聚焦钮扩至 48 CSS px 下限）
+  // 命中区（hitWidth/hitHeight ≥ 视觉尺寸，至少 48 CSS px）
   return (
     x >= cx - button.hitWidth / 2 &&
     x <= cx + button.hitWidth / 2 &&

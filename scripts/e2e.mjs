@@ -877,28 +877,21 @@ async function runMobile(browser) {
   );
   check('回合切换横幅：P2 · 第 2 回合', mBanner2 === true);
 
-  // 5. 快捷聚焦按钮（FREE_VIEW 激活）：当前玩家为 P2、相机已在其阵地，
-  //    先点「敌方」平移到 P1，再点「己方」回来，双向验证 panToX
-  const beforeFocus = (await dbg(page)).cameraScrollX;
-  await page.touchscreen.touchStart(438, 358); // 「敌方」（底部居中，Phase 9 反馈 ②）
-  await page.touchscreen.touchEnd();
-  await sleep(900);
-  const afterEnemy = (await dbg(page)).cameraScrollX;
-  check(
-    '点击「敌方」→ 相机平移到对方阵地',
-    Math.abs(afterEnemy - beforeFocus) > 1000,
-    `scroll ${beforeFocus.toFixed(0)} → ${afterEnemy.toFixed(0)}`
-  );
-
-  await page.touchscreen.touchStart(406, 358); // 「己方」
-  await page.touchscreen.touchEnd();
-  await sleep(900);
-  const afterSelf = (await dbg(page)).cameraScrollX;
-  check(
-    '点击「己方」→ 相机平移回己方阵地',
-    Math.abs(afterSelf - afterEnemy) > 1000,
-    `scroll ${afterEnemy.toFixed(0)} → ${afterSelf.toFixed(0)}`
-  );
+  // 5. 顶部小地图替换旧快捷定位；只显示状态，不改变镜头。
+  const overview = turn2.minimap;
+  check('旧己方/敌方快捷按钮已移除', turn2.legacyFocusButtons === false);
+  check('小地图标记来自双方实时位置并更新回合',
+    overview.currentPlayerId === 'P2' &&
+    Math.abs(overview.players.P1.worldX - turn2.players.P1) < 0.01 &&
+    Math.abs(overview.players.P2.worldX - turn2.players.P2) < 0.01 &&
+    overview.bases.P1.right < overview.bases.P2.left &&
+    overview.players.P1.x < overview.players.P2.x);
+  check('红方瞄准图整体镜像', turn2.aimIcon.flipped === true);
+  const beforeMapTap = (await dbg(page)).cameraScrollX;
+  await page.touchscreen.tap(overview.rect.x / turn2.uiScale, overview.rect.y / turn2.uiScale);
+  await sleep(200);
+  check('小地图为只读显示，点击不跳转镜头',
+    Math.abs((await dbg(page)).cameraScrollX - beforeMapTap) < 1);
 
   // 6. 竖屏门禁：显示旋转提示 + 手势被覆盖层拦截
   await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });

@@ -2,7 +2,7 @@
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
 > 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— 全部 Stage ✅（SG-8 ICE Restart 2026-09-30 收官：限次 restartIce 经活信令 + peerToken 重入、恢复走既有 Phase 15 恢复链；根 575/575 + server 31/31 + 全量 E2E **184/184**）。剩余 = 部署（公网 WSS + coturn → 真机 QA）与 Manual SDP Cleanup。详见「Online Connection Migration」章节。**
-> 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；Phase 18 agent 侧 + P3 修复后 `npm run e2e` 全量 **147 passed / 0 failed**（含 932×430@DPR3 移动段 17 项；E2E 严禁与写 dist 任务并行）。
+> 当前验证：`npm run typecheck` / `npm run test`（652）/ `npm run build` 已通过；本轮小地图与瞄准修订 `npm run e2e` 全量 **190 passed / 0 failed**（含 932×430@DPR3 触控及真实 WebRTC 回归；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
 ---
@@ -2118,6 +2118,16 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 - [ ] 实机与 Safari 观感/手感确认。
 
 素材、提示词与验证：[操作按钮制作记录](docs/ArtDesign/CONTROL_ART_UPDATE_2026-09-30.md)。旧 Phase 的移动预算说明为历史记录，以本轮新规则和当前 GameConfig 为准。
+
+### 瞄准剪影与顶部小地图（2026-09-30）
+
+- [x] 瞄准图内人物改黑色持枪剪影，手指/箭头从身体右上滑向左下；红方共用整图水平镜像，金/红两态均生效。
+- [x] 删除“己方／敌方”快速定位按钮及其输入区域，手机/桌面顶部中央显示简易小地图，标出双方基地、人物实时位置与当前回合。
+- [x] 小地图只读现有 GameState，不增加联机消息；配套调整回合横幅，避开 HP、瞄准和安全区。
+- [x] 652 单测、类型检查和构建通过；完整 E2E 190/190；独立复核已修复极矮屏提示遮挡与字号问题，最终重跑包含 180px 高度的美术专项。
+- [ ] 真机视觉与手感确认。
+
+素材与提示词：[剪影和小地图制作记录](docs/ArtDesign/MINIMAP_AIM_REFINEMENT_2026-09-30.md)。
 
 ---
 

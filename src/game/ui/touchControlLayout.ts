@@ -1,26 +1,9 @@
 import type { ViewportMetrics } from '../platform/viewportMath';
 
-export interface ScreenRect { x: number; y: number; width: number; height: number }
-export const TOUCH_AIM_SIZE = 84;
-export const TOUCH_AIM_MARGIN = 12;
-
-export function touchAimRect(viewport: ViewportMetrics): ScreenRect {
-  const { width, height, safeArea, uiScale } = viewport;
-  const size = TOUCH_AIM_SIZE * uiScale;
-  return {
-    x: width - safeArea.right - (TOUCH_AIM_MARGIN + TOUCH_AIM_SIZE / 2) * uiScale,
-    y: Math.max(safeArea.top + size / 2, Math.min(height / 2, height - safeArea.bottom - size / 2)),
-    width: size,
-    height: size,
-  };
-}
-
-/** The caption is below the tappable image, but still needs clear visual space. */
-export function touchAimVisualRect(viewport: ViewportMetrics): ScreenRect {
-  const hit = touchAimRect(viewport);
-  const captionHeight = 20 * viewport.uiScale;
-  return { ...hit, y: hit.y + captionHeight / 2, height: hit.height + captionHeight };
-}
+import { touchAimVisualRect, type ScreenRect } from './touchAimLayout';
+import { battleHudLayout } from './miniMapMath';
+export { touchAimRect, touchAimVisualRect, TOUCH_AIM_SIZE, TOUCH_AIM_MARGIN } from './touchAimLayout';
+export type { ScreenRect } from './touchAimLayout';
 
 /** Screen-space hit boxes stay usable when their world-space dock moves off screen. */
 export function dockMoveButtonLayout(
@@ -41,11 +24,9 @@ export function dockMoveButtonLayout(
   const hudScale = uiScale * Math.min(1, ((width - safeArea.left - safeArea.right) / uiScale - 110) / 540);
   const minY = safeArea.top + 83 * hudScale + gap + half;
   const maxY = height - safeArea.bottom - half - gap;
-  const focusY = height - safeArea.bottom - 32 * uiScale;
   const reserved: ScreenRect[] = [
     touchAimVisualRect(viewport),
-    { x: width / 2 - 24 * uiScale, y: focusY, width: 48 * uiScale, height: 48 * uiScale },
-    { x: width / 2 + 24 * uiScale, y: focusY, width: 48 * uiScale, height: 48 * uiScale },
+    battleHudLayout(viewport).banner,
   ];
   const place = (desiredX: number, desiredY: number, lowX: number, highX: number): ScreenRect | null => {
     const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(n, hi));
