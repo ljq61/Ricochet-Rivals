@@ -1,6 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
+> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 Signaling 协议 + SignalingClient ✅（2026-09-30，test 525/525）；SG-2 起待做。详见「Online Connection Migration」章节。**
 > 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；Phase 18 agent 侧 + P3 修复后 `npm run e2e` 全量 **147 passed / 0 failed**（含 932×430@DPR3 移动段 17 项；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
@@ -2215,6 +2216,102 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 - [ ] test-reviewer PASS（或 PASS WITH ISSUES 且仅剩 P2/P3）
 
 完成后：TASKS.md 标 Phase 18 = COMPLETE、更新 V0.1 RELEASE GATE，**不自动进入 V0.2**。
+
+---
+
+# Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）
+
+> 状态：**SG-0 审计 ✅ / SG-1 Signaling 协议 + SignalingClient ✅（2026-09-30）；SG-2 起待做。**
+>
+> **架构红线（本迁移全程有效）**：
+> - WebSocket **只用于 Signaling**（房间配对 / SDP / ICE candidate 交换）；Gameplay
+>   一律继续走 WebRTC DataChannel —— 本迁移是 WebRTC Connection Layer Upgrade，
+>   **不是** Gameplay Networking Rewrite。
+> - SignalingMessage（连接协议）与 NetworkEnvelope（Gameplay 协议）完全独立，互不 import。
+> - Gameplay 禁止感知 Signaling Server；Signaling Server 禁止处理 Gameplay State。
+> - 必须复用既有：NetworkTransport / WebRTCTransport / NetworkManager / OnlineSession /
+>   OnlineGameCoordinator / Host Authority / GameCommand / State Sync / Snapshot
+>   Recovery / Rematch。
+> - Manual SDP 流保留为 **Debug fallback**（DEBUG_GAME 门控），迁移稳定后单独 Cleanup，
+>   本阶段不删除任何已验证旧 WebRTC 代码。
+
+## SG-0 Audit（只读，2026-09-30）✅
+
+10 个目标文件全量精读（2772 行）+ 引用面 / 测试契约 / E2E 段核对。结论：
+
+| 文件 | 分类 | 说明 |
+|---|---|---|
+| WebRTCTransport.ts | MODIFY | wire/状态机/生命周期全保；信令段改 Trickle（SG-3/4）、诊断口（SG-6）、restartIce（SG-8）；400 行红线 → 协商编排归 RoomConnectionController |
+| WebRTCConfig.ts | MODIFY | 加 iceTransportPolicy；iceServers 已注入式（SG-6） |
+| OnlineConnectionController.ts | DEBUG ONLY | 手动配对编排器 → Debug fallback；其 connectAndVerify/PING-PONG 验证/detach 语义为 SG-3 必须复用资产 |
+| OnlineConnectionScene.ts | MODIFY | SG-5 新 UI 流 + debug 分支 |
+| OnlineConnectionState.ts | MODIFY | 新增 room 流状态（建议独立 enum） |
+| OnlineSession.ts | KEEP | 零改动；Signaling 不得触碰 |
+| NetworkManager.ts | KEEP | SG-0~7 零改动（SG-8 走其下层） |
+| ConnectionCodeCodec.ts | DEBUG ONLY | 纯手动流 |
+| SignalingCodec.ts | MODIFY | ⚠️ 实为 SDP codec（与新 WS 信令协议防混淆）；encode/decode 双流共用，waitForIceGatheringComplete 降 debug-only |
+| OnlineGameCoordinator.ts | KEEP | 零 signaling 知识；SG-8 时小幅挂钩（复用 Phase 15 恢复链，不建第二套 reconnect recovery） |
+
+关键事实：手动流引用封闭（仅 Scene/Controller/两个 codec/Transport）；`disconnected`
+瞬态处理已正确（后台 grace period 基础良好）；tests/network 三套 + E2E online 段钉住
+Debug fallback 行为；分支无 `dev_websocket`，按规格自 `Dev` 拉 `dev_signaling_turn`。
+
+**用户决策（2026-09-30）**：TURN 来源 = **自建 coturn**（`use-auth-secret` +
+`static-auth-secret` 动态凭据；Shared Secret 只存 TURN server + Signaling server，
+凭据 TTL 30~60 分钟；浏览器只拿临时 username/credential —— SG-6 落地）。
+Signaling Server 部署 host 待 SG-2 后定（本地 Node WS server 先行）。
+
+## SG-1 Signaling Protocol + SignalingClient ✅（2026-09-30）
+
+新增（`src/game/network/signaling/`，环境无关纯 TS —— SG-2 Node Server 直接 import 同一协议文件，单一事实源）：
+
+- [x] `RoomCode.ts`（31 行）— 6 位高可读码：alphabet 排除 0/O/1/I/L；
+      `normalizeRoomCode`（大小写/空白/连字符容忍）+ `isValidRoomCode`
+- [x] `SignalingMessage.ts`（299 行）— 协议契约：`{ v:1, type, ...payload }` JSON
+      文本帧；出站 6 类型（CREATE_ROOM/JOIN_ROOM/OFFER/ANSWER/ICE_CANDIDATE/ICE_END）、
+      入站 9 类型（ROOM_CREATED/ROOM_JOINED/PEER_JOINED/OFFER/ANSWER/ICE_CANDIDATE/
+      ICE_END/PEER_LEFT/ERROR，含 iceServers/peerToken/expiresAt）；encode throw
+      （内部 bug）/ decode Result 双轨（Untrusted Input 永不 throw）；
+      `SignalingIceServer`/`SignalingIceCandidate` 结构兼容 RTCIceServer/
+      RTCIceCandidateInit（测试含编译期断言；Node 侧无需 DOM lib）；ERROR code 前向兼容
+- [x] `SignalingClient.ts`（535 行）— WS 客户端状态机（规格推荐 7 态）：
+      DISCONNECTED → CONNECTING → CONNECTED →（Host: ROOM_CREATED → ROOM_WAITING →
+      PEER_JOINED / Guest: ROOM_JOINED 直达）→ PEER_FOUND → NEGOTIATING → FAILED；
+      connect() promise + 10s open 超时 + 重复调用复用；createRoom/joinRoom（非法码
+      本端拒绝零帧发出）；Trickle 发送 API（sendOffer/sendAnswer/sendIceCandidate/
+      sendIceEnd，首个协商帧自动入 NEGOTIATING）；失败分类（CONNECT_FAILED/
+      CONNECT_TIMEOUT/WS_CLOSED/SERVER_ERROR —— SG-7 失败 UX 的原始输入）；
+      close() 摘 listener→结清 pending→关 socket→清订阅（幂等）；FAILED/close 后
+      不可复活（重连新建实例，同 transport 纪律）；handler 异常隔离（同 NetworkManager）
+- [x] 语义决策：PEER_LEFT 只投事件不改状态（协商期生死 controller 裁决、对局期
+      Phase 16 断线链处理，信令层不越权）；ERROR → FAILED 由 onFailure 承载、
+      不重复投递 onMessage；未知 ERROR code 照常投递（前向兼容）
+
+测试（`tests/network/signaling/`，新增 25，总 **525/525**）：
+
+- [x] RoomCode：alphabet 逐一通过 + 排除字符全拒 + normalize 容忍 + 长度/非法字符
+- [x] SignalingMessage：全类型 roundtrip、出站契约 throw、畸形帧拒绝矩阵
+      （EMPTY/NOT_JSON/NOT_OBJECT/UNSUPPORTED_VERSION/UNKNOWN_TYPE 含出站类型回环/
+      逐字段 INVALID_PAYLOAD）、ERROR 前向兼容、DOM 结构兼容编译期断言
+- [x] SignalingClient（FakeWebSocket 注入）：连接 resolve/reject/超时（fake timers）/
+      复用 promise、Host/Guest 双全流状态序列断言、joinRoom 非法码零帧、四类状态
+      守卫（NOT_CONNECTED/NO_PEER/INVALID_STATE/TERMINAL）、ERROR→FAILED、PEER_LEFT
+      不改状态、五类非法帧丢弃不崩、WS 中断双分类（握手期 CONNECT_FAILED /
+      建立后 WS_CLOSED）、close 全清理（listener 计数断言 + 订阅清空）、handler
+      异常隔离
+
+验证（2026-09-30）：typecheck ✅ / test **525/525** ✅ / build ✅
+（SG-1 纯新增模块未触 UI/Gameplay —— E2E 留待 SG-5 UI 集成时全量回归）
+
+## 待办（后续 Stage）
+
+- SG-2 Signaling Server（Node + TS + ws）：房间生命周期 / peerToken / TTL 5~10min /
+  房间码生成（共享 RoomCode alphabet）/ 双人上限 / Host=P1 Guest=P2 角色固化 /
+  服务端测试矩阵（create/join/invalid/full/expiry/peer leave/offer-answer-candidate
+  relay/malformed/duplicate join/reconnect identity）
+- SG-3 RoomConnectionController（复用 OnlineConnectionController 的验证/交接语义）
+- SG-4 WebRTCTransport Trickle 改造 + SG-5 Room Connection UI + SG-6 TURN/coturn
+  + SG-7 失败 UX + SG-8 ICE Restart
 
 ---
 
