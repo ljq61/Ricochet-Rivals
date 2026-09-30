@@ -635,6 +635,11 @@ export class OnlineConnectionScene extends Phaser.Scene {
         prompt = 'Send the code to your friend — WAITING FOR OPPONENT…';
         visibleButtons.push('copy');
         break;
+      case RoomConnectionState.RECONNECTING_SIGNALING:
+        status = `ROOM CODE: ${this.roomController?.currentRoomCode ?? ''}`;
+        prompt = 'Reconnecting to matchmaking… Your room code is unchanged.';
+        visibleButtons.push('copy');
+        break;
       case RoomConnectionState.JOINING_ROOM:
         status = 'Joining room…';
         break;

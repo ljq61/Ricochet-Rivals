@@ -237,7 +237,7 @@ describe('RoomManager', () => {
     expect(room.roleOf(guestBack)).toBe('guest');
   });
 
-  it('11. host 断开：grace 内新 guest join → ROOM_EXPIRED（无主房间）；host 超窗未归 → sweep 删房', () => {
+  it('11. 等待分享：Host 后台超过 grace 可恢复原身份，waiting TTL 不刷新', () => {
     const clock = new FakeClock();
     const manager = makeManager(clock);
     const host = new FakeSignalingSocket('host');
@@ -250,12 +250,31 @@ describe('RoomManager', () => {
     if (newcomer.ok) return;
     expect(newcomer.code).toBe('ROOM_EXPIRED');
 
-    // 超窗 → sweep 删除（host-grace-elapsed）
+    // 等待配对的房间保留至原 TTL，不因分享时短暂断线提前删除。
     clock.advance(SLOT_GRACE_MS + 1);
+    expect(manager.sweep()).toEqual([]);
+    const expiresAt = room.expiresAt;
+    const resumed = manager.joinRoom(room.roomCode, hostToken, new FakeSignalingSocket('back'));
+    expect(resumed).toMatchObject({ ok: true, kind: 'resumed', role: 'host', peerToken: hostToken });
+    expect(room.expiresAt).toBe(expiresAt);
+    clock.advance(WAITING_TTL_MS - SLOT_GRACE_MS);
     const deleted = manager.sweep();
     expect(deleted.length).toBe(1);
-    expect(deleted[0]?.reason).toBe('host-grace-elapsed');
+    expect(deleted[0]?.reason).toBe('waiting-expired');
     expect(manager.roomCount).toBe(0);
-    void hostToken;
+  });
+
+  it('已配对房间仍按 Host grace 删除，即使断开的 Guest 席位也已释放', () => {
+    const clock = new FakeClock();
+    const manager = makeManager(clock);
+    const host = new FakeSignalingSocket('host');
+    const { room } = manager.createRoom(host);
+    const guest = new FakeSignalingSocket('guest');
+    expect(manager.joinRoom(room.roomCode, undefined, guest).ok).toBe(true);
+    room.detach(guest, clock.current());
+    room.detach(host, clock.current());
+    clock.advance(SLOT_GRACE_MS + 1);
+    expect(manager.sweep()).toMatchObject([{ reason: 'host-grace-elapsed' }]);
+    expect(manager.roomCount).toBe(0);
   });
 });

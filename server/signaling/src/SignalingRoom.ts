@@ -8,10 +8,11 @@ import type { RoomRole, SignalingSocket } from './socket';
  * Guest = P2。协议中不存在角色声明 —— 本类只按槽位寻址转发。
  *
  * 生命周期：
- * * waiting 截止（expiresAt）：从未有 Guest 绑定（guestSlot === null）且超时
+ * * waiting 截止（expiresAt）：从未有 Guest 绑定且超时
  *   → sweep 删除；Guest 一旦绑定过（含断开保留期），waiting 过期不再适用
  *   —— 房间存续由 socket 存续决定。
- * * Host 断开：slotGrace 内可持 hostToken 恢复；超窗 → sweep 删除
+ * * 等待分享：未配对 Host 断开仍保留至原 waiting TTL，token 可原位恢复。
+ * * 配对后 Host 断开：slotGrace 内可持 hostToken 恢复；超窗 → sweep 删除
  *   （Guest 已在断开瞬间收 PEER_LEFT）。
  * * Guest 断开：slotGrace 内可持 guestToken 恢复（席位保留，新 join 得
  *   ROOM_FULL）；超窗 → 槽释放，Host 可接新 Guest（新 token）。
@@ -32,6 +33,9 @@ export class SignalingRoom {
 
   private hostSlot: PeerSlot;
   private guestSlotValue: PeerSlot | null = null;
+  private hasPaired = false;
+  /** 首轮 OFFER 已转发后，不再对恢复 Host 补发初次配对事件。 */
+  negotiationStarted = false;
 
   constructor(options: {
     readonly roomCode: string;
@@ -96,6 +100,7 @@ export class SignalingRoom {
 
   /** 新 Guest 绑定（token 由 RoomManager 生成） */
   attachGuest(socket: SignalingSocket, token: string): void {
+    this.hasPaired = true;
     this.guestSlotValue = { token, socket, disconnectedAt: null };
   }
 
@@ -156,14 +161,14 @@ export class SignalingRoom {
   /**
    * 房间删除判定（sweep / join 时惰性检查用）：
    * * waiting-expired —— 从未配对且超 waiting TTL
-   * * host-grace-elapsed —— Host 断开超保留期（房间锚点已失）
+   * * host-grace-elapsed —— 配对后 Host 断开超保留期（房间锚点已失）
    */
   deleteReason(now: number, slotGraceMs: number): RoomDeleteReason | null {
-    if (this.guestSlotValue === null && now > this.expiresAt) {
+    if (!this.hasPaired && now > this.expiresAt) {
       return 'waiting-expired';
     }
     const hostDownSince = this.hostSlot.socket === null ? this.hostSlot.disconnectedAt : null;
-    if (hostDownSince !== null && now - hostDownSince > slotGraceMs) {
+    if (this.hasPaired && hostDownSince !== null && now - hostDownSince > slotGraceMs) {
       return 'host-grace-elapsed';
     }
     return null;

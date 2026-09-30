@@ -35,7 +35,7 @@ npm run typecheck
 |---|---|---|
 | `PORT` | `8787` | 监听端口 |
 | `SIGNALING_WAITING_TTL_MS` | `600000` | 房间未配对保留期（规格 5~10min；超时删除并通知 Host） |
-| `SIGNALING_SLOT_GRACE_MS` | `30000` | 断开后持 peerToken 原位重连窗口（Host 超窗 → 房间删除） |
+| `SIGNALING_SLOT_GRACE_MS` | `30000` | 已配对房间断开后的原位重连窗口（Host 超窗 → 房间删除）；未配对 Host 保留至原 waiting TTL |
 | `SIGNALING_SWEEP_INTERVAL_MS` | `15000` | 过期清扫周期 |
 | `SIGNALING_HEARTBEAT_INTERVAL_MS` | `5000` | 服务端 WS ping 周期（正数毫秒；浏览器协议层自动 pong） |
 | `SIGNALING_HEARTBEAT_TIMEOUT_MS` | `10000` | ping 后等待 pong 时限；超时 terminate 并释放半开 socket 槽位 |
@@ -55,7 +55,9 @@ npm run typecheck
   其迟到帧 / close 不影响新槽位。无有效 token 仍无法挤占在连席位。
 - 静默断网没有 FIN 时，ping/pong 最坏约 15s 清理旧连接，之后开始计算 grace。
   token 恢复不必等待 heartbeat。调整 heartbeat 参数应考虑单次 20s 的恢复窗口。
-- Host 断开 → Guest 收 `PEER_LEFT`；Host 在 grace 内未归 → 房间删除。
+- 未配对 Host 切去分享房间码时，断开的房间保留至原 waiting TTL（默认 10 分钟），持原 token 可恢复；重连不刷新有效期。
+- 配对后 Host 断开 → Guest 收 `PEER_LEFT`；Host 在 grace 内未归 → 房间删除。
+- 首轮 OFFER 尚未转发且 Guest 已在房内时，Host 重入在 `ROOM_JOINED` 后另收 `PEER_JOINED`，继续初次配对。已开始协商 / 对局的重入由既有 ICE Restart 接管。
 - 等待配对超过 TTL → 房间删除，Host 收 `ERROR ROOM_EXPIRED`。
   JOIN 触发的惰性过期与定时清扫使用同一通知 / 解绑路径。
 

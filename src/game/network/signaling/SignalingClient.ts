@@ -393,7 +393,7 @@ export class SignalingClient {
       case 'PEER_JOINED':
         if (this.clientState === SignalingClientState.ROOM_WAITING) {
           this.setState(SignalingClientState.PEER_FOUND);
-        } else {
+        } else if (this.clientState !== SignalingClientState.PEER_FOUND && this.clientState !== SignalingClientState.NEGOTIATING) {
           console.warn(`[SignalingClient] PEER_JOINED ignored (state: ${this.clientState})`);
         }
         break;

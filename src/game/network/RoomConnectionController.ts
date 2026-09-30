@@ -7,7 +7,7 @@ import {
   type RoomConnectionFailureReason,
 } from './RoomConnectionState';
 import { decodeSignaling } from './signaling/SignalingCodec';
-import { SignalingClient, SignalingError, type SignalingFailure } from './signaling/SignalingClient';
+import { SignalingClient, SignalingClientState, SignalingError, type SignalingFailure } from './signaling/SignalingClient';
 import type { SignalingIceServer, SignalingInboundMessage } from './signaling/SignalingMessage';
 import { WebRTCTransport, type WebRTCDiagnostics } from './WebRTCTransport';
 import type { WebRTCConfig } from './WebRTCConfig';
@@ -49,10 +49,13 @@ export interface RoomConnectionControllerOptions {
   readonly negotiationTimeoutMs?: number;
   /** CONNECTED 后 PONG 窗口（默认 120s：手机后台化税制，同 Manual 流） */
   readonly verificationTimeoutMs?: number;
+  /** 等待房间重入后的 ROOM_JOINED 预算（默认 8s） */
+  readonly signalingJoinTimeoutMs?: number;
 }
 
 const DEFAULT_NEGOTIATION_TIMEOUT_MS = 45_000;
 const DEFAULT_VERIFICATION_TIMEOUT_MS = 120_000;
+const DEFAULT_SIGNALING_JOIN_TIMEOUT_MS = 8_000;
 
 interface FlowDeferred {
   readonly promise: Promise<void>;
@@ -69,6 +72,7 @@ export class RoomConnectionController {
   private readonly options: RoomConnectionControllerOptions;
   private readonly negotiationTimeoutMs: number;
   private readonly verificationTimeoutMs: number;
+  private readonly signalingJoinTimeoutMs: number;
 
   private controllerState: RoomConnectionState = RoomConnectionState.IDLE;
   private failure: RoomConnectionFailure | null = null;
@@ -82,6 +86,37 @@ export class RoomConnectionController {
   private transport: WebRTCTransport | null = null;
   private manager: NetworkManager | null = null;
   private readonly cancels: Array<() => void> = [];
+  private readonly signalingCancels: Array<() => void> = [];
+  /** 等待 Host 新 socket 原位接管后才关闭旧 socket，避免先广播 PEER_LEFT。 */
+  private readonly retiringSignaling = new Set<SignalingClient>();
+  private signalingReconnectActive = false;
+  private signalingJoinTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly lifecycleDocument = typeof document === 'undefined' ? null : document;
+  private hadBackground = this.lifecycleDocument?.visibilityState === 'hidden';
+  private readonly visibilityHandler = (): void => {
+    if (this.lifecycleDocument?.visibilityState === 'hidden') {
+      this.hadBackground = true;
+      if (this.controllerState === RoomConnectionState.RECONNECTING_SIGNALING) {
+        this.clearSignalingJoinTimer();
+        // JOIN可能已完成服务器接管、ack尚未派发；此时关闭新socket会误报PEER_LEFT。
+      }
+      return;
+    }
+    if (this.hadBackground) {
+      this.hadBackground = false;
+      // iOS 可先恢复页面、随后才投递旧 WS 的 close；不信任其残留 OPEN 状态。
+      if (this.signalingReconnectActive && this.signaling?.state === SignalingClientState.CONNECTED) {
+        this.armSignalingJoinTimer();
+      } else {
+        if (this.signalingReconnectActive && this.signaling?.state === SignalingClientState.CONNECTING) {
+          // 尚未发送JOIN，安全重拨并重置可能在后台被冻结的WS-open预算。
+          this.destroyActiveSignaling();
+          this.signalingReconnectActive = false;
+        }
+        this.resumeWaitingRoom();
+      }
+    }
+  };
 
   private negotiationTimer: ReturnType<typeof setTimeout> | null = null;
   private verificationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -99,6 +134,8 @@ export class RoomConnectionController {
     this.options = options;
     this.negotiationTimeoutMs = options.negotiationTimeoutMs ?? DEFAULT_NEGOTIATION_TIMEOUT_MS;
     this.verificationTimeoutMs = options.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
+    this.signalingJoinTimeoutMs = options.signalingJoinTimeoutMs ?? DEFAULT_SIGNALING_JOIN_TIMEOUT_MS;
+    this.lifecycleDocument?.addEventListener('visibilitychange', this.visibilityHandler);
   }
 
   get currentState(): RoomConnectionState {
@@ -197,6 +234,7 @@ export class RoomConnectionController {
       return;
     }
     this.disposed = true;
+    this.lifecycleDocument?.removeEventListener('visibilitychange', this.visibilityHandler);
     this.destroyAttempt();
     this.stateHandlers.clear();
     this.failureHandlers.clear();
@@ -214,6 +252,7 @@ export class RoomConnectionController {
       return;
     }
     this.detached = true;
+    this.lifecycleDocument?.removeEventListener('visibilitychange', this.visibilityHandler);
     this.clearTimers();
     this.stateHandlers.clear();
     this.failureHandlers.clear();
@@ -251,14 +290,62 @@ export class RoomConnectionController {
   }
 
   /** SignalingClient 创建 + 订阅（消息分发 / 失败收口） */
-  private createAndWireSignaling(): SignalingClient {
+  private createAndWireSignaling(preserveCurrent = false): SignalingClient {
+    for (const cancel of this.signalingCancels.splice(0)) cancel();
+    if (preserveCurrent && this.signaling !== null) {
+      this.retiringSignaling.add(this.signaling);
+      this.signaling = null;
+    } else {
+      this.destroyActiveSignaling();
+    }
     const signaling = this.options.createSignalingClient();
     this.signaling = signaling;
-    this.cancels.push(
-      signaling.onMessage((message) => this.applySignalingMessage(message)),
-      signaling.onFailure((failure) => this.applySignalingFailure(failure)),
+    this.signalingCancels.push(
+      signaling.onMessage((message) => {
+        if (this.signaling === signaling) this.applySignalingMessage(message);
+      }),
+      signaling.onFailure((failure) => {
+        if (this.signaling === signaling) this.applySignalingFailure(failure);
+      }),
     );
     return signaling;
+  }
+
+  /** 只恢复尚未开始协商的 Host；已在协商中的 SDP 不可跨连接重放。 */
+  private resumeWaitingRoom(): void {
+    if (
+      this.role !== 'host' || this.roomCode === null || this.peerToken === null ||
+      (this.controllerState !== RoomConnectionState.ROOM_WAITING &&
+        this.controllerState !== RoomConnectionState.RECONNECTING_SIGNALING) ||
+      this.signalingReconnectActive || this.disposed || this.detached
+    ) {
+      return;
+    }
+    this.setState(RoomConnectionState.RECONNECTING_SIGNALING);
+    if (this.lifecycleDocument?.visibilityState === 'hidden') {
+      return; // 后台页面可被冻结：回前台后再拨号，不消耗恢复预算。
+    }
+    this.signalingReconnectActive = true;
+    void this.rejoinWaitingRoom(this.roomCode, this.peerToken);
+  }
+
+  private async rejoinWaitingRoom(roomCode: string, peerToken: string): Promise<void> {
+    let signaling: SignalingClient | null = null;
+    try {
+      signaling = this.createAndWireSignaling(true);
+      await signaling.connect();
+      if (this.signaling !== signaling || this.controllerState !== RoomConnectionState.RECONNECTING_SIGNALING) {
+        return; // Back / retry / shutdown 后旧拨号不得加入或影响下一次尝试。
+      }
+      this.armSignalingJoinTimer();
+      signaling.joinRoom(roomCode, peerToken);
+    } catch (error) {
+      if (signaling !== null && this.signaling !== signaling) return;
+      this.fail({
+        reason: 'SIGNALING_FAILED',
+        detail: `waiting room rejoin failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
   }
 
   /** 入站信令分发（状态迁移 + 协商动作） */
@@ -276,6 +363,20 @@ export class RoomConnectionController {
         this.resolveFlowDeferred();
         return;
       case 'ROOM_JOINED':
+        if (this.role === 'host' && this.controllerState === RoomConnectionState.RECONNECTING_SIGNALING) {
+          if (message.roomCode !== this.roomCode || message.peerToken !== this.peerToken) {
+            this.fail({ reason: 'SETUP_FAILED', detail: 'waiting room resume identity mismatch' });
+            return;
+          }
+          this.clearSignalingJoinTimer();
+          this.signalingReconnectActive = false;
+          this.closeRetiringSignaling();
+          // 还没有交换 SDP：替换旧 PC/manager，使用本次 ack 刷新的 TURN 凭据。
+          this.destroyTransportAndManager();
+          this.acceptRoomAck(message.roomCode, message.peerToken, message.iceServers);
+          this.setState(RoomConnectionState.ROOM_WAITING);
+          return;
+        }
         if (this.role !== 'guest' || this.controllerState !== RoomConnectionState.JOINING_ROOM) {
           console.warn(
             `[RoomConnection] ROOM_JOINED ignored (role: ${this.role}, state: ${this.controllerState})`,
@@ -291,6 +392,9 @@ export class RoomConnectionController {
         if (this.role !== 'host' || this.controllerState !== RoomConnectionState.ROOM_WAITING) {
           console.warn(`[RoomConnection] PEER_JOINED ignored (state: ${this.controllerState})`);
           return;
+        }
+        if (this.lifecycleDocument?.visibilityState === 'hidden') {
+          return; // 回前台 token 重入后，服务器会重新通知仍在房内的 Guest。
         }
         this.beginNegotiationWindow();
         this.setState(RoomConnectionState.NEGOTIATING);
@@ -319,6 +423,11 @@ export class RoomConnectionController {
         console.debug('[RoomConnection] remote ICE_END received');
         return;
       case 'PEER_LEFT':
+        if (this.role === 'host' &&
+          (this.controllerState === RoomConnectionState.ROOM_WAITING ||
+            this.controllerState === RoomConnectionState.RECONNECTING_SIGNALING)) {
+          return; // 尚未发 OFFER 的 Guest 离开不应销毁 Host 的等待房间。
+        }
         // 协商期对端离开 = 连接失败；VERIFIED 后归 Phase 16 断线链（本层不越权）
         if (!this.verified && this.controllerState !== RoomConnectionState.CLOSED) {
           this.fail({ reason: 'PEER_LEFT', detail: 'opponent left during negotiation' });
@@ -333,6 +442,19 @@ export class RoomConnectionController {
   private applySignalingFailure(failure: SignalingFailure): void {
     if (failure.reason === 'SERVER_ERROR') {
       this.fail({ reason: 'SERVER_ERROR', code: failure.code, detail: failure.detail });
+      return;
+    }
+    if (
+      this.role === 'host' &&
+      (this.controllerState === RoomConnectionState.ROOM_WAITING ||
+        this.controllerState === RoomConnectionState.RECONNECTING_SIGNALING) &&
+      ((failure.reason === 'WS_CLOSED' && !this.signalingReconnectActive) ||
+        this.lifecycleDocument?.visibilityState === 'hidden')
+    ) {
+      this.clearSignalingJoinTimer();
+      this.signalingReconnectActive = false;
+      this.destroyActiveSignaling();
+      this.resumeWaitingRoom();
       return;
     }
     this.fail({
@@ -590,6 +712,10 @@ export class RoomConnectionController {
     for (const cancel of this.cancels) {
       cancel();
     }
+    for (const cancel of this.signalingCancels.splice(0)) {
+      cancel();
+    }
+    this.lifecycleDocument?.removeEventListener('visibilitychange', this.visibilityHandler);
     this.signaling = null;
     this.transport = null;
     this.manager = null;
@@ -632,6 +758,32 @@ export class RoomConnectionController {
   /** 尝试资源全清（signaling / transport / manager / 订阅）；不改变状态机 */
   private destroyAttempt(): void {
     this.clearTimers();
+    this.signalingReconnectActive = false;
+    this.destroyTransportAndManager();
+    this.destroyActiveSignaling();
+    this.closeRetiringSignaling();
+    this.role = null;
+    this.roomCode = null;
+    this.peerToken = null;
+    this.iceServers = [];
+    this.rejectFlowDeferred('attempt destroyed');
+    this.flowDeferred = null;
+  }
+
+  private destroyActiveSignaling(): void {
+    for (const cancel of this.signalingCancels.splice(0)) {
+      cancel();
+    }
+    this.signaling?.close();
+    this.signaling = null;
+  }
+
+  private closeRetiringSignaling(): void {
+    for (const signaling of this.retiringSignaling) signaling.close();
+    this.retiringSignaling.clear();
+  }
+
+  private destroyTransportAndManager(): void {
     for (const cancel of this.cancels) {
       cancel();
     }
@@ -640,14 +792,6 @@ export class RoomConnectionController {
     this.manager = null;
     this.transport?.close();
     this.transport = null;
-    this.signaling?.close();
-    this.signaling = null;
-    this.role = null;
-    this.roomCode = null;
-    this.peerToken = null;
-    this.iceServers = [];
-    this.rejectFlowDeferred('attempt destroyed');
-    this.flowDeferred = null;
   }
 
   private beginNegotiationWindow(): void {
@@ -667,11 +811,27 @@ export class RoomConnectionController {
   }
 
   private clearTimers(): void {
+    this.clearSignalingJoinTimer();
     this.clearNegotiationTimer();
     if (this.verificationTimer !== null) {
       clearTimeout(this.verificationTimer);
       this.verificationTimer = null;
     }
+  }
+
+  private clearSignalingJoinTimer(): void {
+    if (this.signalingJoinTimer !== null) {
+      clearTimeout(this.signalingJoinTimer);
+      this.signalingJoinTimer = null;
+    }
+  }
+
+  private armSignalingJoinTimer(): void {
+    this.clearSignalingJoinTimer();
+    if (this.lifecycleDocument?.visibilityState === 'hidden') return;
+    this.signalingJoinTimer = setTimeout(() => {
+      this.fail({ reason: 'SIGNALING_FAILED', detail: 'waiting room rejoin timed out' });
+    }, this.signalingJoinTimeoutMs);
   }
 
   // ---- 流程 promise / 状态机 ------------------------------------------------

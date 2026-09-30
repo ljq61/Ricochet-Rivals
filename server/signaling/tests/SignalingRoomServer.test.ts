@@ -187,7 +187,9 @@ describe('SignalingRoomServer', () => {
     expect(guestBack.lastType()).toBe('PEER_LEFT');
     const hostBack = new FakeSignalingSocket('host-back');
     server.handleMessage(hostBack, clientFrame({ type: 'JOIN_ROOM', roomCode, peerToken: hostToken }));
-    expect(hostBack.lastFrame()).toMatchObject({ type: 'ROOM_JOINED', peerToken: hostToken });
+    expect(hostBack.frames()).toMatchObject([
+      { type: 'ROOM_JOINED', peerToken: hostToken }, { type: 'PEER_JOINED' },
+    ]);
     expect(guestBack.lastType()).toBe('PEER_JOINED');
   });
 
@@ -289,7 +291,7 @@ describe('SignalingRoomServer', () => {
       type: 'JOIN_ROOM', roomCode, peerToken: role === 'host' ? hostToken : guestToken,
     }));
     expect(closeCalls).toBe(1);
-    expect(replacement.lastType()).toBe('ROOM_JOINED');
+    expect(replacement.frames()[0]).toMatchObject({ type: 'ROOM_JOINED' });
     expect(peer.frames()).toMatchObject([{ type: 'PEER_JOINED' }]);
     expect(server.boundSocketCount).toBe(2);
     peer.clear();
@@ -303,5 +305,23 @@ describe('SignalingRoomServer', () => {
     expect(peer.sent).toHaveLength(0);
     server.handleMessage(replacement, clientFrame({ type: 'OFFER', sdp: 'live-offer' }));
     expect(peer.lastFrame()).toMatchObject({ type: 'OFFER', sdp: 'live-offer' });
+  });
+
+  it('Host 等待中恢复：ack 后补初次 PEER_JOINED；首轮 OFFER 已发送后不重复触发', () => {
+    const clock = new FakeClock();
+    const { server, host, guest, roomCode, hostToken } = makePairedRoom(clock);
+    const hostBack = new FakeSignalingSocket('host-back');
+    server.handleMessage(hostBack, clientFrame({ type: 'JOIN_ROOM', roomCode, peerToken: hostToken }));
+    expect(hostBack.frames()).toMatchObject([
+      { type: 'ROOM_JOINED', roomCode, peerToken: hostToken }, { type: 'PEER_JOINED' },
+    ]);
+    server.handleDisconnect(host);
+    guest.clear();
+    server.handleMessage(hostBack, clientFrame({ type: 'OFFER', sdp: 'first-offer' }));
+    expect(guest.lastFrame()).toMatchObject({ type: 'OFFER', sdp: 'first-offer' });
+    const battleResume = new FakeSignalingSocket('battle-resume');
+    server.handleMessage(battleResume, clientFrame({ type: 'JOIN_ROOM', roomCode, peerToken: hostToken }));
+    expect(battleResume.frames()).toMatchObject([{ type: 'ROOM_JOINED', roomCode, peerToken: hostToken }]);
+    expect(battleResume.frames()).toHaveLength(1);
   });
 });

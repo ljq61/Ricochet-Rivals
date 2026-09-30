@@ -2181,6 +2181,52 @@ async function runOnlineRoom(browser) {
       roomCode,
     );
 
+    // 手机分享：后台 WS 关闭超过配对后的 grace，回前台仍恢复同一等待房间。
+    // 仅变尺寸/DPR，避免 Puppeteer 切换 isMobile 导致整页重载丢失测试房间。
+    await pageHost.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
+    const previousSocketCount = await pageHost.evaluate(() => {
+      window.__RR_E2E_VISIBILITY__ = 'hidden';
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true, get: () => window.__RR_E2E_VISIBILITY__,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+      const sockets = window.__RR_E2E_SIGNALING__;
+      sockets.at(-1).close();
+      return sockets.length;
+    });
+    await sleep(2100); // 超过测试服务端的 1500ms grace + 200ms sweep。
+    const backgroundRoom = await dbg(pageHost);
+    check('分享期间信令中断保留房间码，不立即失败',
+      backgroundRoom.roomState === 'RECONNECTING_SIGNALING' && backgroundRoom.roomCode === roomCode);
+    await pageHost.evaluate(() => {
+      window.__RR_E2E_VISIBILITY__ = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(pageHost, async () => (await dbg(pageHost)).roomState === 'ROOM_WAITING' &&
+      await pageHost.evaluate(count => window.__RR_E2E_SIGNALING__.length > count &&
+        window.__RR_E2E_SIGNALING__.at(-1).readyState === WebSocket.OPEN, previousSocketCount),
+    15000, '分享后同码恢复等待房间');
+    check('手机切回后新建信令，恢复同码等待和 COPY',
+      (await dbg(pageHost)).roomCode === roomCode && (await dbg(pageHost)).statusText.includes(roomCode));
+
+    // 切回来时旧 WS 可能仍报告 OPEN；主动 token 接管，不等待旧 close 事件。
+    const openSocketCount = await pageHost.evaluate(() => {
+      const count = window.__RR_E2E_SIGNALING__.length;
+      window.__RR_E2E_VISIBILITY__ = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.__RR_E2E_VISIBILITY__ = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+      return count;
+    });
+    await waitFor(pageHost, async () => (await dbg(pageHost)).roomState === 'ROOM_WAITING' &&
+      await pageHost.evaluate(count => window.__RR_E2E_SIGNALING__.length > count &&
+        window.__RR_E2E_SIGNALING__[count - 1].readyState === WebSocket.CLOSED, openSocketCount),
+    15000, '旧 OPEN socket 的同码接管');
+    check('立即切回：旧 OPEN 信令安全接管且不重复建房', (await dbg(pageHost)).roomCode === roomCode);
+    await pageHost.evaluate(() => { delete document.visibilityState; });
+    await pageHost.setViewport({ width: 1280, height: 800 });
+    await pageHost.bringToFront();
+
     // —— SG-7 失败 UX 全链路：错误码 → 分类文案 → TRY AGAIN → 非法码 → 输入保留 → 真码直连 ——
     await clickMenuButton(pageGuest, 'join');
     await pageGuest.evaluate(() => window.__RR_DEBUG__.setInputText('ZZZZZ9'));
@@ -2224,8 +2270,24 @@ async function runOnlineRoom(browser) {
     );
 
     // 输入保留路径：直接改真码再按 JOIN（onJoinConfirm 内 retry + joinRoom）→ 正常配对
+    // 好友也可能在 Host 仍在微信时 JOIN：恢复不得先关闭旧 WS 令 Guest 误判离场。
+    await pageHost.evaluate(() => {
+      window.__RR_E2E_VISIBILITY__ = 'hidden';
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true, get: () => window.__RR_E2E_VISIBILITY__,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
     await pageGuest.evaluate((code) => window.__RR_DEBUG__.setInputText(code), roomCode);
     await clickMenuButton(pageGuest, 'joinConfirm');
+    await waitFor(pageGuest, async () => (await dbg(pageGuest)).roomState === 'NEGOTIATING',
+      5000, 'Guest 在 Host 分享后台时加入');
+    check('Host 后台收到好友加入，保留等待状态而不在后台交换 SDP',
+      (await dbg(pageHost)).roomState === 'ROOM_WAITING');
+    await pageHost.evaluate(() => {
+      window.__RR_E2E_VISIBILITY__ = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
     const verifiedHost = await waitFor(
       pageHost,
       async () => (await dbg(pageHost)).roomState === 'VERIFIED',
@@ -2243,6 +2305,8 @@ async function runOnlineRoom(browser) {
       verifiedHost && verifiedGuest,
       `room=${roomCode}`,
     );
+    check('好友已在后台期加入：Host 同码恢复后双端完成首次配对', verifiedHost && verifiedGuest);
+    await pageHost.evaluate(() => { delete document.visibilityState; });
 
     // SG-6 诊断：真实浏览器 getStats → selected pair + 直连判定（本地 host 对）
     const diag = await pageHost.evaluate(() => window.__RR_DEBUG__.awaitRtcDiagnostics());

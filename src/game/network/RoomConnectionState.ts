@@ -19,6 +19,8 @@ export enum RoomConnectionState {
   IDLE = 'IDLE',
   /** Signaling WS 拨号中 */
   CONNECTING_SIGNALING = 'CONNECTING_SIGNALING',
+  /** Host 等待房间：后台返回后用原 roomCode/peerToken 恢复信令 */
+  RECONNECTING_SIGNALING = 'RECONNECTING_SIGNALING',
   /** Host：CREATE_ROOM 已发，等 ROOM_CREATED */
   CREATING_ROOM = 'CREATING_ROOM',
   /** Host：房间已建，展示房间码等对手（Server TTL 到点推 ERROR） */

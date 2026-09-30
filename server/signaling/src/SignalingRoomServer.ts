@@ -117,6 +117,11 @@ export class SignalingRoomServer {
         this.sendRoomAck(socket, 'ROOM_JOINED', outcome.room, outcome.peerToken);
         if (outcome.notifyPeer !== null) {
           outcome.notifyPeer.send(encodeSignalingInboundMessage({ type: 'PEER_JOINED' }));
+          // 手机后台期间 Guest 可能已加入，但 Host 没有处理首次配对事件。
+          // ack 必须先到；已启动协商/对局的恢复仍由既有 ICE Restart 接管。
+          if (outcome.kind === 'resumed' && outcome.role === 'host' && !outcome.room.negotiationStarted) {
+            socket.send(encodeSignalingInboundMessage({ type: 'PEER_JOINED' }));
+          }
         }
         return;
       }
@@ -133,6 +138,9 @@ export class SignalingRoomServer {
         if (peer === null) {
           console.debug(`[SignalingRoomServer] relay dropped (peer gone): ${message.type}`);
           return;
+        }
+        if (message.type === 'OFFER' && binding.role === 'host') {
+          binding.room.negotiationStarted = true;
         }
         peer.send(encodeSignalingInboundMessage(toRelayInbound(message)));
         return;
