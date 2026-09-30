@@ -2084,8 +2084,49 @@ async function runOnlineRoom(browser) {
       roomCode,
     );
 
-    // Guest：JOIN GAME → 输入房间码 → JOIN → 自动协商（零 SDP 露出）
+    // —— SG-7 失败 UX 全链路：错误码 → 分类文案 → TRY AGAIN → 非法码 → 输入保留 → 真码直连 ——
     await clickMenuButton(pageGuest, 'join');
+    await pageGuest.evaluate(() => window.__RR_DEBUG__.setInputText('ZZZZZ9'));
+    await clickMenuButton(pageGuest, 'joinConfirm');
+    const notFound = await waitFor(
+      pageGuest,
+      async () => {
+        const d = await dbg(pageGuest);
+        return d.roomState === 'FAILED' && d.roomFailure?.reason === 'SERVER_ERROR' && d.roomFailure?.code === 'ROOM_NOT_FOUND';
+      },
+      10_000,
+      'Guest 不存在房间失败',
+    );
+    const notFoundText = (await dbg(pageGuest)).statusText ?? '';
+    check(
+      'SG-7 失败分类：ROOM_NOT_FOUND（SERVER_ERROR.code 保留）+ 简洁文案 + Debug reason 后缀',
+      notFound && notFoundText.includes('not found') && notFoundText.includes('[SERVER_ERROR:ROOM_NOT_FOUND]'),
+      notFoundText,
+    );
+
+    // TRY AGAIN → IDLE → 非法码（含字符 1）→ INVALID_ROOM_CODE + 输入保留
+    await clickMenuButton(pageGuest, 'tryAgain');
+    await waitFor(pageGuest, async () => (await dbg(pageGuest)).roomState === 'IDLE', 5000, 'Guest retry 回 IDLE');
+    await clickMenuButton(pageGuest, 'join');
+    await pageGuest.evaluate(() => window.__RR_DEBUG__.setInputText('ABC1EF'));
+    await clickMenuButton(pageGuest, 'joinConfirm');
+    const invalidCode = await waitFor(
+      pageGuest,
+      async () => {
+        const d = await dbg(pageGuest);
+        return d.roomState === 'FAILED' && d.roomFailure?.reason === 'INVALID_ROOM_CODE';
+      },
+      5000,
+      'Guest 非法码失败',
+    );
+    const invalidState = await dbg(pageGuest);
+    check(
+      'SG-7 失败分类：INVALID_ROOM_CODE + 输入保留（textarea 带码、JOIN 可直接重试）',
+      invalidCode && (invalidState.statusText ?? '').includes('Invalid room code') && invalidState.inputText === 'ABC1EF',
+      invalidState.statusText ?? '',
+    );
+
+    // 输入保留路径：直接改真码再按 JOIN（onJoinConfirm 内 retry + joinRoom）→ 正常配对
     await pageGuest.evaluate((code) => window.__RR_DEBUG__.setInputText(code), roomCode);
     await clickMenuButton(pageGuest, 'joinConfirm');
     const verifiedHost = await waitFor(

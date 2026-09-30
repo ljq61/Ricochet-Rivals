@@ -1,7 +1,11 @@
 import { NetworkManager, type PingPongPayload } from './NetworkManager';
 import { OnlineSession } from './OnlineSession';
 import type { PeerRole } from './PeerRole';
-import { RoomConnectionState, type RoomConnectionFailure } from './RoomConnectionState';
+import {
+  RoomConnectionState,
+  type RoomConnectionFailure,
+  type RoomConnectionFailureReason,
+} from './RoomConnectionState';
 import { decodeSignaling } from './signaling/SignalingCodec';
 import { SignalingClient, SignalingError, type SignalingFailure } from './signaling/SignalingClient';
 import type { SignalingIceServer, SignalingInboundMessage } from './signaling/SignalingMessage';
@@ -371,10 +375,10 @@ export class RoomConnectionController {
     this.cancels.push(
       this.manager.onPong((_envelope: { payload: PingPongPayload }) => this.handleVerified()),
       this.manager.onDisconnect((reason) => {
-        // 预 VERIFIED 的任何通道中断 = 连接失败（协商期 ICE failed / 连接期对端关闭）
+        // 预 VERIFIED 的任何通道中断 = 连接失败；reason 按 SG-7 分类
         if (!this.verified) {
           this.fail({
-            reason: 'CONNECT_FAILED',
+            reason: this.classifyTransportLoss(reason ?? 'unknown'),
             detail: `channel lost before verification (${reason ?? 'unknown'})`,
           });
         }
@@ -392,6 +396,22 @@ export class RoomConnectionController {
         signaling.sendIceCandidate(candidate);
       }),
     );
+  }
+
+  /**
+   * SG-7 失败分类：transport 级丢失原因 → ICE_FAILED / TURN_UNAVAILABLE /
+   * DATA_CHANNEL_FAILED。ICE/CONNECTION 系 = ICE 协商失败（TURN URL 采集错误
+   * 优先归 TURN_UNAVAILABLE —— 中继不可达是严格网络下的可操作诊断）；
+   * 其余（CHANNEL_CLOSED/ERROR、超时）归 DATA_CHANNEL_FAILED。
+   */
+  private classifyTransportLoss(lossDetail: string): RoomConnectionFailureReason {
+    if (this.transport?.hasTurnCandidateErrors === true) {
+      return 'TURN_UNAVAILABLE';
+    }
+    if (lossDetail.includes('ICE') || lossDetail.includes('CONNECTION_FAILED')) {
+      return 'ICE_FAILED';
+    }
+    return 'DATA_CHANNEL_FAILED';
   }
 
   /** 连接期 matchId：双端由同一 roomCode 确定性推导（真实对局 matchId 由 GAME_START 分配） */
@@ -505,7 +525,7 @@ export class RoomConnectionController {
     }
     const remainingMs = this.negotiationDeadline - Date.now();
     if (remainingMs <= 0) {
-      this.fail({ reason: 'CONNECT_FAILED', detail: 'negotiation deadline exceeded' });
+      this.fail({ reason: 'DATA_CHANNEL_FAILED', detail: 'negotiation deadline exceeded' });
       return;
     }
     this.clearNegotiationTimer(); // 预算移交 transport.connect 内部 timer
@@ -514,8 +534,10 @@ export class RoomConnectionController {
       await transport.connect(remainingMs);
     } catch (error) {
       if (this.controllerState !== RoomConnectionState.FAILED) {
+        // connect 期间的 ICE failed 经 handleConnectionLost 记录 lastLossReason
+        //（超时无丢失 = null → DATA_CHANNEL_FAILED）
         this.fail({
-          reason: 'CONNECT_FAILED',
+          reason: this.classifyTransportLoss(transport.lastLossReason ?? ''),
           detail: `data channel failed: ${error instanceof Error ? error.message : String(error)}`,
         });
       }
@@ -621,7 +643,7 @@ export class RoomConnectionController {
     this.negotiationDeadline = Date.now() + this.negotiationTimeoutMs;
     this.negotiationTimer = setTimeout(() => {
       if (!this.verified) {
-        this.fail({ reason: 'CONNECT_FAILED', detail: 'negotiation window timed out' });
+        this.fail({ reason: 'DATA_CHANNEL_FAILED', detail: 'negotiation window timed out' });
       }
     }, this.negotiationTimeoutMs);
   }

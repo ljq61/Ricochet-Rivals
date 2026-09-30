@@ -96,6 +96,18 @@ export class WebRTCTransport implements NetworkTransport {
   /** SG-6 诊断：icecandidateerror 计数与最近错误（TURN 不可达排查） */
   private iceCandidateErrorCount = 0;
   private lastIceCandidateError: string | null = null;
+  /** SG-7：最近一次连接丢失的 transport 级原因（handleConnectionLost 记录；超时无丢失为 null） */
+  private lastLossReasonValue: string | null = null;
+
+  /** SG-7：最近连接丢失原因（'ICE_FAILED' / 'CHANNEL_CLOSED' / …；超时为 null）——失败分类输入 */
+  get lastLossReason(): string | null {
+    return this.lastLossReasonValue;
+  }
+
+  /** SG-7：ICE candidate 采集是否命中 TURN URL 错误（中继不可达判定） */
+  get hasTurnCandidateErrors(): boolean {
+    return this.iceCandidateErrorCount > 0 && (this.lastIceCandidateError?.includes('turn:') ?? false);
+  }
 
   constructor(options: WebRTCTransportOptions) {
     const config = options.config ?? DEFAULT_WEBRTC_CONFIG;
@@ -564,6 +576,7 @@ export class WebRTCTransport implements NetworkTransport {
   }
 
   private handleConnectionLost(targetState: TransportState, reason: string): void {
+    this.lastLossReasonValue = reason; // SG-7：失败分类输入（超时路径不经过此处 = null）
     if (this.transportState === TransportState.CLOSED) {
       return;
     }

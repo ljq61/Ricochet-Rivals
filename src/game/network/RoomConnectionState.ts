@@ -38,10 +38,11 @@ export enum RoomConnectionState {
 }
 
 /**
- * 失败分类（SG-7 失败 UX 的原始输入；正式文案由 Scene 映射）。
- * 对应规格内部区分：SIGNALING_FAILED / ROOM_NOT_FOUND·ROOM_FULL·…（SERVER_ERROR
- * 的 code）/ OFFER_FAILED / ANSWER_FAILED / PEER_LEFT / DATA_CHANNEL_FAILED
- * （CONNECT_FAILED）/ VERIFICATION_TIMEOUT。
+ * 失败分类（SG-7 规格：内部至少区分 SIGNALING_FAILED / ROOM_NOT_FOUND·
+ * ROOM_FULL·…（SERVER_ERROR 的 code 细分）/ OFFER_FAILED / ANSWER_FAILED /
+ * ICE_FAILED / TURN_UNAVAILABLE / DATA_CHANNEL_FAILED / VERIFICATION_TIMEOUT /
+ * PEER_LEFT）。正式 UI 文案由 Scene 映射；技术 reason/code/detail 进
+ * Debug 句柄与 console。
  */
 export type RoomConnectionFailureReason =
   /** Signaling WS 拨号失败 / 超时 / 中断（携带 SignalingFailure reason） */
@@ -58,8 +59,12 @@ export type RoomConnectionFailureReason =
   | 'ANSWER_FAILED'
   /** 协商期对端离开（PEER_LEFT / 房间被服务器终止） */
   | 'PEER_LEFT'
-  /** 协商 deadline 超时 / DataChannel 未 open / 通道中断（DATA_CHANNEL_FAILED） */
-  | 'CONNECT_FAILED'
+  /** ICE 协商失败（peer connection / ICE 状态 failed —— NAT 或防火墙阻断） */
+  | 'ICE_FAILED'
+  /** ICE 失败且 ICE candidate 错误命中 TURN URL —— 中继不可达（严格网络下典型） */
+  | 'TURN_UNAVAILABLE'
+  /** 协商 deadline 超时 / DataChannel 未 open / 通道层中断（channel closed·error） */
+  | 'DATA_CHANNEL_FAILED'
   /** CONNECTED 后验证窗口内无 PONG */
   | 'VERIFICATION_TIMEOUT';
 

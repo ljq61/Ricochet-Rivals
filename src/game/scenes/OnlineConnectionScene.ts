@@ -56,7 +56,7 @@ function resolveSignalingUrl(): string {
   return 'ws://127.0.0.1:8787';
 }
 
-/** SG-7 前置：Room 流失败分类 → 简洁用户文案（技术细节只进 console/debug） */
+/** SG-7：Room 流失败分类 → 简洁用户文案（技术细节只进 Debug 句柄 / console） */
 const ROOM_FAILURE_TEXT: Record<RoomConnectionFailureReason, string> = {
   SIGNALING_FAILED: 'Cannot reach the matchmaking server',
   SERVER_ERROR: 'Matchmaking error — try again',
@@ -65,7 +65,9 @@ const ROOM_FAILURE_TEXT: Record<RoomConnectionFailureReason, string> = {
   OFFER_FAILED: 'Connection setup failed',
   ANSWER_FAILED: 'Connection setup failed',
   PEER_LEFT: 'Opponent left',
-  CONNECT_FAILED: 'Connection failed',
+  ICE_FAILED: 'Connection failed — your network may block WebRTC',
+  TURN_UNAVAILABLE: 'Relay server unavailable — cannot reach opponent',
+  DATA_CHANNEL_FAILED: 'Connection failed',
   VERIFICATION_TIMEOUT: 'Connection unstable — verification failed',
 };
 
@@ -652,14 +654,16 @@ export class OnlineConnectionScene extends Phaser.Scene {
         visibleButtons.push('enterBattle', 'backToMenu');
         break;
       case RoomConnectionState.FAILED: {
+        const failure = this.roomController?.lastFailure ?? null;
         status = this.roomFailureMessage ?? 'Connection failed';
+        // Debug Mode 输出具体 reason（规格 SG-7）：正式构建保持简洁
+        if (DEBUG_GAME && failure !== null) {
+          status += ` [${failure.reason}${failure.code !== undefined ? `:${failure.code}` : ''}]`;
+        }
         visibleButtons.length = 0;
         visibleButtons.push('tryAgain', 'back');
         // 非法码：保留输入直接改码重试（SG-5 UX：不强迫重开输入框）
-        if (
-          this.roomController?.lastFailure?.reason === 'INVALID_ROOM_CODE' &&
-          this.joinInputVisible
-        ) {
+        if (failure?.reason === 'INVALID_ROOM_CODE' && this.joinInputVisible) {
           visibleButtons.push('joinConfirm');
           showTextarea = true;
         }
@@ -936,6 +940,14 @@ export class OnlineConnectionScene extends Phaser.Scene {
       },
       get roomFailureReason(): string | null {
         return self.roomController?.lastFailure?.reason ?? null;
+      },
+      /** SG-7：完整失败对象（reason + code + detail —— Debug Mode 具体输出） */
+      get roomFailure(): RoomConnectionFailure | null {
+        return self.roomController?.lastFailure ?? null;
+      },
+      /** SG-7：当前状态行文案（E2E 断言用户可见文本用） */
+      get statusText(): string {
+        return self.statusLine.text;
       },
       get flow(): string {
         return self.useManualFlow() ? 'manual' : 'room';

@@ -298,7 +298,7 @@ describe('RoomConnectionController', () => {
     expect(h.ws.sentFrames().filter((f) => f['type'] === 'ICE_CANDIDATE').length).toBe(0);
   });
 
-  it('7. CONNECT_FAILED：协商窗口超时（PEER_JOINED 后无 ANSWER）→ FAILED', async () => {
+  it('7. DATA_CHANNEL_FAILED：协商窗口超时（PEER_JOINED 后无 ANSWER）→ FAILED', async () => {
     const h = makeHarness({ negotiationTimeoutMs: 50 });
     const pending = h.controller.createRoom();
     h.ws.simulateOpen();
@@ -312,11 +312,11 @@ describe('RoomConnectionController', () => {
     await new Promise((resolve) => setTimeout(resolve, 90));
 
     expect(h.controller.currentState).toBe(RoomConnectionState.FAILED);
-    expect(h.controller.lastFailure?.reason).toBe('CONNECT_FAILED');
+    expect(h.controller.lastFailure?.reason).toBe('DATA_CHANNEL_FAILED');
     expect(h.controller.lastFailure?.detail).toContain('negotiation window');
   });
 
-  it('8. CONNECT_FAILED：ANSWER 已应用但 DataChannel 永不 open → transport 超时 reject', async () => {
+  it('8. DATA_CHANNEL_FAILED：ANSWER 已应用但 DataChannel 永不 open → transport 超时（无丢失原因）', async () => {
     const h = makeHarness({ negotiationTimeoutMs: 80 });
     const pending = h.controller.createRoom();
     h.ws.simulateOpen();
@@ -331,7 +331,7 @@ describe('RoomConnectionController', () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     expect(h.controller.currentState).toBe(RoomConnectionState.FAILED);
-    expect(h.controller.lastFailure?.reason).toBe('CONNECT_FAILED');
+    expect(h.controller.lastFailure?.reason).toBe('DATA_CHANNEL_FAILED');
     expect(h.controller.lastFailure?.detail).toContain('data channel failed');
   });
 
@@ -344,7 +344,7 @@ describe('RoomConnectionController', () => {
     expect(h.controller.lastFailure?.reason).toBe('VERIFICATION_TIMEOUT');
   });
 
-  it('10. CONNECT_FAILED：验证前通道中断（对端关闭）→ FAILED（含 reason 细节）', async () => {
+  it('10. DATA_CHANNEL_FAILED：验证前通道中断（对端关闭）→ FAILED（含 reason 细节）', async () => {
     const h = makeHarness();
     await hostAtConnected(h);
     const channel = h.pc.dataChannels[0];
@@ -355,8 +355,50 @@ describe('RoomConnectionController', () => {
     await tick();
 
     expect(h.controller.currentState).toBe(RoomConnectionState.FAILED);
-    expect(h.controller.lastFailure?.reason).toBe('CONNECT_FAILED');
+    expect(h.controller.lastFailure?.reason).toBe('DATA_CHANNEL_FAILED');
     expect(h.controller.lastFailure?.detail).toContain('CHANNEL_CLOSED');
+  });
+
+  it('15. ICE_FAILED：connect 期间 peer connection failed → 按丢失原因分类', async () => {
+    const h = makeHarness();
+    const pending = h.controller.createRoom();
+    h.ws.simulateOpen();
+    await tick();
+    h.ws.serverSend(roomAckFrame('ROOM_CREATED'));
+    await pending;
+    h.ws.serverSend(frame({ type: 'PEER_JOINED' }));
+    await tick();
+    h.pc.completeIceGathering();
+    await tick();
+    h.ws.serverSend(frame({ type: 'ANSWER', sdp: 'fake:answer-sdp' }));
+    await tick(); // connect pending 中
+    h.pc.failConnection(); // handleConnectionLost → lastLossReason 'CONNECTION_FAILED'
+    await tick();
+
+    expect(h.controller.currentState).toBe(RoomConnectionState.FAILED);
+    expect(h.controller.lastFailure?.reason).toBe('ICE_FAILED');
+  });
+
+  it('16. TURN_UNAVAILABLE：ICE 失败且 candidate 错误命中 turn: URL → 中继不可达', async () => {
+    const h = makeHarness();
+    const pending = h.controller.createRoom();
+    h.ws.simulateOpen();
+    await tick();
+    h.ws.serverSend(roomAckFrame('ROOM_CREATED'));
+    await pending;
+    h.ws.serverSend(frame({ type: 'PEER_JOINED' }));
+    await tick();
+    h.pc.completeIceGathering();
+    await tick();
+    // TURN 采集失败（firewall 丢弃 relay）
+    h.pc.emit('icecandidateerror', { url: 'turn:turn.example.com:3478?transport=udp', errorCode: 401 });
+    h.ws.serverSend(frame({ type: 'ANSWER', sdp: 'fake:answer-sdp' }));
+    await tick();
+    h.pc.failConnection(); // ICE failed
+    await tick();
+
+    expect(h.controller.currentState).toBe(RoomConnectionState.FAILED);
+    expect(h.controller.lastFailure?.reason).toBe('TURN_UNAVAILABLE');
   });
 
   it('11. retry：FAILED 后回 IDLE，可重新开始新尝试；旧 signaling 已关', async () => {

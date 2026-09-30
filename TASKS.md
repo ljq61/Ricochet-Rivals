@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
-> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 协议+Client ✅ / SG-2 Server ✅ / SG-3 自动 SDP ✅ / SG-4 Trickle ICE ✅ / SG-5 Room UI + E2E ✅ / SG-6 TURN/coturn 凭据 + 诊断 ✅（2026-09-30，根 555/555 + server 31/31 + 全量 E2E **180/180**）；SG-7 起待做。详见「Online Connection Migration」章节。**
+> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 协议+Client ✅ / SG-2 Server ✅ / SG-3 自动 SDP ✅ / SG-4 Trickle ICE ✅ / SG-5 Room UI + E2E ✅ / SG-6 TURN 凭据 + 诊断 ✅ / SG-7 失败分类 UX ✅（2026-09-30，根 557/557 + server 31/31 + 全量 E2E **182/182**）；SG-8 起待做。详见「Online Connection Migration」章节。**
 > 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；Phase 18 agent 侧 + P3 修复后 `npm run e2e` 全量 **147 passed / 0 failed**（含 932×430@DPR3 移动段 17 项；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
@@ -2584,13 +2584,59 @@ relay 验证待 coturn 部署后按 README 步骤执行——Force Relay + route
 验证（2026-09-30）：根 typecheck ✅ / 根 test **555/555** ✅ / 根 build ✅ /
 server/signaling **31/31** ✅ / **全量 E2E 180 passed / 0 failed**（六段全绿）
 
+## SG-7 Connection Failure UX ✅（2026-09-30）
+
+规格 Stage SG-7：失败不再只有 "Connection failed" —— 内部至少区分；正式文案
+简洁；Debug Mode 输出具体 reason。
+
+失败分类拆分（`RoomConnectionFailureReason`）：
+
+- [x] `CONNECT_FAILED` 拆为 **`ICE_FAILED`**（ICE 协商失败 —— transport 丢失
+      原因含 ICE/CONNECTION 系：NAT/防火墙阻断）+ **`DATA_CHANNEL_FAILED`**
+      （协商 deadline 超时 / connect 超时无丢失 / 通道层中断 CHANNEL_*）+
+      新增 **`TURN_UNAVAILABLE`**（ICE 失败且 icecandidateerror 命中 turn:
+      URL —— 中继不可达，严格网络下最可操作的诊断）
+- [x] `WebRTCTransport` 增同步信号：`lastLossReason`（handleConnectionLost
+      记录；超时 = null）+ `hasTurnCandidateErrors`（SG-6 诊断字段复用）
+- [x] 控制器分类：connect catch 读 transport.lastLossReason；onDisconnect 按
+      reason 串分类（TURN 错误优先归 TURN_UNAVAILABLE）；deadline →
+      DATA_CHANNEL_FAILED。SERVER_ERROR 保留 code 细分（ROOM_NOT_FOUND /
+      ROOM_FULL / ROOM_EXPIRED —— 满足规格内部区分，避免 enum 爆炸）
+
+Scene（正式文案简洁 + Debug 具体输出）：
+
+- [x] 新 reason 文案：ICE_FAILED → "your network may block WebRTC" /
+      TURN_UNAVAILABLE → "Relay server unavailable" / DATA_CHANNEL_FAILED →
+      "Connection failed"
+- [x] **DEBUG_GAME 时 FAILED 状态行追加技术后缀** ` [REASON:CODE]`（发布
+      构建保持简洁 —— 规格「正式用户信息保持简洁；Debug Mode 输出具体
+      reason」）
+- [x] Debug 句柄：`roomFailure`（完整 {reason, code, detail}）+ `statusText`
+      （状态行文本 —— E2E 断言用户可见文案）
+
+测试（client +2 = **557/557**；原 CONNECT_FAILED 断言按新语义更新 3 处）：
+
+- [x] ICE_FAILED：connect 期间 pc failed → lastLossReason 分类
+- [x] TURN_UNAVAILABLE：turn: URL 采集错误 + ICE 失败 → 中继不可达优先
+
+E2E（online-room 段 +2 = **182/182**）—— 失败 UX 全链路（真实服务器）：
+
+- [x] 不存在码 ZZZZZ9 → FAILED(SERVER_ERROR/ROOM_NOT_FOUND) + 文案
+      "not found" + Debug 后缀 `[SERVER_ERROR:ROOM_NOT_FOUND]`
+- [x] TRY AGAIN → IDLE → 非法码 ABC1EF → FAILED(INVALID_ROOM_CODE) +
+      **输入保留**（textarea 带码可直改）
+- [x] 输入保留路径直接改真码再按 JOIN（onJoinConfirm 内 retry）→ 正常
+      配对 VERIFIED → 后续 battle/rematch/disconnect 全链不受影响
+
+验证（2026-09-30）：根 typecheck ✅ / 根 test **557/557** ✅ / 根 build ✅ /
+server/signaling **31/31** ✅ / **全量 E2E 182 passed / 0 failed**
+
 ## 待办（后续 Stage）
 
-- SG-7 失败分类 UX 精修（正式文案打磨 + Debug Mode 具体 reason 输出面）+
-  SG-8 ICE Restart（connectionState failed / persistent disconnect → 限次
-  restartIce；复用 session.signaling 活通道 + peerToken；恢复后走既有
-  STATE_SYNC_REQUEST/STATE_SNAPSHOT —— 不建第二套 recovery；手机后台 grace
-  period）
+- SG-8 ICE Restart（connectionState failed / persistent disconnect → 限次
+  restartIce：当前协商方 createOffer({iceRestart:true}) 经活信令通道交换；
+  复用 peerToken 重连信令；恢复后走既有 STATE_SYNC_REQUEST/STATE_SNAPSHOT ——
+  不建第二套 recovery；手机后台 grace period）
 - 部署：公网 WSS host + coturn 落地（env 见 server/signaling/README）→
   DEBUG_FORCE_RELAY 真机验证 TURN relay + 真机 QA 矩阵（Wi-Fi↔5G / VPN 等）
 
