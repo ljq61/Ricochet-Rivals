@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
-> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 Signaling 协议 + SignalingClient ✅ / SG-2 Signaling Server ✅（2026-09-30，server 25/25 + 根 529/529）；SG-3 起待做。详见「Online Connection Migration」章节。**
+> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 Signaling 协议 + Client ✅ / SG-2 Signaling Server ✅ / SG-3 RoomConnectionController（自动 SDP）✅（2026-09-30，server 25/25 + 根 542/542）；SG-4 起待做。详见「Online Connection Migration」章节。**
 > 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；Phase 18 agent 侧 + P3 修复后 `npm run e2e` 全量 **147 passed / 0 failed**（含 932×430@DPR3 移动段 17 项；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
@@ -2367,15 +2367,74 @@ tsconfig 无 DOM lib 依赖；根 typecheck/test 不含 server，server 自带 `
 验证（2026-09-30）：server typecheck ✅ / server test **25/25** ✅ / 根 typecheck ✅ /
 根 test **529/529** ✅ / 根 build ✅ / `tsx src/index.ts` 冒烟（监听日志 + 退出）✅
 
+## SG-3 RoomConnectionController ✅（2026-09-30）
+
+自动 SDP 编排（迁移规格推荐边界）：OnlineConnectionScene →
+**RoomConnectionController** → SignalingClient + WebRTCTransport。Scene 只渲染
+（接线在 SG-5）；Manual SDP 流不动（Debug fallback）。
+
+新增：
+
+- [x] `RoomConnectionState.ts`（71）—— 独立状态机（IDLE → CONNECTING_SIGNALING →
+      CREATING_ROOM/JOINING_ROOM → ROOM_WAITING/NEGOTIATING → CONNECTING →
+      CONNECTED → VERIFIED → FAILED/CLOSED）+ `RoomConnectionFailure` 十类分类
+      （SIGNALING_FAILED / SERVER_ERROR(code) / INVALID_ROOM_CODE / SETUP_FAILED /
+      OFFER_FAILED / ANSWER_FAILED / PEER_LEFT / CONNECT_FAILED /
+      VERIFICATION_TIMEOUT —— SG-7 失败 UX 的原始输入）
+- [x] `RoomConnectionController.ts`（682）—— 双角色全自动编排：
+      * Host：createRoom() → resolve 于 ROOM_WAITING（房间码就绪）→ PEER_JOINED
+        → createOffer → **sendOffer 自动外发** → 收 ANSWER → acceptAnswer →
+        connectAndVerify
+      * Guest：joinRoom(code) → resolve 于 NEGOTIATING → 收 OFFER → acceptOffer
+        → createAnswer → **sendAnswer 自动外发** → connectAndVerify
+      * 用户全程零感知 SDP / 连接码（SG-3 验收核心）
+- [x] 复用判定（审计「禁止复制粘贴」的落地方式）：NetworkManager PING/PONG
+      验证、OnlineSession 构造（Host=P1/Guest=P2）、VERIFIED → SessionManager
+      交接、detach 所有权降级 —— 全部组合复用 Phase 12–14 原构件；验证语义
+      沿用 Manual 流实战注释（connect 成功即清预算 / PONG 窗口 120s 手机后台
+      税制 / VERIFIED 幂等）。超时设计：协商窗口 45s（自动流无人肉传码延迟）+
+      PONG 窗口 120s
+- [x] `OnlineSession.signaling?`（可选字段，Manual 流 undefined 不受影响）：
+      SignalingClient 生命周期延伸到对局 —— 房间存活 + peerToken 即 SG-8 ICE
+      restart 的重信令通道（玩家无需重输房间码）；`SessionManager.disposeSession`
+      增收口 `signaling?.close()`（审计 KEEP → 小幅 additive MODIFY，理由：
+      对局期信令所有权必须跨 Scene 存续，否则 SG-8 需要服务器房间复活机制）
+- [x] 语义决策：PEER_LEFT 预 VERIFIED = 连接失败（协商期对端离开）；VERIFIED
+      后归 Phase 16 断线链（信令层不越权）；ICE_CANDIDATE/ICE_END 入站预留
+      debug 忽略（SG-4 接线点）；matchId = `online-room-${roomCode}` 双端确定
+      性一致（真实对局 matchId 仍由 GAME_START 分配）
+- [x] 实测修复（测试暴露）：① `fail()` 先以真实失败原因 settle 流程 promise
+      再 destroyAttempt（否则被泛化 'attempt destroyed' 掩盖）；② deferred
+      reject 后 handler 迟挂 = Node unhandled rejection（测试侧先挂 handler 再
+      推进时间）
+
+测试（新增 13，总 **542/542**；FakeWebSocket 自 SignalingClient.test 抽取为
+`tests/network/signaling/fakeWebSocket.ts` 共享）：
+
+- [x] Host/Guest 双全流（FakeWebSocket + FakeRTCPeerConnection 双 fake 驱动到
+      VERIFIED + session 断言含 signaling 交接）
+- [x] 失败矩阵：INVALID_ROOM_CODE（零帧发出）/ SIGNALING_FAILED / SERVER_ERROR
+      （code ROOM_FULL 保留）/ PEER_LEFT（在飞 offer 静默中止）/ CONNECT_FAILED
+      三路径（协商窗口超时 / transport 超时 / 通道中断 CHANNEL_CLOSED）/
+      VERIFICATION_TIMEOUT
+- [x] 生命周期：retry（旧信令彻底关闭 + 新尝试完整走通）/ back·dispose 幂等 /
+      detach + SessionManager dispose 链（对局期 transport 存活、dispose 后
+      signaling DISCONNECTED + 通道 closed）
+
+验证（2026-09-30）：根 typecheck ✅ / 根 test **542/542** ✅（零 unhandled）/
+根 build ✅ / server/signaling **25/25** ✅（协议未动回归确认）
+（SG-3 未接 Scene —— E2E 留待 SG-5 UI 集成时全量回归）
+
 ## 待办（后续 Stage）
 
-- SG-3 RoomConnectionController（自动 SDP 编排：Scene → Controller → SignalingClient +
-  WebRTCTransport；复用 OnlineConnectionController 的 PING/PONG 验证与 OnlineSession
-  交接 / detach 语义）
-- SG-4 WebRTCTransport Trickle 改造（onIceCandidate / addIceCandidate + pending 队列 /
-  不等待 gathering）+ SG-5 Room Connection UI（Room Code 显示 / JOIN 输入 / DEBUG
-  门控 manual SDP fallback）+ SG-6 TURN/coturn 动态凭据 + SG-7 失败分类 UX +
-  SG-8 ICE Restart
+- SG-4 Trickle ICE：WebRTCTransport 改造（onIceCandidate 订阅 / addIceCandidate +
+  remoteDescription 未 set 的 pending 队列 / createOffer·createAnswer 不再等
+  gathering）+ RoomConnectionController 接线（sendIceCandidate/sendIceEnd 外发、
+  入站 ICE_CANDIDATE/ICE_END 消费）
+- SG-5 Room Connection UI（Scene 接线：ONLINE → CREATE/JOIN → 房间码显示 + COPY /
+  DEBUG_GAME 门控切 Manual SDP fallback）+ E2E（真实 Signaling Server 驱动双页）
+- SG-6 TURN/coturn 动态凭据（Signaling 下发 iceServers 含临时凭据）+ SG-7 失败
+  分类 UX + SG-8 ICE Restart（复用 session.signaling 活通道 + peerToken）
 - 部署 host（公网 WSS）与 coturn 落地待 SG-6 阶段定
 
 ---

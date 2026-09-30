@@ -1,6 +1,7 @@
 import type { NetworkTransport } from './NetworkTransport';
 import type { NetworkManager } from './NetworkManager';
 import type { PeerRole } from './PeerRole';
+import type { SignalingClient } from './signaling/SignalingClient';
 import type { PlayerId } from '../state/ids';
 
 /**
@@ -29,6 +30,12 @@ export interface OnlineSession {
    * 但为防 Manager 未包住的自定义 transport，双保险显式持有） */
   readonly transport: NetworkTransport;
   readonly networkManager: NetworkManager;
+  /**
+   * SG-3（Room 流专属；Manual debug 流为 undefined）：房间信令客户端。
+   * 对局期间保持连接 —— 房间存活 + peerToken 即 SG-8 ICE restart 的重信令
+   * 通道（玩家无需重输房间码）；生命周期由 SessionManager dispose 链收口。
+   */
+  readonly signaling?: SignalingClient;
 }
 
 /**
@@ -53,7 +60,7 @@ export class OnlineSessionManager {
     this.session = session;
   }
 
-  /** 彻底销毁：manager 退订 + transport close；幂等 */
+  /** 彻底销毁：manager 退订 + transport close + signaling close；幂等 */
   disposeSession(): void {
     const session = this.session;
     if (session === null) {
@@ -62,5 +69,6 @@ export class OnlineSessionManager {
     this.session = null;
     session.networkManager.dispose();
     session.transport.close();
+    session.signaling?.close();
   }
 }
