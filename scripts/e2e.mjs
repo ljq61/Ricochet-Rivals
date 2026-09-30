@@ -2106,6 +2106,19 @@ async function runOnlineRoom(browser) {
       `room=${roomCode}`,
     );
 
+    // SG-6 诊断：真实浏览器 getStats → selected pair + 直连判定（本地 host 对）
+    const diag = await pageHost.evaluate(() => window.__RR_DEBUG__.awaitRtcDiagnostics());
+    check(
+      'RTC 诊断：selected candidate pair 可读（getStats）',
+      diag?.selectedPair != null,
+      JSON.stringify(diag?.selectedPair ?? null),
+    );
+    check(
+      'RTC 诊断：本地 P2P 路由判定 = DIRECT（无 TURN 部署时的基线）',
+      diag?.route === 'DIRECT',
+      `route=${diag?.route} types=${JSON.stringify(diag?.localCandidateTypes ?? [])}`,
+    );
+
     await driveOnlineBattle(pageHost, pageGuest);
   } finally {
     stopSignaling();

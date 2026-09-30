@@ -2,7 +2,6 @@ import { afterAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { startSignalingServer, type RunningSignalingServer } from '../src/bootstrap';
 import { SIGNALING_PROTOCOL_VERSION } from '../../../src/game/network/signaling/SignalingMessage';
-import type { SignalingIceServer } from '../../../src/game/network/signaling/SignalingMessage';
 
 /**
  * 集成测试（SG-2）—— 真实 node:ws 全链路：ws 适配 → decode → 分发 → relay。
@@ -15,7 +14,10 @@ const config = {
   waitingTtlMs: 600_000,
   slotGraceMs: 30_000,
   sweepIntervalMs: 15_000,
-  iceServers: [{ urls: 'stun:stun.integration-test' }] as SignalingIceServer[],
+  stunUrls: ['stun:stun.integration-test'],
+  turnUrls: [],
+  turnSharedSecret: null,
+  turnCredentialTtlMs: 30 * 60_000,
 };
 
 const running: RunningSignalingServer = startSignalingServer(config);
@@ -100,7 +102,7 @@ describe('Signaling Server 集成（真实 ws）', () => {
     const hostToken = created['peerToken'];
     expect(typeof roomCode).toBe('string');
     expect(typeof hostToken).toBe('string');
-    expect(created['iceServers']).toEqual(config.iceServers);
+    expect(created['iceServers']).toEqual([{ urls: 'stun:stun.integration-test' }]);
 
     const guest = await TestClient.connect(url);
     guest.send({ type: 'JOIN_ROOM', roomCode });

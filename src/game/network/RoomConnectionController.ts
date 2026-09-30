@@ -5,7 +5,7 @@ import { RoomConnectionState, type RoomConnectionFailure } from './RoomConnectio
 import { decodeSignaling } from './signaling/SignalingCodec';
 import { SignalingClient, SignalingError, type SignalingFailure } from './signaling/SignalingClient';
 import type { SignalingIceServer, SignalingInboundMessage } from './signaling/SignalingMessage';
-import { WebRTCTransport } from './WebRTCTransport';
+import { WebRTCTransport, type WebRTCDiagnostics } from './WebRTCTransport';
 import type { WebRTCConfig } from './WebRTCConfig';
 import type { MatchId, PlayerId } from '../state/ids';
 
@@ -114,6 +114,11 @@ export class RoomConnectionController {
   /** 最近失败详情（FAILED 后保留至 retry / back） */
   get lastFailure(): RoomConnectionFailure | null {
     return this.failure;
+  }
+
+  /** SG-6 诊断：委托 transport（连接期）；VERIFIED 交接后 transport 归 Session → null */
+  async getDiagnostics(): Promise<WebRTCDiagnostics | null> {
+    return this.transport?.getDiagnostics() ?? null;
   }
 
   // ---- 订阅（handler 异常不逃逸；与 Manual 控制器同风格） -------------------

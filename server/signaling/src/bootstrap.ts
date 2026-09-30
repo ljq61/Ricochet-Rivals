@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { RoomManager } from './RoomManager';
 import { SignalingRoomServer } from './SignalingRoomServer';
-import { loadServerConfig, type SignalingServerConfig } from './serverConfig';
+import {
+  createIceServersProvider,
+  loadServerConfig,
+  type SignalingServerConfig,
+} from './serverConfig';
 import type { SignalingSocket } from './socket';
 
 /**
@@ -28,7 +32,7 @@ export function startSignalingServer(
   const manager = options.manager ?? new RoomManager({ now: Date.now });
   const roomServer = new SignalingRoomServer({
     manager,
-    iceServers: config.iceServers,
+    provideIceServers: createIceServersProvider(config),
     now: Date.now,
   });
 

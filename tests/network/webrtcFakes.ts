@@ -70,10 +70,13 @@ export class FakeRTCPeerConnection {
   connectionState: RTCPeerConnectionState = 'new';
   iceConnectionState: RTCIceConnectionState = 'new';
   iceGatheringState: RTCIceGatheringState = 'new';
+  signalingState: RTCSignalingState = 'stable';
   closed = false;
   readonly dataChannels: FakeRTCDataChannel[] = [];
   /** SG-4：经 transport.addIceCandidate 成功落库的对端 candidate（malformed 不入） */
   readonly addedCandidates: RTCIceCandidateInit[] = [];
+  /** SG-6：getStats 注入报告（transport 诊断解析 selected pair） */
+  statsEntries: Array<Record<string, unknown>> = [];
   localDescription: { type: RTCSdpType; sdp: string } | null = null;
   remoteDescription: { type: RTCSdpType; sdp: string } | null = null;
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
@@ -156,6 +159,18 @@ export class FakeRTCPeerConnection {
     sdpMLineIndex?: number | null;
   }): void {
     this.emit('icecandidate', { candidate });
+  }
+
+  /** SG-6：最小 RTCStatsReport 形状（forEach 遍历注入条目） */
+  async getStats(): Promise<RTCStatsReport> {
+    const entries = this.statsEntries;
+    return {
+      forEach: (callback: (stat: Record<string, unknown>) => void) => {
+        for (const entry of entries) {
+          callback(entry);
+        }
+      },
+    } as unknown as RTCStatsReport;
   }
 
   /** SG-4：真实浏览器对畸形 candidate 会 reject —— fake 以 'candidate:' 前缀校验模拟 */

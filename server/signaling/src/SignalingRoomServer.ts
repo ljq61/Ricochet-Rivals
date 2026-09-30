@@ -33,19 +33,20 @@ interface SocketBinding {
 
 export interface SignalingRoomServerOptions {
   readonly manager: RoomManager;
-  readonly iceServers: SignalingIceServer[];
+  /** ROOM ack 的 iceServers 供给器（SG-6：每 ack 现生成 —— TURN 临时凭据随 TTL 刷新） */
+  readonly provideIceServers: () => SignalingIceServer[];
   readonly now?: () => number;
 }
 
 export class SignalingRoomServer {
   private readonly manager: RoomManager;
-  private readonly iceServers: SignalingIceServer[];
+  private readonly provideIceServers: () => SignalingIceServer[];
   private readonly now: () => number;
   private readonly bindings = new Map<SignalingSocket, SocketBinding>();
 
   constructor(options: SignalingRoomServerOptions) {
     this.manager = options.manager;
-    this.iceServers = options.iceServers;
+    this.provideIceServers = options.provideIceServers;
     this.now = options.now ?? Date.now;
   }
 
@@ -160,7 +161,7 @@ export class SignalingRoomServer {
         type,
         roomCode: room.roomCode,
         peerToken,
-        iceServers: this.iceServers,
+        iceServers: this.provideIceServers(),
         expiresAt: room.expiresAt,
       }),
     );

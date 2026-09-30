@@ -5,6 +5,7 @@ import { NetworkMessageType } from '../../src/game/network/NetworkMessageType';
 import { TransportError } from '../../src/game/network/NetworkTransport';
 import { TransportState } from '../../src/game/network/TransportState';
 import { WebRTCTransport } from '../../src/game/network/WebRTCTransport';
+import type { WebRTCConfig } from '../../src/game/network/WebRTCConfig';
 import { serializeEnvelope } from '../../src/game/network/serialization/NetworkSerializer';
 import type { SignalingIceCandidate } from '../../src/game/network/signaling/SignalingMessage';
 import { makeEnvelope } from './envelopeFixture';
@@ -76,10 +77,13 @@ export class FakeRTCPeerConnection {
   connectionState: RTCPeerConnectionState = 'new';
   iceConnectionState: RTCIceConnectionState = 'new';
   iceGatheringState: RTCIceGatheringState = 'new';
+  signalingState: RTCSignalingState = 'stable';
   closed = false;
   readonly dataChannels: FakeRTCDataChannel[] = [];
   /** SG-4：经 transport.addIceCandidate 成功落库的对端 candidate（malformed 不入） */
   readonly addedCandidates: RTCIceCandidateInit[] = [];
+  /** SG-6：getStats 注入报告（transport 诊断解析 selected pair） */
+  statsEntries: Array<Record<string, unknown>> = [];
   localDescription: { type: RTCSdpType; sdp: string } | null = null;
   remoteDescription: { type: RTCSdpType; sdp: string } | null = null;
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
@@ -171,6 +175,18 @@ export class FakeRTCPeerConnection {
       throw new Error(`FakeRTCPeerConnection.addIceCandidate malformed: ${String(text)}`);
     }
     this.addedCandidates.push(candidate ?? {});
+  }
+
+  /** SG-6：最小 RTCStatsReport 形状（forEach 遍历注入条目） */
+  async getStats(): Promise<RTCStatsReport> {
+    const entries = this.statsEntries;
+    return {
+      forEach: (callback: (stat: Record<string, unknown>) => void) => {
+        for (const entry of entries) {
+          callback(entry);
+        }
+      },
+    } as unknown as RTCStatsReport;
   }
 
   failConnection(): void {
@@ -614,5 +630,82 @@ describe('WebRTCTransport — Trickle ICE（SG-4）', () => {
 
     // 队列已弃置：重新 open 不可达（transport CLOSED），无泄漏路径
     expect(bundle.transport.state).toBe(TransportState.CLOSED);
+  });
+});
+
+describe('WebRTCTransport — SG-6（iceTransportPolicy + 诊断）', () => {
+  function makePolicyTransport() {
+    const captured: WebRTCConfig[] = [];
+    const pc = new FakeRTCPeerConnection();
+    const transport = new WebRTCTransport({
+      role: 'host',
+      config: { iceServers: [{ urls: 'stun:stun.unit:3478' }], iceTransportPolicy: 'relay' },
+      peerConnectionFactory: (config) => {
+        captured.push(config);
+        return pc as unknown as RTCPeerConnection;
+      },
+    });
+    return { transport, pc, captured };
+  }
+
+  it('D1：iceTransportPolicy 透传至 RTCPeerConnection config（DEBUG_FORCE_RELAY 链路）', () => {
+    const { captured } = makePolicyTransport();
+    expect(captured[0]?.iceTransportPolicy).toBe('relay');
+    expect(captured[0]?.iceServers).toEqual([{ urls: 'stun:stun.unit:3478' }]);
+  });
+
+  it('D2：本地 candidate 类型收集 + icecandidateerror 计数', async () => {
+    const { transport, pc } = makePolicyTransport();
+    pc.emitLocalCandidate({ candidate: 'candidate:1 1 UDP 1 192.168.1.4 40000 typ host', sdpMid: '0' });
+    pc.emitLocalCandidate({ candidate: 'candidate:2 1 UDP 1 8.8.8.8 40001 typ srflx', sdpMid: '0' });
+    pc.emitLocalCandidate({ candidate: 'candidate:3 1 TCP 1 10.0.0.1 40002 typ relay', sdpMid: '0' });
+    pc.emit('icecandidateerror', { url: 'stun:stun.unit:3478', errorCode: 300 });
+    pc.emit('icecandidateerror', { url: 'turn:turn.example.com:3478?transport=udp', errorCode: 401, errorText: 'Unauthorized' });
+
+    const diag = await transport.getDiagnostics();
+    expect(diag.localCandidateTypes).toEqual(['host', 'srflx', 'relay']);
+    expect(diag.iceCandidateErrorCount).toBe(2);
+    expect(diag.lastIceCandidateError).toContain('401');
+    expect(diag.lastIceCandidateError).toContain('turn.example.com');
+    expect(diag.signalingState).toBe('stable');
+  });
+
+  it('D3：selected pair（getStats 注入）—— relay 对 → route=RELAY + relayProtocol', async () => {
+    const { transport, pc } = makePolicyTransport();
+    pc.statsEntries = [
+      { type: 'candidate-pair', id: 'P1', selected: true, localCandidateId: 'L', remoteCandidateId: 'R', state: 'succeeded' },
+      { type: 'local-candidate', id: 'L', candidateType: 'relay', protocol: 'tcp', address: '10.0.0.9', relayProtocol: 'tls' },
+      { type: 'remote-candidate', id: 'R', candidateType: 'host', protocol: 'udp', address: '192.168.1.2' },
+    ];
+    const diag = await transport.getDiagnostics();
+    expect(diag.selectedPair?.localType).toBe('relay');
+    expect(diag.selectedPair?.remoteType).toBe('host');
+    expect(diag.selectedPair?.relayProtocol).toBe('tls');
+    expect(diag.route).toBe('RELAY');
+  });
+
+  it('D4：selected pair host↔host → DIRECT；无 stats → route=null（未连接）', async () => {
+    const { transport, pc } = makePolicyTransport();
+    pc.statsEntries = [
+      { type: 'candidate-pair', id: 'P1', nominated: true, state: 'succeeded', localCandidateId: 'L', remoteCandidateId: 'R' },
+      { type: 'local-candidate', id: 'L', candidateType: 'host', protocol: 'udp' },
+      { type: 'remote-candidate', id: 'R', candidateType: 'host', protocol: 'udp' },
+    ];
+    expect((await transport.getDiagnostics()).route).toBe('DIRECT');
+
+    pc.statsEntries = [];
+    const none = await transport.getDiagnostics();
+    expect(none.selectedPair).toBeNull();
+    expect(none.route).toBeNull();
+  });
+
+  it('D5：close 清理诊断状态（candidate 类型清空、error listener 摘除）', async () => {
+    const { transport, pc } = makePolicyTransport();
+    pc.emitLocalCandidate({ candidate: 'candidate:1 1 UDP 1 192.168.1.4 40000 typ host', sdpMid: '0' });
+    transport.close();
+    const diag = await transport.getDiagnostics();
+    expect(diag.transportState).toBe(TransportState.CLOSED);
+    expect(diag.localCandidateTypes).toEqual([]);
+    expect(pc.listenerCount('icecandidateerror')).toBe(0);
   });
 });

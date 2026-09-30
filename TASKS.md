@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
-> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 协议+Client ✅ / SG-2 Server ✅ / SG-3 自动 SDP ✅ / SG-4 Trickle ICE ✅ / SG-5 Room UI + E2E ✅（2026-09-30，根 549/549 + server 25/25 + 全量 E2E **178/178** 含真实 Signaling Server room 段）；SG-6 起待做。详见「Online Connection Migration」章节。**
+> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 协议+Client ✅ / SG-2 Server ✅ / SG-3 自动 SDP ✅ / SG-4 Trickle ICE ✅ / SG-5 Room UI + E2E ✅ / SG-6 TURN/coturn 凭据 + 诊断 ✅（2026-09-30，根 555/555 + server 31/31 + 全量 E2E **180/180**）；SG-7 起待做。详见「Online Connection Migration」章节。**
 > 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；Phase 18 agent 侧 + P3 修复后 `npm run e2e` 全量 **147 passed / 0 failed**（含 932×430@DPR3 移动段 17 项；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
@@ -2531,13 +2531,68 @@ server/signaling **25/25** ✅ / **全量 E2E 178 passed / 0 failed**（147 存�
 31 room 新增；六段：desktop / mobile / sp / online-manual / battle /
 online-room 全绿）
 
+## SG-6 TURN Configuration + 诊断 ✅（2026-09-30）
+
+规格 Stage SG-6 + Connection Diagnostics：Signaling 下发 `[STUN, TURN(临时凭据)]`；
+secret 永不入库；iceTransportPolicy 缺省 all；DEBUG_FORCE_RELAY 验证选项；
+DIRECT/RELAY 判定诊断。
+
+Signaling Server（coturn REST API 契约，`server/signaling/src/`）：
+
+- [x] `turnCredentials.ts` —— `username = <expiry unix 秒>`、`credential =
+      base64(HMAC-SHA1(sharedSecret, username))`（now 注入可测）
+- [x] `serverConfig.ts` 扩展：`SIGNALING_STUN_URLS`（逗号列表，默认 Google
+      STUN）/ `SIGNALING_TURN_URLS`（turn:/turns:，udp/tcp/tls）/ 
+      `SIGNALING_TURN_SHARED_AUTH_SECRET`（= coturn static-auth-secret，仅环境
+      变量）/ `SIGNALING_TURN_CREDENTIAL_TTL_MS`（默认 30min，规格 30~60min）；
+      **urls 与 secret 必须成对（fail-fast）**；移除 SG-2 的静态
+      SIGNALING_ICE_SERVERS（双配置路径收敛）
+- [x] `createIceServersProvider(config)` —— **每 ROOM ack 现生成凭据**（各
+      peer 独立时间受限凭据）；SignalingRoomServer 改用 provider；README env
+      表 + turnserver.conf 部署示例 + 验证步骤
+
+客户端：
+
+- [x] `WebRTCConfig.iceTransportPolicy?`（缺省 all；production 禁默认 relay ——
+      能直连直连、TURN 兜底交给浏览器 ICE 自动选择）
+- [x] `DebugConfig.DEBUG_FORCE_RELAY`（默认 false）→ Room 流 createTransport
+      覆盖 'relay'（验证 TURN 用；E2E/production 不开）
+- [x] `WebRTCTransport.getDiagnostics()`（Connection Diagnostics 规格）：
+      ICE gathering/connection/signaling state 四层 + 本地 candidate 类型
+      （handleIceCandidate 解析 typ host/srflx/relay）+ `icecandidateerror`
+      计数/最近错误 + getStats 解析 selected candidate pair（local/remote
+      类型/协议/地址/relayProtocol）→ **route = DIRECT / RELAY 直观判定**；
+      close 清理扩展
+- [x] `RoomConnectionController.getDiagnostics()` 委托（VERIFIED 交接后 null）；
+      Scene debug 句柄 `awaitRtcDiagnostics()`（连接期走 controller / 交接后
+      走 sessionManager 的 transport instanceof）
+
+测试（server +6 = **31/31**；client +6 = **555/555**）：
+
+- [x] Server：凭据向量（独立 HMAC oracle + TTL 数学 + 形态）/ config 矩阵
+      （默认无 TURN、urls-secret 互斥 throw、scheme 校验、逗号解析）/
+      provider（无 TURN 仅 STUN；有 TURN → username=unix 秒 + credential
+      base64 + 每次现生成）
+- [x] Client：policy 透传（factory 捕获断言）/ candidate 类型收集 +
+      error 计数 / selected pair 注入解析（relay 对 → RELAY+tls、host↔host →
+      DIRECT、无 stats → null）/ close 清理 / controller 委托与失败清场 null
+
+E2E（online-room 段 +2 = **180/180**）：真实浏览器 getStats → selected pair
+可读 + **本地 P2P 路由判定 = DIRECT**（无 TURN 部署时的基线断言；真实 TURN
+relay 验证待 coturn 部署后按 README 步骤执行——Force Relay + route=RELAY）。
+
+验证（2026-09-30）：根 typecheck ✅ / 根 test **555/555** ✅ / 根 build ✅ /
+server/signaling **31/31** ✅ / **全量 E2E 180 passed / 0 failed**（六段全绿）
+
 ## 待办（后续 Stage）
 
-- SG-6 TURN/coturn 动态凭据（Signaling 下发 iceServers 含临时凭据；iceTransportPolicy
-  支持 + DEBUG_FORCE_RELAY 开发选项 + 诊断：candidate types / selected pair /
-  icecandidateerror）+ SG-7 失败分类 UX 精修 + SG-8 ICE Restart（复用
-  session.signaling 活通道 + peerToken）
-- 部署 host（公网 WSS）与 coturn 落地待 SG-6 阶段定
+- SG-7 失败分类 UX 精修（正式文案打磨 + Debug Mode 具体 reason 输出面）+
+  SG-8 ICE Restart（connectionState failed / persistent disconnect → 限次
+  restartIce；复用 session.signaling 活通道 + peerToken；恢复后走既有
+  STATE_SYNC_REQUEST/STATE_SNAPSHOT —— 不建第二套 recovery；手机后台 grace
+  period）
+- 部署：公网 WSS host + coturn 落地（env 见 server/signaling/README）→
+  DEBUG_FORCE_RELAY 真机验证 TURN relay + 真机 QA 矩阵（Wi-Fi↔5G / VPN 等）
 
 ---
 

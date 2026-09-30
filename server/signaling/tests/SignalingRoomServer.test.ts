@@ -21,7 +21,7 @@ function makeServer(clock: FakeClock): { server: SignalingRoomServer; manager: R
   });
   const server = new SignalingRoomServer({
     manager,
-    iceServers: ICE_SERVERS,
+    provideIceServers: () => ICE_SERVERS,
     now: () => clock.current(),
   });
   return { server, manager };

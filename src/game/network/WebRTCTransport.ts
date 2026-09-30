@@ -31,8 +31,37 @@ export interface WebRTCTransportOptions {
   readonly peerConnectionFactory?: (config: WebRTCConfig) => RTCPeerConnection;
 }
 
+/** SG-6 诊断：selected candidate pair（getStats 解析） */
+export interface SelectedCandidatePair {
+  readonly localType: string | null;
+  readonly remoteType: string | null;
+  readonly localProtocol: string | null;
+  readonly remoteProtocol: string | null;
+  readonly localAddress: string | null;
+  readonly remoteAddress: string | null;
+  /** relay 时 TURN transport 协议（udp/tcp/tls）—— 直连为 null */
+  readonly relayProtocol: string | null;
+}
+
+/** SG-6 诊断快照（Connection Diagnostics 规格；route = DIRECT / TURN RELAY） */
+export interface WebRTCDiagnostics {
+  readonly transportState: TransportState;
+  readonly connectionState: RTCPeerConnectionState;
+  readonly iceConnectionState: RTCIceConnectionState;
+  readonly iceGatheringState: RTCIceGatheringState;
+  readonly signalingState: RTCSignalingState;
+  readonly localCandidateTypes: string[];
+  readonly iceCandidateErrorCount: number;
+  readonly lastIceCandidateError: string | null;
+  readonly selectedPair: SelectedCandidatePair | null;
+  readonly route: 'DIRECT' | 'RELAY' | null;
+}
+
 function defaultPeerConnectionFactory(config: WebRTCConfig): RTCPeerConnection {
-  return new RTCPeerConnection({ iceServers: config.iceServers });
+  return new RTCPeerConnection({
+    iceServers: config.iceServers,
+    iceTransportPolicy: config.iceTransportPolicy,
+  });
 }
 
 function isDeadState(state: TransportState): boolean {
@@ -62,6 +91,11 @@ export class WebRTCTransport implements NetworkTransport {
   /** SG-4：candidate 复合键去重（sdpMid + sdpMLineIndex + 文本）——重复投递零成本丢弃 */
   private readonly seenRemoteCandidates = new Set<string>();
   private remoteDescriptionApplied = false;
+  /** SG-6 诊断：本地 candidate 类型（host / srflx / relay —— handleIceCandidate 解析收集） */
+  private readonly localCandidateTypes = new Set<string>();
+  /** SG-6 诊断：icecandidateerror 计数与最近错误（TURN 不可达排查） */
+  private iceCandidateErrorCount = 0;
+  private lastIceCandidateError: string | null = null;
 
   constructor(options: WebRTCTransportOptions) {
     const config = options.config ?? DEFAULT_WEBRTC_CONFIG;
@@ -70,6 +104,7 @@ export class WebRTCTransport implements NetworkTransport {
     this.pc.addEventListener('connectionstatechange', this.handleConnectionStateChange);
     this.pc.addEventListener('iceconnectionstatechange', this.handleIceConnectionStateChange);
     this.pc.addEventListener('icecandidate', this.handleIceCandidate);
+    this.pc.addEventListener('icecandidateerror', this.handleIceCandidateError);
     if (options.role === 'host') {
       this.attachChannel(this.pc.createDataChannel(DATA_CHANNEL_LABEL, { ordered: true }));
     } else {
@@ -159,6 +194,11 @@ export class WebRTCTransport implements NetworkTransport {
       }
       return;
     }
+    // SG-6 诊断：candidate 文本含 'typ <host|srflx|relay|prflx>' —— 收集本地类型
+    const typeMatch = /typ (\w+)/.exec(candidate.candidate);
+    if (typeMatch !== null) {
+      this.localCandidateTypes.add(typeMatch[1] ?? '');
+    }
     const mapped: SignalingIceCandidate = {
       candidate: candidate.candidate,
       sdpMid: candidate.sdpMid,
@@ -169,6 +209,102 @@ export class WebRTCTransport implements NetworkTransport {
       handler(mapped);
     }
   };
+
+  /** SG-6 诊断：ICE 候选采集错误（TURN/STUN 不可达等 —— 计数不崩） */
+  private readonly handleIceCandidateError = (event: RTCPeerConnectionIceErrorEvent): void => {
+    this.iceCandidateErrorCount += 1;
+    const target = event as unknown as { url?: string; errorCode?: number; errorText?: string };
+    this.lastIceCandidateError = `${target.url ?? 'unknown'} ${target.errorCode ?? ''} ${target.errorText ?? ''}`.trim();
+  };
+
+  /**
+   * SG-6 诊断快照（Connection Diagnostics 规格）：ICE 各层状态 + 本地
+   * candidate 类型 + selected candidate pair（getStats 解析）→ 直观判定
+   * DIRECT / TURN RELAY。Debug Overlay / E2E 消费；正式 UI 不展示底层细节。
+   */
+  async getDiagnostics(): Promise<WebRTCDiagnostics> {
+    const selectedPair = await this.readSelectedCandidatePair();
+    const relayed = selectedPair !== null && (selectedPair.localType === 'relay' || selectedPair.remoteType === 'relay');
+    return {
+      transportState: this.transportState,
+      connectionState: this.pc.connectionState,
+      iceConnectionState: this.pc.iceConnectionState,
+      iceGatheringState: this.pc.iceGatheringState,
+      signalingState: this.pc.signalingState,
+      localCandidateTypes: [...this.localCandidateTypes],
+      iceCandidateErrorCount: this.iceCandidateErrorCount,
+      lastIceCandidateError: this.lastIceCandidateError,
+      selectedPair,
+      route: selectedPair === null ? null : relayed ? 'RELAY' : 'DIRECT',
+    };
+  }
+
+  /** getStats 解析 selected pair（local/remote candidate 类型）—— 无 stats / 未选中 → null */
+  private async readSelectedCandidatePair(): Promise<SelectedCandidatePair | null> {
+    if (typeof this.pc.getStats !== 'function') {
+      return null;
+    }
+    let report: RTCStatsReport;
+    try {
+      report = await this.pc.getStats();
+    } catch (error) {
+      console.debug('[WebRTCTransport] getStats failed:', error);
+      return null;
+    }
+    interface CandidateStat {
+      id: string;
+      candidateType?: string;
+      protocol?: string;
+      address?: string;
+      port?: number;
+      relayProtocol?: string;
+    }
+    const candidates = new Map<string, CandidateStat>();
+    // 持有对象规避 TS 控制流收窄（回调内赋值不计入 —— 直接 let 会收窄成 null/never）
+    const result: { selected: { localCandidateId?: string; remoteCandidateId?: string } | null } = {
+      selected: null,
+    };
+    report.forEach((stat) => {
+      const entry = stat as unknown as Record<string, unknown>;
+      const type = entry['type'];
+      if (type === 'local-candidate' || type === 'remote-candidate') {
+        candidates.set(String(entry['id'] ?? ''), {
+          id: String(entry['id'] ?? ''),
+          candidateType: typeof entry['candidateType'] === 'string' ? entry['candidateType'] : undefined,
+          protocol: typeof entry['protocol'] === 'string' ? entry['protocol'] : undefined,
+          address: typeof entry['address'] === 'string' ? entry['address'] : undefined,
+          port: typeof entry['port'] === 'number' ? entry['port'] : undefined,
+          relayProtocol: typeof entry['relayProtocol'] === 'string' ? entry['relayProtocol'] : undefined,
+        });
+      } else if (type === 'candidate-pair') {
+        const isSelected = entry['selected'] === true || (entry['nominated'] === true && entry['state'] === 'succeeded');
+        if (isSelected) {
+          result.selected = {
+            localCandidateId: typeof entry['localCandidateId'] === 'string' ? entry['localCandidateId'] : undefined,
+            remoteCandidateId: typeof entry['remoteCandidateId'] === 'string' ? entry['remoteCandidateId'] : undefined,
+          };
+        }
+      }
+    });
+    const selected = result.selected;
+    if (selected === null) {
+      return null;
+    }
+    const local = selected.localCandidateId !== undefined ? candidates.get(selected.localCandidateId) : undefined;
+    const remote = selected.remoteCandidateId !== undefined ? candidates.get(selected.remoteCandidateId) : undefined;
+    if (local === undefined || remote === undefined) {
+      return null;
+    }
+    return {
+      localType: local.candidateType ?? null,
+      remoteType: remote.candidateType ?? null,
+      localProtocol: local.protocol ?? null,
+      remoteProtocol: remote.protocol ?? null,
+      localAddress: local.address ?? null,
+      remoteAddress: remote.address ?? null,
+      relayProtocol: local.relayProtocol ?? null,
+    };
+  }
 
   // ---- NetworkTransport 接口 ----
 
@@ -267,6 +403,7 @@ export class WebRTCTransport implements NetworkTransport {
     this.pc.removeEventListener('connectionstatechange', this.handleConnectionStateChange);
     this.pc.removeEventListener('iceconnectionstatechange', this.handleIceConnectionStateChange);
     this.pc.removeEventListener('icecandidate', this.handleIceCandidate);
+    this.pc.removeEventListener('icecandidateerror', this.handleIceCandidateError);
     this.pc.removeEventListener('datachannel', this.handleDataChannelEvent);
     const channel = this.dataChannel;
     if (channel !== null) {
@@ -299,6 +436,7 @@ export class WebRTCTransport implements NetworkTransport {
     this.localIceCandidateHandlers.clear();
     this.pendingRemoteCandidates.length = 0;
     this.seenRemoteCandidates.clear();
+    this.localCandidateTypes.clear();
   }
 
   // ---- Offer / Answer（Phase 13 手动流：全量 gather SDP —— ICE 收齐再返回） ----

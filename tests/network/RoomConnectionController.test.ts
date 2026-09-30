@@ -422,4 +422,24 @@ describe('RoomConnectionController', () => {
     expect(session.signaling?.state).toBe('DISCONNECTED');
     expect(h.ws.readyState).toBe(3);
   });
+
+  it('14. getDiagnostics 委托：连接期读 transport；失败清场后 null', async () => {
+    const h = makeHarness();
+    await hostAtNegotiating(h); // transport 存在（NEGOTIATING）
+
+    const viaController = await h.controller.getDiagnostics();
+    expect(viaController).not.toBeNull();
+    if (!viaController) return;
+    expect(viaController.iceGatheringState).toBe('gathering');
+    expect(viaController.localCandidateTypes).toEqual([]); // 尚无 candidate
+
+    h.pc.emitLocalCandidate({ candidate: 'candidate:1 1 UDP 1 192.168.1.4 40000 typ host', sdpMid: '0' });
+    const withCandidate = await h.controller.getDiagnostics();
+    expect(withCandidate?.localCandidateTypes).toEqual(['host']);
+
+    // 失败清场 → transport 销毁 → 诊断 null
+    h.ws.serverSend(frame({ type: 'PEER_LEFT' }));
+    await tick();
+    expect(await h.controller.getDiagnostics()).toBeNull();
+  });
 });

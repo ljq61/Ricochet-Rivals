@@ -26,7 +26,10 @@ npm run typecheck
 | `SIGNALING_WAITING_TTL_MS` | `600000` | 房间未配对保留期（规格 5~10min；超时删除并通知 Host） |
 | `SIGNALING_SLOT_GRACE_MS` | `30000` | 断开后持 peerToken 原位重连窗口（Host 超窗 → 房间删除） |
 | `SIGNALING_SWEEP_INTERVAL_MS` | `15000` | 过期清扫周期 |
-| `SIGNALING_ICE_SERVERS` | Google STUN | JSON 数组，注入 ROOM_CREATED/ROOM_JOINED 的 `iceServers` |
+| `SIGNALING_STUN_URLS` | Google STUN | 逗号分隔 STUN 列表 |
+| `SIGNALING_TURN_URLS` | （空） | 逗号分隔 TURN 列表（`turn:` UDP/TCP、`turns:` TLS）——**必须与 SECRET 成对** |
+| `SIGNALING_TURN_SHARED_AUTH_SECRET` | （空） | 与 coturn `static-auth-secret` 相同；**只经环境变量注入，永不入库** |
+| `SIGNALING_TURN_CREDENTIAL_TTL_MS` | `1800000` | TURN 临时凭据 TTL（规格 30~60min） |
 
 ## 房间语义
 
@@ -38,8 +41,24 @@ npm run typecheck
 - Host 断开 → Guest 收 `PEER_LEFT`；Host 在 grace 内未归 → 房间删除。
 - 等待配对超过 TTL → 房间删除，Host 收 `ERROR ROOM_EXPIRED`。
 
-## TURN（SG-6 占位）
+## TURN（SG-6，coturn 部署）
 
-`SIGNALING_ICE_SERVERS` 现为静态注入（开发默认仅 STUN）。SG-6 将按用户决策接自建
-coturn（`use-auth-secret` + REST API 时间受限凭据，secret 只存在 TURN + Signaling
-两侧，绝不入仓库 / 客户端 bundle）。
+每个 ROOM_CREATED / ROOM_JOINED ack 下发 `iceServers = [STUN, TURN(time-limited
+credential)]`；浏览器只拿临时 username / credential（`username = <expiry unix 秒>`、
+`credential = base64(HMAC-SHA1(secret, username))`，coturn REST API 契约）——
+shared secret 只存在 TURN 与 Signaling 两侧环境变量。
+
+coturn 侧对应配置（`turnserver.conf`）：
+
+```
+use-auth-secret
+static-auth-secret=<与 SIGNALING_TURN_SHARED_AUTH_SECRET 相同>
+realm=ricochet-rivals
+listening-port=3478
+tls-listening-port=5349
+# cert=/path/to/cert.pem  key=/path/to/key.pem   # turns: 需要
+```
+
+验证 TURN 可用：客户端 DebugConfig.DEBUG_FORCE_RELAY=true（iceTransportPolicy
+='relay'）后连接，Debug 句柄 `awaitRtcDiagnostics()` 的 `selectedPair` 必须含
+`relay` candidate（route=RELAY）—— 否则不能声称 TURN 已验证（规格 Tests—TURN）。

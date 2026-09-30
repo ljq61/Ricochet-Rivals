@@ -14,7 +14,8 @@ const running = startSignalingServer(config);
 console.log(
   `[SignalingServer] listening on :${running.port} | waiting TTL ${
     Math.round(config.waitingTtlMs / 1000)
-  }s | slot grace ${Math.round(config.slotGraceMs / 1000)}s | iceServers ${config.iceServers.length}`,
+  }s | slot grace ${Math.round(config.slotGraceMs / 1000)}s | STUN ${config.stunUrls.length}` +
+    ` | TURN ${config.turnUrls.length}${config.turnUrls.length > 0 ? ` (ttl ${Math.round(config.turnCredentialTtlMs / 60000)}min, time-limited credentials)` : ' (not configured — direct P2P only)'}`,
 );
 
 let shuttingDown = false;

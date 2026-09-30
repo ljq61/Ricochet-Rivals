@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { MenuArtwork } from '../ui/MenuArtwork';
-import { DEBUG_GAME } from '../config/DebugConfig';
+import { DEBUG_FORCE_RELAY, DEBUG_GAME } from '../config/DebugConfig';
 import { PALETTE, toCssColor } from '../config/Palette';
 import { InputRouter } from '../input/InputRouter';
 import { ViewportService } from '../platform/ViewportService';
@@ -326,7 +326,13 @@ export class OnlineConnectionScene extends Phaser.Scene {
   /** Room 流（正式）：SG-3/4 控制器 —— SignalingClient + Trickle transport */
   private setupRoomFlow(): void {
     const controller = new RoomConnectionController({
-      createTransport: (role, config) => new WebRTCTransport({ role, config }),
+      // SG-6：iceServers 来自 Signaling ack（STUN + TURN 临时凭据）；
+      // DEBUG_FORCE_RELAY 强制全 relay 验证 TURN 可用性（production 保持 all）
+      createTransport: (role, config) =>
+        new WebRTCTransport({
+          role,
+          config: DEBUG_FORCE_RELAY ? { ...config, iceTransportPolicy: 'relay' as const } : config,
+        }),
       createSignalingClient: () => new SignalingClient({ url: resolveSignalingUrl() }),
     });
     this.roomController = controller;
@@ -933,6 +939,22 @@ export class OnlineConnectionScene extends Phaser.Scene {
       },
       get flow(): string {
         return self.useManualFlow() ? 'manual' : 'room';
+      },
+      /**
+       * SG-6 诊断（异步方法 —— E2E 经 page.evaluate 调用）：连接期走控制器
+       * transport；VERIFIED 交接后走 sessionManager 持有的 WebRTCTransport。
+       * route = 'DIRECT' | 'RELAY' | null（未连接）。
+       */
+      async awaitRtcDiagnostics(): Promise<unknown> {
+        const viaController = await self.roomController?.getDiagnostics();
+        if (viaController !== null && viaController !== undefined) {
+          return viaController;
+        }
+        const transport = self.sessionManager.current?.transport;
+        if (transport instanceof WebRTCTransport) {
+          return transport.getDiagnostics();
+        }
+        return null;
       },
       get connectionCode(): string | null {
         return self.currentCode;
