@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { createPhaserGameConfig } from './game/config/PhaserGameConfig';
 import { OrientationGate } from './game/platform/OrientationGate';
 import { ONLINE_SESSION_MANAGER_KEY, OnlineSessionManager } from './game/network/OnlineSession';
+import { AudioUnlock } from './game/audio/AudioUnlock';
 
 const root = document.getElementById('game-root');
 if (!root) {
@@ -9,6 +10,8 @@ if (!root) {
 }
 
 const game = new Phaser.Game(createPhaserGameConfig(root));
+const audioUnlock = new AudioUnlock(game.sound);
+game.events.once(Phaser.Core.Events.DESTROY, () => audioUnlock.destroy());
 
 // Phase 14：联机会话持有者注入 game.registry（跨 Scene 容器 ——
 // Scene 之间共享同一实例，Scene 切换不销毁连接；禁止模块级 singleton，

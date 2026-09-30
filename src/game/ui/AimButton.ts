@@ -47,6 +47,7 @@ export class AimButton {
   private hovered = false;
   private screenX = 0;
   private screenY = 0;
+  private layoutPlayerId: PlayerId | null = null;
   /** Phase 14：本地回合外（对手回合）隐藏并失活 zone */
   private interactable = true;
   private readonly unsubscribeViewport: () => void;
@@ -117,6 +118,7 @@ export class AimButton {
    * 相机 Free View 仍可用）。离线不传 = 恒可交互，行为不变。
    */
   refresh(mode: CameraMode, interactable = true): void {
+    if (this.layoutPlayerId !== this.deps.getPlayerId()) this.reposition();
     this.icon?.setFlipX(this.deps.getPlayerId() === 'P2');
     this.interactable = interactable;
     this.container.setVisible(interactable);
@@ -310,10 +312,11 @@ export class AimButton {
   /** 尺寸（×uiScale）+ 定位（Safe Area 内），随视口变化重算 */
   private reposition(): void {
     const { uiScale, width, height, safeArea } = this.deps.viewport.current;
+    this.layoutPlayerId = this.deps.getPlayerId();
 
-    // 触屏：右侧垂直居中的操作示意图。
+    // 红方在左、蓝方在右；绘制与命中区共用同一屏幕矩形。
     if (this.deps.isTouchProfile) {
-      const rect = touchAimRect(this.deps.viewport.current);
+      const rect = touchAimRect(this.deps.viewport.current, this.layoutPlayerId);
       this.width = rect.width;
       this.height = rect.height;
       this.icon?.setDisplaySize(this.width, this.height);
@@ -327,6 +330,10 @@ export class AimButton {
     this.label.setFontSize(15 * uiScale);
 
     const bottomMargin = DESKTOP_BOTTOM_MARGIN * uiScale + safeArea.bottom;
-    this.placeOnScreen(width / 2, height - bottomMargin - this.height / 2);
+    const inset = 12 * uiScale + this.width / 2;
+    const x = width - safeArea.left - safeArea.right < inset * 2
+      ? safeArea.left + (width - safeArea.left - safeArea.right) / 2
+      : this.layoutPlayerId === 'P2' ? safeArea.left + inset : width - safeArea.right - inset;
+    this.placeOnScreen(x, height - bottomMargin - this.height / 2);
   }
 }

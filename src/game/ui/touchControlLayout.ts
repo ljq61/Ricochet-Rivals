@@ -1,4 +1,5 @@
 import type { ViewportMetrics } from '../platform/viewportMath';
+import type { PlayerId } from '../state/ids';
 
 import { touchAimVisualRect, type ScreenRect } from './touchAimLayout';
 import { battleHudLayout } from './miniMapMath';
@@ -12,6 +13,7 @@ export function dockMoveButtonLayout(
   dockRight: number,
   deckY: number,
   characterHeight: number,
+  playerId: PlayerId = 'P1',
 ): { visualSize: number; hitSize: number; left: ScreenRect; right: ScreenRect } {
   const { width, height, safeArea, uiScale } = viewport;
   const visualSize = characterHeight * 0.82;
@@ -25,8 +27,8 @@ export function dockMoveButtonLayout(
   const minY = safeArea.top + 83 * hudScale + gap + half;
   const maxY = height - safeArea.bottom - half - gap;
   const reserved: ScreenRect[] = [
-    touchAimVisualRect(viewport),
-    battleHudLayout(viewport).banner,
+    touchAimVisualRect(viewport, playerId),
+    battleHudLayout(viewport, playerId).banner,
   ];
   const place = (desiredX: number, desiredY: number, lowX: number, highX: number): ScreenRect | null => {
     const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(n, hi));

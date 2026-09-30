@@ -668,6 +668,18 @@ async function runMobile(browser) {
   section('Mobile — Touch（844×390 landscape，触摸模拟）');
 
   const page = await browser.newPage();
+  await page.evaluateOnNewDocument(() => {
+    window.__RR_AUDIO_E2E__ = { contexts: [], starts: [] };
+    const NativeContext = window.AudioContext;
+    window.AudioContext = class extends NativeContext {
+      constructor(...args) { super(...args); window.__RR_AUDIO_E2E__.contexts.push(this); }
+    };
+    const start = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args) {
+      window.__RR_AUDIO_E2E__.starts.push({ state: this.context.state, length: this.buffer?.length ?? 0 });
+      return start.apply(this, args);
+    };
+  });
   await page.setViewport({
     width: 844,
     height: 390,
@@ -679,6 +691,9 @@ async function runMobile(browser) {
 
   // Phase 11：触屏菜单入口（按钮坐标 = debug 句柄 CSS 口径 ÷ DPR 换算后）
   await waitForScene(page, 'MainMenuScene', 15000);
+  await page.evaluate(async () => {
+    await Promise.all(window.__RR_AUDIO_E2E__.contexts.map((context) => context.suspend()));
+  });
   check(
     '触屏主菜单：按钮为 CSS 口径坐标（句柄已 ÷uiScale）',
     (await dbg(page)).buttons.local2p.width >= 56,
@@ -687,6 +702,9 @@ async function runMobile(browser) {
   await tapMenuButton(page, 'local2p');
   await waitForScene(page, 'BattleScene', 10000);
   const d0 = await dbg(page);
+  const firstAudio = await page.evaluate(() => window.__RR_AUDIO_E2E__.contexts.map((context) => context.state));
+  check('首次触摸进游戏即恢复音频，无需切换声音开关', firstAudio.length > 0 && firstAudio.every((state) => state === 'running'));
+  check('蓝方回合瞄准按钮位于右侧', d0.aimButtonBounds.x / d0.uiScale > 844 / 2);
   check('控制档位 = touch（coarse pointer / 不可悬停）', d0.controlProfile === 'touch');
   check(
     `UI 缩放 = DPR 2（游戏坐标 = 物理像素）`,
@@ -825,6 +843,7 @@ async function runMobile(browser) {
   const pendingAim = await page.evaluate(() => window.__RR_DEBUG__.hasFired);
   // 超过死区（14px）激活并拖出力度：45° 弹道求解，直接命中 P2
   const shot = solveFortyFiveRelease(origin, await dbg(page), 4550);
+  const audioStartCount = await page.evaluate(() => window.__RR_AUDIO_E2E__.starts.length);
   await page.touchscreen.touchMove(shot.x, shot.y);
   await page.touchscreen.touchEnd();
   check('死区内拖动不发射', pendingAim === false);
@@ -836,6 +855,8 @@ async function runMobile(browser) {
     'hasFired'
   );
   check('触摸拖拽（>死区）释放 → FireCommand', fired);
+  check('首次发射的音效进入运行中的真实 WebAudio 缓冲', await page.evaluate((count) =>
+    window.__RR_AUDIO_E2E__.starts.slice(count).some((item) => item.state === 'running' && item.length > 1000), audioStartCount));
   const flight = await dbg(page);
   check('发射后相机 PROJECTILE_FOLLOW（与桌面同链路）', flight.cameraMode === 'PROJECTILE_FOLLOW');
 
@@ -887,6 +908,13 @@ async function runMobile(browser) {
     overview.bases.P1.right < overview.bases.P2.left &&
     overview.players.P1.x < overview.players.P2.x);
   check('红方瞄准图整体镜像', turn2.aimIcon.flipped === true);
+  check('红方回合瞄准按钮位于左侧', turn2.aimButtonBounds.x / turn2.uiScale < 844 / 2);
+  await page.touchscreen.tap(turn2.aimButtonBounds.x / turn2.uiScale, turn2.aimButtonBounds.y / turn2.uiScale);
+  await waitFor(page, async () => (await dbg(page)).cameraMode === 'AIMING', 1500, '红方左侧瞄准命中');
+  await page.touchscreen.tap(turn2.aimButtonBounds.x / turn2.uiScale, turn2.aimButtonBounds.y / turn2.uiScale);
+  await waitFor(page, async () => (await dbg(page)).cameraMode === 'FREE_VIEW', 1000, '红方左侧取消命中');
+  check('红方左侧按钮能瞄准并取消', true);
+  await page.screenshot({ path: '/private/tmp/rr-red-aim-left.png' });
   const beforeMapTap = (await dbg(page)).cameraScrollX;
   await page.touchscreen.tap(overview.rect.x / turn2.uiScale, overview.rect.y / turn2.uiScale);
   await sleep(200);
@@ -1531,7 +1559,12 @@ async function driveOnlineBattle(pageHost, pageGuest, hooks = {}) {
   await pageHost.bringToFront();
   await clickMenuButton(pageHost, 'enterBattle');
   // Host 汇齐双方 Ready → GAME_START → 双方转场（转场需 rAF —— 各自前台化）
-  await waitForScene(pageHost, 'BattleScene', 15000);
+  try {
+    await waitForScene(pageHost, 'BattleScene', 15000);
+  } catch (error) {
+    console.log('[ENTER DIAG]', JSON.stringify(await hostD()));
+    throw error;
+  }
   await pageGuest.bringToFront();
   await waitForScene(pageGuest, 'BattleScene', 15000);
 
@@ -2314,6 +2347,47 @@ async function runOnlineRoom(browser) {
     );
     check('好友已在后台期加入：Host 同码恢复后双端完成首次配对', verifiedHost && verifiedGuest);
     await pageHost.evaluate(() => { delete document.visibilityState; });
+    await pageHost.bringToFront();
+    await waitFor(pageHost, async () => (await dbg(pageHost)).connectionDisplay.bars > 0,
+      5000, '真实 PONG 更新信号格');
+    await pageHost.evaluate(() => {
+      const rect = Element.prototype.getBoundingClientRect;
+      Element.prototype.getBoundingClientRect = function () {
+        if (window.__RR_E2E_SAFE__ && this.style?.cssText.includes('safe-area-inset')) {
+          const safe = window.__RR_E2E_SAFE__;
+          return new DOMRect(safe.left, 0, window.innerWidth - safe.left - safe.right, window.innerHeight - safe.bottom);
+        }
+        return rect.call(this);
+      };
+    });
+    for (const [width, height, safe = 0, left = safe, right = safe] of
+      [[390, 844], [320, 568], [844, 390], [568, 320], [568, 320, 20], [568, 320, 20, 44, 0]]) {
+      await pageHost.evaluate((insets) => { window.__RR_E2E_SAFE__ = insets; }, safe > 0 ? { left, right, bottom: safe } : null);
+      await pageHost.setViewport({ width, height, deviceScaleFactor: 2 });
+      await pageHost.evaluate(() => window.dispatchEvent(new Event('resize')));
+      const layout = await waitFor(pageHost, async () => {
+        const d = await dbg(pageHost);
+        const center = height - safe < 380 && width - left - right >= 432
+          ? left + (width - left - right) / 2 : width / 2;
+        return Math.abs((d.buttons.enterBattle.x + d.buttons.backToMenu.x) / 2 - center) < 1 ? d : null;
+      }, 3000, '连接状态尺寸重排');
+      const signal = layout.connectionDisplay;
+      check(`连接成功卡片与信号格完整显示 ${width}×${height} safe=${safe}`,
+        layout.statusText === 'CONNECTED' && signal.visible && signal.bars > 0 &&
+        signal.rect.x >= 0 && signal.rect.x + signal.rect.width <= width &&
+        layout.textRects.status.bottom < signal.rect.y &&
+        signal.rect.y + signal.rect.height < layout.textRects.prompt.top &&
+        layout.textRects.prompt.bottom < layout.buttons.enterBattle.y - layout.buttons.enterBattle.height / 2 &&
+        layout.buttons.backToMenu.y + layout.buttons.backToMenu.height / 2 <= height - safe &&
+        layout.buttons.enterBattle.x - layout.buttons.enterBattle.width / 2 >= left &&
+        layout.buttons.backToMenu.x + layout.buttons.backToMenu.width / 2 <= width - right,
+        JSON.stringify({ signal, text: layout.textRects, back: layout.buttons.backToMenu }));
+      if (width === 390) await pageHost.screenshot({ path: '/private/tmp/rr-connected-mobile.png' });
+    }
+    await pageHost.evaluate(() => { window.__RR_E2E_SAFE__ = false; });
+    await pageHost.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
+    await waitFor(pageHost, async () => (await dbg(pageHost)).buttons.enterBattle.x === 640,
+      3000, '恢复桌面连接页尺寸');
 
     // SG-6 诊断：真实浏览器 getStats → selected pair + 直连判定（本地 host 对）
     const diag = await pageHost.evaluate(() => window.__RR_DEBUG__.awaitRtcDiagnostics());

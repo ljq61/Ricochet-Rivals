@@ -11,15 +11,16 @@ const sizes = [
 
 describe('dock movement controls', () => {
   it.each(sizes)('keeps separate touch targets inside %i × %i across DPR and camera pans', (width, height) => {
-    for (const dpr of [1, 2]) for (const pan of [0, -1000, 1000, -5000, 5000]) {
+    for (const playerId of ['P1', 'P2'] as const) for (const dpr of [1, 2]) for (const pan of [0, -1000, 1000, -5000, 5000]) {
       const safe = { left: 4 * dpr, right: 4 * dpr, top: 8 * dpr, bottom: 20 * dpr };
       const viewport = computeViewportMetrics(width * dpr, height * dpr, safe, undefined, dpr);
       const project = (x: number) => viewport.width / 2 + (x - 450 - pan) * viewport.zoom;
-      const layout = dockMoveButtonLayout(viewport, project(25), project(925), height * dpr * 8 / 9, 180 * viewport.zoom);
-      const aim = touchAimRect(viewport);
+      const layout = dockMoveButtonLayout(viewport, project(25), project(925), height * dpr * 8 / 9, 180 * viewport.zoom, playerId);
+      const aim = touchAimRect(viewport, playerId);
+      expect(playerId === 'P2' ? aim.x < viewport.width / 2 : aim.x > viewport.width / 2).toBe(true);
       const obstacles = [
         aim,
-        battleHudLayout(viewport).banner,
+        battleHudLayout(viewport, playerId).banner,
         // Test the rendered caption independently of the combined avoidance rectangle.
         { x: aim.x, y: aim.y + aim.height / 2 + 10 * dpr, width: 40 * dpr, height: 20 * dpr },
       ];

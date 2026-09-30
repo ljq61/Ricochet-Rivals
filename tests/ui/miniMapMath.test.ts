@@ -8,10 +8,10 @@ import { screenRectsOverlap, touchAimRect } from '../../src/game/ui/touchControl
 describe('battle mini map', () => {
   it.each([[320, 180], [480, 180], [600, 180], [844, 180], [320, 240], [320, 568], [844, 240], [844, 390], [932, 430], [1280, 800]])(
     'keeps map and banner outside the HP cards at %i × %i', (width, height) => {
-      for (const dpr of [1, 2, 3]) {
+      for (const playerId of ['P1', 'P2'] as const) for (const dpr of [1, 2, 3]) {
         const safe = { left: 12 * dpr, right: 4 * dpr, top: 8 * dpr, bottom: 4 * dpr };
         const v = computeViewportMetrics(width * dpr, height * dpr, safe, undefined, dpr);
-        const { map, banner } = battleHudLayout(v);
+        const { map, banner } = battleHudLayout(v, playerId);
         const available = (v.width - safe.left - safe.right) / dpr;
         const cardScale = Math.min(1, (available - 110) / 540);
         const leftCardRight = safe.left + (12 + 270 * cardScale) * dpr;
@@ -24,7 +24,7 @@ describe('battle mini map', () => {
         for (const x of [safe.left + (12 + 135 * cardScale) * dpr, v.width - safe.right - (12 + 135 * cardScale) * dpr]) {
           expect(screenRectsOverlap(banner, { x, y: hpY, width: 270 * cardScale * dpr, height: 78 * cardScale * dpr })).toBe(false);
         }
-        expect(screenRectsOverlap(banner, touchAimRect(v))).toBe(false);
+        expect(screenRectsOverlap(banner, touchAimRect(v, playerId))).toBe(false);
       }
     });
 

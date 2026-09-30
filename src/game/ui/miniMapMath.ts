@@ -6,7 +6,7 @@ import type { ProjectileState } from '../state/ProjectileState';
 import { touchAimRect, type ScreenRect } from './touchAimLayout';
 
 /** Shared screen-space positions keep the map, HP cards and turn message separate. */
-export function battleHudLayout(viewport: ViewportMetrics): { map: ScreenRect; banner: ScreenRect } {
+export function battleHudLayout(viewport: ViewportMetrics, playerId: PlayerId = 'P1'): { map: ScreenRect; banner: ScreenRect } {
   const { width, safeArea, uiScale } = viewport;
   const available = (width - safeArea.left - safeArea.right) / uiScale;
   const hudScale = Math.max(0, Math.min(1, (available - 110) / 540));
@@ -18,7 +18,7 @@ export function battleHudLayout(viewport: ViewportMetrics): { map: ScreenRect; b
     width: mapWidth,
     height: 36 * uiScale,
   };
-  const aim = touchAimRect(viewport);
+  const aim = touchAimRect(viewport, playerId);
   let bannerHeight = 52 * uiScale;
   let bannerY = safeArea.top + Math.max(83 * hudScale + 8, 50) * uiScale + bannerHeight / 2;
   let bannerWidth = (available - 16) * uiScale;
@@ -30,10 +30,14 @@ export function battleHudLayout(viewport: ViewportMetrics): { map: ScreenRect; b
     const belowCards = Math.max(map.y + map.height / 2 + 8 * uiScale,
       safeArea.top + 83 * hudScale * uiScale + 4 * uiScale);
     if (available < 600 && movementTop - 8 * uiScale - belowCards >= 28 * uiScale) {
-      bannerWidth = Math.min(bannerWidth, aim.x - aim.width / 2 - safeArea.left - 16 * uiScale);
+      bannerWidth = Math.min(bannerWidth, playerId === 'P2'
+        ? width - safeArea.right - (aim.x + aim.width / 2) - 16 * uiScale
+        : aim.x - aim.width / 2 - safeArea.left - 16 * uiScale);
       bannerHeight = Math.min(36 * uiScale, movementTop - 8 * uiScale - belowCards);
       bannerY = belowCards + bannerHeight / 2;
-      return { map, banner: { x: safeArea.left + 8 * uiScale + bannerWidth / 2,
+      return { map, banner: { x: playerId === 'P2'
+        ? width - safeArea.right - 8 * uiScale - bannerWidth / 2
+        : safeArea.left + 8 * uiScale + bannerWidth / 2,
         y: bannerY, width: bannerWidth, height: bannerHeight } };
     }
     bannerWidth = Math.max(48 * uiScale, (middleGap - 12) * uiScale);
@@ -44,7 +48,7 @@ export function battleHudLayout(viewport: ViewportMetrics): { map: ScreenRect; b
     bannerY = map.y + map.height / 2 + 6 * uiScale + bannerHeight / 2;
   } else if (Math.abs(bannerY - aim.y) < (bannerHeight + aim.height) / 2) {
     // On short landscape screens, long connection messages must stop before Aim.
-    bannerWidth = Math.min(bannerWidth, 2 * (aim.x - aim.width / 2 - map.x - 8 * uiScale));
+    bannerWidth = Math.min(bannerWidth, 2 * (Math.abs(aim.x - map.x) - aim.width / 2 - 8 * uiScale));
   }
   return { map, banner: { x: map.x, y: bannerY, width: bannerWidth, height: bannerHeight } };
 }

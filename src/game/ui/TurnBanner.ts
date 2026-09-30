@@ -244,6 +244,7 @@ export class TurnBanner {
     this.bg.fillStyle(accent).fillRect(-w / 2 + 5 * ui, h / 2 - 6 * ui, w - 10 * ui, 3 * ui);
     this.bg.fillStyle(0xffdf9e);
     for (const x of [-w / 2 + 9 * ui, w / 2 - 9 * ui]) this.bg.fillCircle(x, 0, 2 * ui);
+    this.reposition();
   }
 
   /** 旋转或 DPR 变化后保留当前消息颜色并重算字体和底板。 */

@@ -295,6 +295,7 @@ export class TouchControls implements InputSource {
       projectX(center + dockWidth / 2),
       deckY,
       GAME_CONFIG.player.collision.height * zoom,
+      playerId,
     );
     for (const [button, position] of [
       [this.leftButton, layout.left], [this.rightButton, layout.right],

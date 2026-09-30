@@ -441,7 +441,7 @@ export class BattleScene extends Phaser.Scene {
     this.refreshMiniMap();
     // Renderer RENDER runs after Camera.preRender computes this frame's worldView.
     this.game.renderer.on(Phaser.Renderer.Events.RENDER, this.onMiniMapRender, this);
-    this.turnBanner = new TurnBanner(this, this.viewportService, (viewport) => battleHudLayout(viewport).banner);
+    this.turnBanner = new TurnBanner(this, this.viewportService, (viewport) => battleHudLayout(viewport, this.state.currentPlayerId).banner);
     this.damageNumbers = new DamageNumbers(this, this.viewportService);
 
     // 13. Debug Overlay + E2E 观测句柄

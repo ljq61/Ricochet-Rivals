@@ -55,6 +55,7 @@ export class MenuButton {
   private readonly art: Phaser.GameObjects.Image | null;
   private readonly label: Phaser.GameObjects.Text;
   private width: number;
+  private baseWidth: number;
   private height: number;
   private hovered = false;
   private iconActive = false;
@@ -66,6 +67,7 @@ export class MenuButton {
     this.deps = deps;
 
     const baseWidth = deps.baseWidth ?? DEFAULT_WIDTH;
+    this.baseWidth = baseWidth;
     const artKey = deps.accent === undefined ? ART.buttonGold : ART.buttonSteel;
     this.art =
       baseWidth >= ART_MIN_WIDTH && scene.textures.exists(artKey)
@@ -139,6 +141,13 @@ export class MenuButton {
     this.container.setPosition(x, y);
   }
 
+  /** Responsive action rows share the same visual and touch width. */
+  setBaseWidth(width: number): void {
+    if (this.baseWidth === width) return;
+    this.baseWidth = width;
+    this.applyScale();
+  }
+
   /** 显隐（场景按状态驱动 UI 页面组合）；不可见时 zone 同步失活 */
   setVisible(visible: boolean): void {
     this.visible = visible;
@@ -160,7 +169,7 @@ export class MenuButton {
 
   private applyScale(): void {
     const ui = this.deps.viewport.current.uiScale;
-    this.width = (this.deps.baseWidth ?? DEFAULT_WIDTH) * ui;
+    this.width = this.baseWidth * ui;
     this.height = (this.deps.baseHeight ?? DEFAULT_HEIGHT) * ui;
     this.label.setFontSize((this.deps.fontSize ?? FONT_SIZE) * ui);
     if (this.art !== null) {

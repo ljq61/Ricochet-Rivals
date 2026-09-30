@@ -30,6 +30,7 @@ import { WebRTCTransport } from '../network/WebRTCTransport';
 import { DEFAULT_WEBRTC_CONFIG } from '../network/WebRTCConfig';
 import { createMatchSetup } from '../match/MatchFactory';
 import { MenuButton, type ButtonRect } from '../ui/MenuButton';
+import { connectionQuality } from '../ui/connectionQuality';
 import { BattleScene } from './BattleScene';
 import { MainMenuScene } from './MainMenuScene';
 
@@ -133,6 +134,9 @@ export class OnlineConnectionScene extends Phaser.Scene {
   private title!: Phaser.GameObjects.Text;
   private statusLine!: Phaser.GameObjects.Text;
   private promptLine!: Phaser.GameObjects.Text;
+  private connectionPlate!: Phaser.GameObjects.Graphics;
+  private signalBars!: Phaser.GameObjects.Graphics;
+  private networkLine!: Phaser.GameObjects.Text;
   private buttons: Partial<Record<OnlineButton, MenuButton>> = {};
   private textarea: HTMLTextAreaElement | null = null;
   /** 当前流程中的连接码（host offer / guest response），COPY 用 */
@@ -140,6 +144,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
   /** textarea 正只读展示连接码（离开该状态时清空恢复粘贴语义） */
   private textareaHoldsCode = false;
   private lastRttMs: number | null = null;
+  private lastPongAt = 0;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   /** RTT 显示的 PONG 订阅取消器（交接 / 关闭时清理） */
   private pongCancel: (() => void) | null = null;
@@ -156,6 +161,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.currentCode = null;
     this.textareaHoldsCode = false;
     this.lastRttMs = null;
+    this.lastPongAt = 0;
     this.handedOff = false;
     this.lobbyPhase = 'idle';
     this.lobbyNotice = null;
@@ -195,6 +201,10 @@ export class OnlineConnectionScene extends Phaser.Scene {
       .text(0, 0, '', { fontFamily: 'monospace', color: toCssColor(PALETTE.zoneLine) })
       .setOrigin(0.5)
       .setDepth(900);
+    this.connectionPlate = this.add.graphics().setDepth(890);
+    this.signalBars = this.add.graphics().setDepth(900);
+    this.networkLine = this.add.text(0, 0, '', { fontFamily: 'monospace' })
+      .setOrigin(0.5).setDepth(900);
 
     this.buttons.create = new MenuButton(this, {
       router: this.inputRouter,
@@ -356,6 +366,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     // VERIFIED 后持续 ping 展示 RTT（防重复：onSession 幂等失败时双保险）
     if (this.pingTimer === null) {
       this.pingTimer = setInterval(() => {
+        this.renderState(); // Expired samples return to CHECKING rather than retaining green bars.
         try {
           session.networkManager.ping();
         } catch {
@@ -365,8 +376,10 @@ export class OnlineConnectionScene extends Phaser.Scene {
     }
     this.pongCancel = session.networkManager.onPong((envelope) => {
       this.lastRttMs = Math.max(0, Date.now() - envelope.payload.sentAt);
+      this.lastPongAt = Date.now();
       this.renderState();
     });
+    try { session.networkManager.ping(); } catch { /* Socket may close during adoption. */ }
   }
 
   // ---- 用户动作 ---------------------------------------------------------
@@ -601,6 +614,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     } else {
       this.renderRoomState();
     }
+    this.reposition();
   }
 
   /** Room 流渲染（SG-5 正式 UI：房间码 + 自动连接，零 SDP 露出） */
@@ -684,12 +698,10 @@ export class OnlineConnectionScene extends Phaser.Scene {
     }
 
     if (state === RoomConnectionState.VERIFIED) {
-      const role = this.sessionManager.current?.role === 'guest' ? 'GUEST' : 'HOST';
-      const rtt = this.lastRttMs !== null ? `PING ${this.lastRttMs}ms` : 'PING …';
-      status =
-        this.lobbyPhase === 'waiting'
-          ? `WAITING FOR OPPONENT… — ${role} — ${rtt}`
-          : `CONNECTED — ${role} — ${rtt}`;
+      status = this.lobbyNotice === null ? 'CONNECTED' : 'CONNECTION LOST';
+      prompt = this.lobbyNotice ?? (this.lobbyPhase === 'waiting'
+        ? 'Ready! Waiting for your friend…'
+        : "Enter battle when you're ready.");
     }
 
     for (const [key, button] of Object.entries(this.buttons)) {
@@ -778,13 +790,10 @@ export class OnlineConnectionScene extends Phaser.Scene {
     }
 
     if (state === OnlineConnectionState.VERIFIED) {
-      const role = this.sessionManager.current?.role === 'guest' ? 'GUEST' : 'HOST';
-      const rtt = this.lastRttMs !== null ? `PING ${this.lastRttMs}ms` : 'PING …';
-      // Phase 14：ENTER BATTLE 后进入等待 Host GAME_START 阶段
-      status =
-        this.lobbyPhase === 'waiting'
-          ? `WAITING FOR OPPONENT… — ${role} — ${rtt}`
-          : `CONNECTED — ${role} — ${rtt}`;
+      status = this.lobbyNotice === null ? 'CONNECTED' : 'CONNECTION LOST';
+      prompt = this.lobbyNotice ?? (this.lobbyPhase === 'waiting'
+        ? 'Ready! Waiting for your friend…'
+        : "Enter battle when you're ready.");
     }
 
     for (const [key, button] of Object.entries(this.buttons)) {
@@ -895,22 +904,61 @@ export class OnlineConnectionScene extends Phaser.Scene {
     const availableCssHeight = (height - safeArea.top - safeArea.bottom) / uiScale;
     const compact = availableCssHeight < 650;
     const short = availableCssHeight < 380;
+    const state = this.useManualFlow() ? this.controller.currentState : this.roomController?.currentState;
+    const verified = state === 'VERIFIED';
+    const connected = verified && this.lobbyNotice === null;
+    const failed = state === 'FAILED' || this.lobbyNotice !== null;
+    const waiting = state === 'ROOM_WAITING' || state === 'RECONNECTING_SIGNALING';
     this.buttons.back?.setPosition(
       safeArea.left + (24 + 32) * uiScale,
       safeArea.top + (24 + 32) * uiScale
     );
-    this.title.setFontSize((short ? 24 : compact ? 28 : TITLE_FONT) * uiScale);
+    const availableWidth = (width - safeArea.left - safeArea.right) / uiScale;
+    this.title.setFontSize(Math.min(short ? 24 : compact ? 28 : TITLE_FONT,
+      (availableWidth - 32) / 18 / 0.6) * uiScale);
     this.title.setPosition(width / 2, safeArea.top + (short ? 76 : compact ? 85 : 121) * uiScale);
 
     // 横屏短视口把标题、说明和动作区各放独立行，保留 64px 按钮命中区。
-    const statusY = safeArea.top + (short ? 115 : compact ? 132 : 160) * uiScale;
-    this.statusLine.setFontSize((compact ? 14 : TEXT_FONT) * uiScale);
+    const statusY = safeArea.top + (short ? 115 : compact ? 132 : verified ? 200 : 160) * uiScale;
+    this.statusLine.setFontSize((verified ? compact ? 22 : 28 : waiting ? compact ? 18 : 22 : compact ? 14 : TEXT_FONT) * uiScale);
+    this.statusLine.setFontStyle(verified || waiting ? 'bold' : 'normal');
+    this.statusLine.setColor(toCssColor(failed ? 0xff6b7b : connected ? 0x6de3ad : waiting ? 0xffd568 : PALETTE.head));
     this.promptLine.setFontSize((compact ? 13 : TEXT_FONT) * uiScale);
     const textWidth = width - safeArea.left - safeArea.right - 56 * uiScale;
     this.statusLine.setWordWrapWidth(textWidth);
     this.promptLine.setWordWrapWidth(textWidth);
     this.statusLine.setPosition(width / 2, statusY);
-    this.promptLine.setPosition(width / 2, statusY + (short ? 25 : compact ? 28 : 34) * uiScale);
+    this.promptLine.setPosition(width / 2, statusY + (verified ? compact ? 48 : 68 : short ? 25 : compact ? 28 : 34) * uiScale);
+    this.connectionPlate.clear();
+    this.signalBars.clear();
+    this.networkLine.setVisible(connected);
+    if (verified) {
+      const plateWidth = Math.min(420, availableWidth - 32) * uiScale;
+      const top = statusY - (compact ? 24 : 32) * uiScale;
+      const bottom = this.promptLine.getBounds().bottom + 12 * uiScale;
+      this.connectionPlate.fillStyle(connected ? 0x0a282b : 0x301e2a, 0.92);
+      this.connectionPlate.fillRoundedRect(width / 2 - plateWidth / 2, top, plateWidth, bottom - top, 14 * uiScale);
+      this.connectionPlate.lineStyle(uiScale, connected ? 0x6de3ad : 0xff6b7b, 0.65);
+      this.connectionPlate.strokeRoundedRect(width / 2 - plateWidth / 2, top, plateWidth, bottom - top, 14 * uiScale);
+      if (connected) {
+        const sample = Date.now() - this.lastPongAt <= 6_000 ? this.lastRttMs : null;
+        const quality = connectionQuality(sample);
+        const role = this.sessionManager.current?.role === 'guest' ? 'GUEST' : 'HOST';
+        const ping = sample === null ? 'PING …' : `${Math.round(sample)}ms`;
+        this.networkLine.setText(`${role} · ${ping} · ${quality.label}`)
+          .setColor(toCssColor(quality.color)).setFontSize((compact ? 12 : 14) * uiScale);
+        const rowWidth = this.networkLine.width + 42 * uiScale;
+        const rowX = width / 2 - rowWidth / 2;
+        const rowY = statusY + (compact ? 26 : 35) * uiScale;
+        this.networkLine.setPosition(rowX + 42 * uiScale + this.networkLine.width / 2, rowY);
+        for (let i = 0; i < 4; i++) {
+          const barHeight = (5 + i * 4) * uiScale;
+          this.signalBars.fillStyle(i < quality.bars ? quality.color : 0x345257, 1);
+          this.signalBars.fillRoundedRect(rowX + i * 8 * uiScale, rowY + 9 * uiScale - barHeight,
+            5 * uiScale, barHeight, uiScale);
+        }
+      }
+    }
 
     const buttonH = 56 * uiScale;
     const bottomRow = height - safeArea.bottom - 32 * uiScale - buttonH / 2;
@@ -928,9 +976,17 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.joinConfirm?.setPosition(centerX, actionRowY);
     this.buttons.copy?.setPosition(centerX + (this.useManualFlow() ? 170 : 0) * uiScale, actionRowY);
     this.buttons.tryAgain?.setPosition(centerX, compact ? primaryY : height * 0.6);
-    const enterY = compact ? primaryY : height * 0.58;
-    this.buttons.enterBattle?.setPosition(centerX, enterY);
-    this.buttons.backToMenu?.setPosition(centerX, enterY + buttonH + 24 * uiScale);
+    const enterY = Math.max(compact ? primaryY : height * 0.58,
+      verified ? this.promptLine.getBounds().bottom + 16 * uiScale + buttonH / 2 : 0);
+    const horizontalActions = verified && short && availableWidth >= 432;
+    const actionWidth = horizontalActions ? Math.min(320, (availableWidth - 48) / 2) : 320;
+    const actionCenterX = safeArea.left + (width - safeArea.left - safeArea.right) / 2;
+    this.buttons.enterBattle?.setBaseWidth(actionWidth);
+    this.buttons.backToMenu?.setBaseWidth(actionWidth);
+    this.buttons.enterBattle?.setPosition(horizontalActions ? actionCenterX - (actionWidth / 2 + 8) * uiScale : centerX,
+      horizontalActions ? bottomRow : enterY);
+    this.buttons.backToMenu?.setPosition(horizontalActions ? actionCenterX + (actionWidth / 2 + 8) * uiScale : centerX,
+      horizontalActions ? bottomRow : enterY + buttonH + (verified && short ? 16 : 24) * uiScale);
 
     this.positionTextarea();
   }
@@ -979,6 +1035,14 @@ export class OnlineConnectionScene extends Phaser.Scene {
           status: rect(self.statusLine),
           prompt: rect(self.promptLine),
         };
+      },
+      get connectionDisplay() {
+        const sample = Date.now() - self.lastPongAt <= 6_000 ? self.lastRttMs : null;
+        const ui = self.viewport.current.uiScale;
+        const bounds = self.networkLine.getBounds();
+        return { visible: self.networkLine.visible, ...connectionQuality(sample),
+          text: self.networkLine.text, rect: { x: bounds.x / ui, y: bounds.y / ui,
+            width: bounds.width / ui, height: bounds.height / ui } };
       },
       get flow(): string {
         return self.useManualFlow() ? 'manual' : 'room';
