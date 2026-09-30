@@ -279,6 +279,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
       showAuthoritativeDamage: deps.showAuthoritativeDamage,
       showRejected: deps.showRejected,
       setSyncLock: deps.setSyncLock,
+      onSnapshotApplied: deps.onSnapshotApplied,
     });
     this.cancels.push(this.guestChannel.attach());
   }

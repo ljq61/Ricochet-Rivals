@@ -23,6 +23,8 @@ export interface AimControllerDeps {
   isTouchProfile: boolean;
   /** UI 缩放（游戏像素 ÷ CSS 像素 = DPR）：触摸起始半径换算用 */
   getUiScale: () => number;
+  /** 联机回合归属 / 恢复锁；缺省允许，保持离线输入行为。 */
+  canControl?: () => boolean;
 }
 
 /**
@@ -65,6 +67,10 @@ export class AimController implements GestureClaimant {
 
   /** 相机离开 AIMING（取消瞄准等）时中止进行中的拖拽 */
   update(): void {
+    if (this.deps.canControl?.() === false) {
+      this.abort();
+      return;
+    }
     if (
       (this.aim.active || this.pending) &&
       this.deps.getCameraMode() !== CameraMode.AIMING
@@ -78,10 +84,19 @@ export class AimController implements GestureClaimant {
     this.abort();
   }
 
+  /** 恢复锁进入时取消已有拖拽；解锁后须重新按下才能瞄准。 */
+  cancel(): void {
+    this.abort();
+  }
+
   // ---- GestureClaimant（InputRouter → AIM） ------------------------------
 
   /** 无副作用探测：AIMING + 未发射 + 起始判定半径内 → 认领并进入 pending/激活 */
   tryClaim(event: GesturePointerEvent): boolean {
+    if (this.deps.canControl?.() === false) {
+      this.abort();
+      return false;
+    }
     if (this.deps.getCameraMode() !== CameraMode.AIMING) {
       return false;
     }
@@ -126,6 +141,10 @@ export class AimController implements GestureClaimant {
   }
 
   onMove(event: GesturePointerEvent): void {
+    if (this.deps.canControl?.() === false) {
+      this.abort();
+      return;
+    }
     if (this.pending && !this.aim.active) {
       // 死区按物理距离（client 坐标）判定，跨设备手感一致
       if (
@@ -148,6 +167,10 @@ export class AimController implements GestureClaimant {
   }
 
   onUp(_event: GesturePointerEvent): void {
+    if (this.deps.canControl?.() === false) {
+      this.abort();
+      return;
+    }
     // 死区内松手：未激活，静默取消（不发射）
     if (this.pending && !this.aim.active) {
       this.pending = null;

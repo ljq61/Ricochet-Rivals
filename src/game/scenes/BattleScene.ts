@@ -130,6 +130,9 @@ export class BattleScene extends Phaser.Scene {
   private onlineBootstrap: OnlineBattleBootstrap | null = null;
   /** 通道中断冻结（OPPONENT DISCONNECTED 后禁输入） */
   private connectionLost = false;
+  private connectionRecoveryActive = false;
+  /** 快照取代旧表现后，旧爆炸停留和转场回调不得再推进回合。 */
+  private presentationEpoch = 0;
   /** Phase 15：Guest desync 恢复期间输入锁（coordinator setSyncLock 驱动） */
   private syncLocked = false;
   /** Phase 15：SYNC_FAILED 终局（onSyncFailure 后禁重复处理） */
@@ -187,6 +190,8 @@ export class BattleScene extends Phaser.Scene {
     this.bannerTurnKey = null;
     this.bannerGameOverShown = false;
     this.connectionLost = false;
+    this.connectionRecoveryActive = false;
+    this.presentationEpoch += 1;
     this.syncLocked = false;
     this.syncFailed = false;
     this.handedToResult = false;
@@ -261,7 +266,9 @@ export class BattleScene extends Phaser.Scene {
         // syncLocked 并入 isRemoteControlledTurn —— 相机自由观察保留）
         setSyncLock: (locked) => {
           this.syncLocked = locked;
+          if (locked) this.freezeOnlineInput();
         },
+        onSnapshotApplied: () => this.restoreSnapshotPresentation(),
         onSyncStateChange: (state, detail) => {
           this.handleOnlineSyncStateChange(state, detail);
         },
@@ -369,6 +376,7 @@ export class BattleScene extends Phaser.Scene {
       commandBus: inputBus,
       isTouchProfile: isTouch,
       getUiScale: () => this.viewportService.current.uiScale,
+      canControl: () => this.isLocalControlledTurn(),
     });
     this.inputRouter.registerClaimant(this.aimController);
     this.aimRenderer = new AimRenderer(this);
@@ -415,9 +423,15 @@ export class BattleScene extends Phaser.Scene {
       if (this.online === null || this.online.role === 'host') {
         this.damageNumbers.show(result, this.state.players);
       }
+      const epoch = this.presentationEpoch;
+      const turnId = this.state.turnId;
       void this.cameraController
         .focusImpact({ x: impact.x, y: impact.y })
-        .then(() => this.onAttackResolved());
+        .then(() => {
+          if (epoch === this.presentationEpoch && turnId === this.state.turnId) {
+            this.onAttackResolved();
+          }
+        });
     });
     this.projectileSystem.onOutOfBounds(() => {
       this.logCameraEvent('outOfBounds');
@@ -477,7 +491,8 @@ export class BattleScene extends Phaser.Scene {
     const turnKey = `${this.state.currentPlayerId}:${this.state.turnId}`;
     if (
       this.bannerTurnKey !== turnKey &&
-      this.state.phase === TurnPhase.ACTION
+      this.state.phase === TurnPhase.ACTION &&
+      !this.connectionRecoveryActive && !this.syncLocked
     ) {
       this.bannerTurnKey = turnKey;
       // 断线 / 同步失败后不再弹回合横幅 —— 迟到的转场 showTurn 会
@@ -660,6 +675,7 @@ export class BattleScene extends Phaser.Scene {
   private isRemoteControlledTurn(): boolean {
     return (
       this.connectionLost ||
+      this.connectionRecoveryActive ||
       this.syncLocked || // Phase 15：desync 恢复期间锁 Move/Aim/Fire
       (this.online !== null && !this.online.isLocalTurn())
     );
@@ -750,6 +766,8 @@ export class BattleScene extends Phaser.Scene {
 
   /** 相机 TURN_TRANSITION 到新玩家 → ACTION（Host/离线/Guest 共用收尾） */
   private beginNextTurnTransition(): void {
+    const epoch = this.presentationEpoch;
+    const turnId = this.state.turnId;
     this.logCameraEvent(
       `beginTransition→cam=${this.cameraController.currentMode}`
     );
@@ -757,7 +775,34 @@ export class BattleScene extends Phaser.Scene {
       .transitionToPlayer(
         () => this.state.players[this.state.currentPlayerId].x
       )
-      .then(() => this.turnManager.notifyTurnTransitionComplete());
+      .then(() => {
+        if (epoch === this.presentationEpoch && turnId === this.state.turnId) {
+          this.turnManager.notifyTurnTransitionComplete();
+        }
+      });
+  }
+
+  /** 取消旧手势和回家 Tween；锁由每帧统一门禁持续维持。 */
+  private freezeOnlineInput(): void {
+    this.controls.setEnabled(false);
+    this.inputRouter.releaseAll();
+    this.aimController.cancel();
+    this.cameraController.cancelAim();
+    this.turnManager.cancelAim();
+  }
+
+  /** Guest 快照已经应用并 ACK；此处只恢复表现，不再次切换玩家或重置预算。 */
+  private restoreSnapshotPresentation(): void {
+    this.presentationEpoch += 1;
+    this.inputRouter.releaseAll();
+    this.aimController.cancel();
+    this.cameraController.enableFreeView();
+    if (this.state.phase === TurnPhase.END) {
+      this.beginNextTurnTransition();
+    } else if (this.state.phase === TurnPhase.ACTION) {
+      this.cameraController.centerOnX(this.state.players[this.state.currentPlayerId].x);
+    }
+    // RESOLVE 仍等 Host 的 TURN_END；GAME_OVER 仍由正常终局入口处理。
   }
 
   // ---- Phase 14 联机表现层 ----------------------------------------------
@@ -781,7 +826,7 @@ export class BattleScene extends Phaser.Scene {
    * 恢复耗尽）→ 既有终局 UX。对局结束后的正常关闭已被协调器抑制。
    */
   private handleOnlineDisconnected(): void {
-    if (this.connectionLost) {
+    if (this.connectionLost || this.connectionRecoveryActive) {
       return;
     }
     const recovery = this.roomRecovery;
@@ -800,7 +845,8 @@ export class BattleScene extends Phaser.Scene {
    * → 权威快照恢复）；耗尽 → 终局 UX。
    */
   private async beginOnlineRecovery(recovery: RoomRecoveryController): Promise<void> {
-    this.controls.setEnabled(false);
+    this.connectionRecoveryActive = true;
+    this.freezeOnlineInput();
     this.turnBanner.showMessage('RECONNECTING…', 0xffc24d);
     this.online?.setConnectionRecoveryActive(true);
     const result = await recovery.attemptRecovery();
@@ -816,9 +862,11 @@ export class BattleScene extends Phaser.Scene {
     if (result === 'RECOVERED') {
       this.logCameraEvent(`recovery=RECOVERED`);
       this.online?.requestPostReconnectSync();
-      this.controls.setEnabled(true);
+      this.connectionRecoveryActive = false;
+      this.syncInputOwnership();
       return;
     }
+    this.connectionRecoveryActive = false;
     this.showOpponentLostUi();
   }
 
@@ -881,6 +929,7 @@ export class BattleScene extends Phaser.Scene {
       // 重述；后台冻结的炮弹迟发 impact 会把相机打回 IMPACT 且无重试
       // 路径 → 永久滞留（E2E 全量复现：cam=IMPACT 而 phase=ACTION）
       this.projectileSystem.clearInFlightSimulations();
+      this.presentationEpoch += 1;
       this.turnBanner.showMessage('SYNCHRONIZING…', 0xffc24d);
     } else if (state === OnlineSyncState.SYNC_FAILED) {
       this.handleOnlineSyncFailure();
@@ -1129,6 +1178,7 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private onShutdown(): void {
+    this.presentationEpoch += 1;
     this.viewportService.destroy();
     this.inputRouter.destroy();
     this.cameraController.destroy();

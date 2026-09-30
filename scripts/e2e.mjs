@@ -1590,6 +1590,7 @@ async function driveOnlineBattle(pageHost, pageGuest, hooks = {}) {
   check('Host Move 双方可见（权威 MOVE 广播）', hostMoved && guestSyncMove);
 
   // Host 发炮：45° 求解瞄向 P2
+  if (hooks.beforeFirstFire) await hooks.beforeFirstFire(pageHost, pageGuest);
   const hostP2x = (await hostD()).players.P2;
   await fireFortyFiveShot(pageHost, 1280, 800, hostP2x);
   // Guest（后台）收到 FIRE 广播并本地发射 —— DataChannel 事件循环，无需前台
@@ -2055,6 +2056,49 @@ async function startSignalingServer(port) {
   }
 }
 
+/** 保持恢复窗口打开，验证跨帧输入锁及已认领拖拽的取消。底层 RTC 保留存活。 */
+async function verifyRecoveryInputLock(page) {
+  await page.bringToFront();
+  await page.keyboard.press('Space');
+  await waitFor(page, async () => (await dbg(page)).cameraMode === 'AIMING', 5000, '恢复前瞄准');
+  const origin = await launchOriginScreen(page, 1280, 800);
+  await page.mouse.move(origin.x, origin.y - 60);
+  await page.mouse.down();
+  let pointerHeld = true;
+  await page.mouse.move(origin.x + 100, origin.y + 30, { steps: 4 });
+  const before = await dbg(page);
+  await page.evaluate(() => {
+    const pc = window.__RR_E2E_PC__;
+    Object.defineProperty(pc, 'connectionState', { configurable: true, get: () => 'failed' });
+    window.__RR_DEBUG__.forceConnectionLost();
+  });
+  try {
+    await waitFor(page, async () => (await dbg(page)).recoveryState === 'RECONNECTING', 5000, '持续重连窗口');
+    await page.mouse.up(); // 恢复前已认领的手势也不得在松手时发射
+    pointerHeld = false;
+    await page.keyboard.down('a');
+    await page.keyboard.press('Space');
+    await sleep(350);
+    await page.keyboard.up('a');
+    const locked = await dbg(page);
+    check('重连跨帧禁止移动、重新瞄准及旧拖拽发射',
+      locked.recoveryState === 'RECONNECTING' &&
+      locked.players.P2 === before.players.P2 && !locked.hasFired &&
+      locked.projectileCount === 0 && locked.cameraMode === 'FREE_VIEW' &&
+      locked.online?.lastTxType !== 'FIRE_REQUEST' && locked.online?.lastTxType !== 'MOVE_REQUEST');
+  } finally {
+    await page.keyboard.up('a');
+    if (pointerHeld) await page.mouse.up();
+    await page.evaluate(() => {
+      const pc = window.__RR_E2E_PC__;
+      delete pc.connectionState;
+      pc.dispatchEvent(new Event('connectionstatechange'));
+    });
+  }
+  await waitFor(page, async () => (await dbg(page)).recoveryState === 'RECOVERED', 15000, '输入锁测试后恢复');
+  await waitFor(page, async () => (await dbg(page)).syncState === 'SYNCED_AFTER_RECOVERY', 15000, '输入锁测试后对账');
+}
+
 async function runOnlineRoom(browser) {
   section('Online Room — Room Code pairing（真实 Signaling Server + WebRTC 双页对战）');
   const stopSignaling = await startSignalingServer(8791);
@@ -2063,7 +2107,17 @@ async function runOnlineRoom(browser) {
     const page = await browser.newPage();
     page.on('pageerror', (e) => console.log(`[${label} PAGEERROR]`, e.message));
     page.on('console', (m) => console.log(`[${label} console.${m.type()}]`, m.text().slice(0, 200)));
-    await page.evaluateOnNewDocument((u) => { window.__RR_SIGNALING_URL__ = u; }, 'ws://127.0.0.1:8791');
+    await page.evaluateOnNewDocument((u) => {
+      window.__RR_SIGNALING_URL__ = u;
+      const NativePeerConnection = window.RTCPeerConnection;
+      window.RTCPeerConnection = class extends NativePeerConnection {
+        constructor(config) {
+          super(config);
+          window.__RR_E2E_PC__ = this;
+          this.addEventListener('datachannel', (event) => { window.__RR_E2E_CHANNEL__ = event.channel; });
+        }
+      };
+    }, 'ws://127.0.0.1:8791');
     await page.setViewport({ width: 1280, height: 800 });
     await page.goto(URL, { waitUntil: 'load' });
     await waitForScene(page, 'MainMenuScene', 15000);
@@ -2172,6 +2226,20 @@ async function runOnlineRoom(browser) {
     );
 
     await driveOnlineBattle(pageHost, pageGuest, {
+      beforeFirstFire: async (_pageHost, pageGuest) => {
+        await pageGuest.evaluate(() => {
+          const channel = window.__RR_E2E_CHANNEL__;
+          const intercept = (event) => {
+            if (JSON.parse(event.data).type !== 'TURN_END') return;
+            // 模拟 TURN_END 尚未应用就进入恢复：快照必须独立恢复下一回合。
+            event.stopImmediatePropagation();
+            channel.removeEventListener('message', intercept, true);
+            window.__RR_E2E_TURN_END_INTERCEPTED__ = true;
+            window.__RR_DEBUG__.forceConnectionLost();
+          };
+          channel.addEventListener('message', intercept, true);
+        });
+      },
       /**
        * SG-8 ICE Restart 恢复场景：debug 注入模拟连接失败（真实 pc 存活）→
        * 后续是真实 createOffer({iceRestart:true}) 经活信令服务器的全协商。
@@ -2179,6 +2247,12 @@ async function runOnlineRoom(browser) {
        * （CONNECTION_RECOVERED → 权威快照全链）。
        */
       onMidBattle: async (pageHost, pageGuest) => {
+        const recoveredTurn = await dbg(pageGuest);
+        check('回合切换期间恢复：未应用 TURN_END 也能恢复到 ACTION / FREE_VIEW',
+          await pageGuest.evaluate(() => window.__RR_E2E_TURN_END_INTERCEPTED__ === true) &&
+          recoveredTurn.recoveryState === 'RECOVERED' && recoveredTurn.syncState === 'SYNCED_AFTER_RECOVERY' &&
+          recoveredTurn.phase === 'ACTION' && recoveredTurn.cameraMode === 'FREE_VIEW' && recoveredTurn.turnId === 2);
+        await verifyRecoveryInputLock(pageGuest);
         // Host 侧：模拟失败 → RECONNECTING → 真实 restart offer 交换 → RECOVERED
         await pageHost.evaluate(() => window.__RR_DEBUG__.forceConnectionLost());
         const hostRecovered = await waitFor(

@@ -292,6 +292,8 @@ export interface OnlineBattleDeps {
    * （transitionToPlayer → notifyTurnTransitionComplete）。
    */
   resumeNextTurn(): void;
+  /** Guest 权威快照恢复成功后重建相机/转场表现；不推进权威回合。 */
+  onSnapshotApplied?(snapshot: AuthoritativeGameSnapshot): void;
   /** Guest 专属：权威伤害数字展示（复用 DamageResult 形状） */
   showAuthoritativeDamage(result: DamageResult): void;
   /** Guest 收到 COMMAND_REJECTED 的轻量提示入口 */

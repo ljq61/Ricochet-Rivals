@@ -15,6 +15,7 @@ import { OnlineGameCoordinator } from '../../src/game/network/online/OnlineGameC
 import { stateFromSnapshot } from '../../src/game/network/online/AuthoritativeState';
 import type {
   CommandRejectedPayload,
+  AuthoritativeGameSnapshot,
   OnlineBattleBootstrap,
 } from '../../src/game/network/online/OnlineTypes';
 import type { DamageResult } from '../../src/game/state/DamageResult';
@@ -59,6 +60,7 @@ export interface OnlineHarness {
   readonly hostSyncFailure: Mock<() => void>;
   readonly guestSyncFailure: Mock<() => void>;
   readonly guestSetSyncLock: Mock<(locked: boolean) => void>;
+  readonly guestSnapshotApplied: Mock<(snapshot: AuthoritativeGameSnapshot) => void>;
   readonly hostBoot: OnlineBattleBootstrap;
   readonly guestBoot: OnlineBattleBootstrap;
   /** onStart 各自触发次数（幂等回归断言用） */
@@ -180,6 +182,7 @@ export async function createOnlineHarness(
   const hostSyncFailure: Mock<() => void> = vi.fn();
   const guestSyncFailure: Mock<() => void> = vi.fn();
   const guestSetSyncLock: Mock<(locked: boolean) => void> = vi.fn();
+  const guestSnapshotApplied: Mock<(snapshot: AuthoritativeGameSnapshot) => void> = vi.fn();
 
   if (attach) {
     hostCoord.attach({
@@ -204,6 +207,7 @@ export async function createOnlineHarness(
       showRejected: guestRejected,
       onDisconnected: guestDisconnected,
       setSyncLock: guestSetSyncLock,
+      onSnapshotApplied: guestSnapshotApplied,
       onSyncStateChange: guestSyncStateChange,
       onSyncFailure: guestSyncFailure,
     });
@@ -240,6 +244,7 @@ export async function createOnlineHarness(
     hostSyncFailure,
     guestSyncFailure,
     guestSetSyncLock,
+    guestSnapshotApplied,
     hostBoot,
     guestBoot,
     hostBootCount: hostBoots.length,
