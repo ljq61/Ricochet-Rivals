@@ -5,7 +5,9 @@ import { NetworkMessageType } from '../../src/game/network/NetworkMessageType';
 import { TransportError } from '../../src/game/network/NetworkTransport';
 import { TransportState } from '../../src/game/network/TransportState';
 import { WebRTCTransport } from '../../src/game/network/WebRTCTransport';
+import type { WebRTCConfig } from '../../src/game/network/WebRTCConfig';
 import { serializeEnvelope } from '../../src/game/network/serialization/NetworkSerializer';
+import type { SignalingIceCandidate } from '../../src/game/network/signaling/SignalingMessage';
 import { makeEnvelope } from './envelopeFixture';
 
 /**
@@ -71,12 +73,19 @@ class FakeRTCDataChannel {
   }
 }
 
-class FakeRTCPeerConnection {
+export class FakeRTCPeerConnection {
   connectionState: RTCPeerConnectionState = 'new';
   iceConnectionState: RTCIceConnectionState = 'new';
   iceGatheringState: RTCIceGatheringState = 'new';
+  signalingState: RTCSignalingState = 'stable';
   closed = false;
   readonly dataChannels: FakeRTCDataChannel[] = [];
+  /** SG-8：createOffer 收到的 options 逐次记录（iceRestart 断言用） */
+  readonly createOfferOptions: Array<RTCOfferOptions | undefined> = [];
+  /** SG-4：经 transport.addIceCandidate 成功落库的对端 candidate（malformed 不入） */
+  readonly addedCandidates: RTCIceCandidateInit[] = [];
+  /** SG-6：getStats 注入报告（transport 诊断解析 selected pair） */
+  statsEntries: Array<Record<string, unknown>> = [];
   localDescription: { type: RTCSdpType; sdp: string } | null = null;
   remoteDescription: { type: RTCSdpType; sdp: string } | null = null;
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
@@ -110,8 +119,9 @@ class FakeRTCPeerConnection {
     return channel;
   }
 
-  async createOffer(): Promise<RTCSessionDescriptionInit> {
-    return { type: 'offer', sdp: 'fake:offer-sdp' };
+  async createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit> {
+    this.createOfferOptions.push(options);
+    return { type: 'offer', sdp: options?.iceRestart === true ? 'fake:offer-sdp-restart' : 'fake:offer-sdp' };
   }
 
   async createAnswer(): Promise<RTCSessionDescriptionInit> {
@@ -148,10 +158,48 @@ class FakeRTCPeerConnection {
   completeIceGathering(): void {
     this.iceGatheringState = 'complete';
     this.emit('icegatheringstatechange');
+    // browser contract：gathering 完结时 onicecandidate 收到 null candidate
+    this.emit('icecandidate', { candidate: null });
+  }
+
+  /** SG-4：模拟浏览器逐个产出本地 candidate */
+  emitLocalCandidate(candidate: {
+    candidate: string;
+    sdpMid?: string | null;
+    sdpMLineIndex?: number | null;
+  }): void {
+    this.emit('icecandidate', { candidate });
+  }
+
+  /** SG-4：真实浏览器对畸形 candidate 会 reject —— fake 以 'candidate:' 前缀校验模拟 */
+  async addIceCandidate(candidate?: RTCIceCandidateInit | null): Promise<void> {
+    const text = candidate?.candidate;
+    if (typeof text !== 'string' || !text.startsWith('candidate:')) {
+      throw new Error(`FakeRTCPeerConnection.addIceCandidate malformed: ${String(text)}`);
+    }
+    this.addedCandidates.push(candidate ?? {});
+  }
+
+  /** SG-6：最小 RTCStatsReport 形状（forEach 遍历注入条目） */
+  async getStats(): Promise<RTCStatsReport> {
+    const entries = this.statsEntries;
+    return {
+      forEach: (callback: (stat: Record<string, unknown>) => void) => {
+        for (const entry of entries) {
+          callback(entry);
+        }
+      },
+    } as unknown as RTCStatsReport;
   }
 
   failConnection(): void {
     this.connectionState = 'failed';
+    this.emit('connectionstatechange');
+  }
+
+  /** SG-8：模拟 ICE restart 后连接重建（connectionState → connected） */
+  restoreConnection(): void {
+    this.connectionState = 'connected';
     this.emit('connectionstatechange');
   }
 }
@@ -167,6 +215,7 @@ function makeTransport(role: PeerRole): Bundle {
   const transport = new WebRTCTransport({
     role,
     peerConnectionFactory: () => pc as unknown as RTCPeerConnection,
+    pcCloseDelayMs: 0, // 单测即时关闭（延迟刷出行为由 R6 专测）
   });
   return { transport, pc, channel: role === 'host' ? pc.dataChannels[0] ?? null : null };
 }
@@ -494,5 +543,283 @@ describe('WebRTCTransport', () => {
     await first;
     await second;
     expect(bundle.transport.state).toBe(TransportState.CONNECTED);
+  });
+});
+
+describe('WebRTCTransport — Trickle ICE（SG-4）', () => {
+  const CAND_A: SignalingIceCandidate = { candidate: 'candidate:1 1 UDP 1 10.0.0.1 40000 typ host', sdpMid: '0' };
+  const CAND_B: SignalingIceCandidate = { candidate: 'candidate:2 1 UDP 1 10.0.0.2 40001 typ srflx', sdpMid: '0' };
+
+  it('T4：beginOffer/beginAnswer 即时返回 —— 不等 ICE gathering（对照 createOffer 仍等待）', async () => {
+    const host = makeTransport('host');
+    const hostPending = host.transport.beginOffer();
+    const hostSdp = await hostPending; // 无 completeIceGathering 也 resolve
+    expect(JSON.parse(hostSdp)).toMatchObject({ type: 'offer', sdp: 'fake:offer-sdp' });
+    expect(host.pc.iceGatheringState).toBe('gathering'); // gather 仍在进行
+
+    const guest = makeTransport('guest');
+    await guest.transport.acceptOffer(JSON.stringify({ type: 'offer', sdp: 'fake:offer-sdp' }));
+    const guestSdp = await guest.transport.beginAnswer();
+    expect(JSON.parse(guestSdp)).toMatchObject({ type: 'answer', sdp: 'fake:answer-sdp' });
+  });
+
+  it('T5：本地 candidate 事件映射 + null 完结（browser contract）', async () => {
+    const bundle = makeTransport('host');
+    const received: Array<unknown> = [];
+    bundle.transport.onLocalIceCandidate((candidate) => received.push(candidate));
+
+    bundle.pc.emitLocalCandidate({ candidate: 'candidate:1 1 UDP 1 10.0.0.1 40000 typ host', sdpMid: '0' });
+    bundle.pc.emitLocalCandidate({ candidate: 'candidate:2 1 UDP 1 10.0.0.2 40001 typ srflx', sdpMid: '0' });
+    bundle.pc.completeIceGathering(); // → null candidate 事件
+
+    expect(received.length).toBe(3);
+    const first = received[0] as { candidate?: string; sdpMid?: string };
+    expect(first.candidate).toContain('typ host');
+    expect(first.sdpMid).toBe('0');
+    expect(received[2]).toBeNull(); // end of candidates
+  });
+
+  it('T6：candidate 先于 remoteDescription → 入队；acceptOffer 后按序 flush', async () => {
+    const bundle = makeTransport('guest');
+    bundle.transport.addIceCandidate(CAND_A);
+    bundle.transport.addIceCandidate(CAND_B);
+    expect(bundle.pc.addedCandidates.length).toBe(0); // remoteDescription 未 set → 入队
+
+    await bundle.transport.acceptOffer(JSON.stringify({ type: 'offer', sdp: 'fake:offer-sdp' }));
+    expect(bundle.pc.addedCandidates.length).toBe(2);
+    expect(bundle.pc.addedCandidates[0]?.candidate).toContain('10.0.0.1');
+    expect(bundle.pc.addedCandidates[1]?.candidate).toContain('10.0.0.2'); // flush 顺序保持
+  });
+
+  it('T7：remoteDescription 已 apply → candidate 直通（无队列）', async () => {
+    const bundle = makeTransport('host');
+    await createOfferWithIce(bundle); // host 侧 localDescription 就绪
+    await bundle.transport.acceptAnswer(JSON.stringify({ type: 'answer', sdp: 'fake:answer-sdp' }));
+
+    bundle.transport.addIceCandidate(CAND_A);
+    await tick();
+    expect(bundle.pc.addedCandidates.length).toBe(1); // 直通
+  });
+
+  it('T8：duplicate candidate 丢弃（candidate 文本复合键去重）', async () => {
+    const bundle = makeTransport('host');
+    await bundle.transport.acceptAnswer(JSON.stringify({ type: 'answer', sdp: 'fake:answer-sdp' }));
+
+    bundle.transport.addIceCandidate(CAND_A);
+    bundle.transport.addIceCandidate(CAND_A); // 完全重复
+    bundle.transport.addIceCandidate({ ...CAND_A, sdpMid: '1' }); // 同文本不同 m-line → 不算重复
+    await tick();
+    expect(bundle.pc.addedCandidates.length).toBe(2);
+  });
+
+  it('T9：malformed candidate 拒收不崩 —— 后续合法候选不受影响', async () => {
+    const bundle = makeTransport('host');
+    await bundle.transport.acceptAnswer(JSON.stringify({ type: 'answer', sdp: 'fake:answer-sdp' }));
+
+    expect(() => bundle.transport.addIceCandidate({ candidate: 'garbage-line' })).not.toThrow();
+    await tick();
+    bundle.transport.addIceCandidate(CAND_A);
+    await tick();
+    expect(bundle.pc.addedCandidates.length).toBe(1); // 畸形被拒、合法落库
+  });
+
+  it('T10：close 全清理扩展 —— icecandidate listener 摘除、candidate 订阅清空、pending 队列弃置', async () => {
+    const bundle = makeTransport('guest');
+    let endEvents = 0;
+    bundle.transport.onLocalIceCandidate((candidate) => {
+      if (candidate === null) endEvents += 1;
+    });
+    bundle.transport.addIceCandidate(CAND_A); // 入队
+    bundle.transport.close();
+
+    expect(bundle.pc.listenerCount('icecandidate')).toBe(0);
+    // close 后 fake 事件不再到达 transport（listener 已摘）—— 订阅侧零回调
+    bundle.pc.completeIceGathering();
+    bundle.pc.emitLocalCandidate({ candidate: 'candidate:3 1 UDP 1 10.0.0.3 40002 typ relay' });
+    expect(endEvents).toBe(0);
+
+    // 队列已弃置：重新 open 不可达（transport CLOSED），无泄漏路径
+    expect(bundle.transport.state).toBe(TransportState.CLOSED);
+  });
+});
+
+describe('WebRTCTransport — SG-6（iceTransportPolicy + 诊断）', () => {
+  function makePolicyTransport() {
+    const captured: WebRTCConfig[] = [];
+    const pc = new FakeRTCPeerConnection();
+    const transport = new WebRTCTransport({
+      role: 'host',
+      config: { iceServers: [{ urls: 'stun:stun.unit:3478' }], iceTransportPolicy: 'relay' },
+      peerConnectionFactory: (config) => {
+        captured.push(config);
+        return pc as unknown as RTCPeerConnection;
+      },
+      pcCloseDelayMs: 0,
+    });
+    return { transport, pc, captured };
+  }
+
+  it('D1：iceTransportPolicy 透传至 RTCPeerConnection config（DEBUG_FORCE_RELAY 链路）', () => {
+    const { captured } = makePolicyTransport();
+    expect(captured[0]?.iceTransportPolicy).toBe('relay');
+    expect(captured[0]?.iceServers).toEqual([{ urls: 'stun:stun.unit:3478' }]);
+  });
+
+  it('D2：本地 candidate 类型收集 + icecandidateerror 计数', async () => {
+    const { transport, pc } = makePolicyTransport();
+    pc.emitLocalCandidate({ candidate: 'candidate:1 1 UDP 1 192.168.1.4 40000 typ host', sdpMid: '0' });
+    pc.emitLocalCandidate({ candidate: 'candidate:2 1 UDP 1 8.8.8.8 40001 typ srflx', sdpMid: '0' });
+    pc.emitLocalCandidate({ candidate: 'candidate:3 1 TCP 1 10.0.0.1 40002 typ relay', sdpMid: '0' });
+    pc.emit('icecandidateerror', { url: 'stun:stun.unit:3478', errorCode: 300 });
+    pc.emit('icecandidateerror', { url: 'turn:turn.example.com:3478?transport=udp', errorCode: 401, errorText: 'Unauthorized' });
+
+    const diag = await transport.getDiagnostics();
+    expect(diag.localCandidateTypes).toEqual(['host', 'srflx', 'relay']);
+    expect(diag.iceCandidateErrorCount).toBe(2);
+    expect(diag.lastIceCandidateError).toContain('401');
+    expect(diag.lastIceCandidateError).toContain('turn.example.com');
+    expect(diag.signalingState).toBe('stable');
+  });
+
+  it('D3：selected pair（getStats 注入）—— relay 对 → route=RELAY + relayProtocol', async () => {
+    const { transport, pc } = makePolicyTransport();
+    pc.statsEntries = [
+      { type: 'candidate-pair', id: 'P1', selected: true, localCandidateId: 'L', remoteCandidateId: 'R', state: 'succeeded' },
+      { type: 'local-candidate', id: 'L', candidateType: 'relay', protocol: 'tcp', address: '10.0.0.9', relayProtocol: 'tls' },
+      { type: 'remote-candidate', id: 'R', candidateType: 'host', protocol: 'udp', address: '192.168.1.2' },
+    ];
+    const diag = await transport.getDiagnostics();
+    expect(diag.selectedPair?.localType).toBe('relay');
+    expect(diag.selectedPair?.remoteType).toBe('host');
+    expect(diag.selectedPair?.relayProtocol).toBe('tls');
+    expect(diag.route).toBe('RELAY');
+  });
+
+  it('D4：selected pair host↔host → DIRECT；无 stats → route=null（未连接）', async () => {
+    const { transport, pc } = makePolicyTransport();
+    pc.statsEntries = [
+      { type: 'candidate-pair', id: 'P1', nominated: true, state: 'succeeded', localCandidateId: 'L', remoteCandidateId: 'R' },
+      { type: 'local-candidate', id: 'L', candidateType: 'host', protocol: 'udp' },
+      { type: 'remote-candidate', id: 'R', candidateType: 'host', protocol: 'udp' },
+    ];
+    expect((await transport.getDiagnostics()).route).toBe('DIRECT');
+
+    pc.statsEntries = [];
+    const none = await transport.getDiagnostics();
+    expect(none.selectedPair).toBeNull();
+    expect(none.route).toBeNull();
+  });
+
+  it('D5：close 清理诊断状态（candidate 类型清空、error listener 摘除）', async () => {
+    const { transport, pc } = makePolicyTransport();
+    pc.emitLocalCandidate({ candidate: 'candidate:1 1 UDP 1 192.168.1.4 40000 typ host', sdpMid: '0' });
+    transport.close();
+    const diag = await transport.getDiagnostics();
+    expect(diag.transportState).toBe(TransportState.CLOSED);
+    expect(diag.localCandidateTypes).toEqual([]);
+    expect(pc.listenerCount('icecandidateerror')).toBe(0);
+  });
+});
+
+describe('WebRTCTransport — SG-8（ICE restart 恢复面）', () => {
+  it('R1：restartOffer —— iceRestart 选项 + 即返（不等 gathering）+ CLOSED 拒绝', async () => {
+    const b = makeTransport('host');
+    await connectHost(b);
+    b.pc.failConnection();
+    // FAILED → CONNECTING（恢复武装前置）；武装 promise 由 close() 收口，预挂 catch 防未处理拒绝
+    void b.transport.recoverConnect(5_000).catch(() => {});
+
+    const pending = b.transport.restartOffer();
+    let returned = false;
+    void pending.then(() => {
+      returned = true;
+    });
+    await tick();
+    expect(returned).toBe(true); // 即返：fake setLocal 后仍 gathering
+    expect(b.pc.createOfferOptions[0]).toEqual({ iceRestart: true });
+    expect(b.pc.iceGatheringState).toBe('gathering');
+    expect(b.pc.localDescription?.sdp).toBe('fake:offer-sdp-restart');
+
+    b.transport.close();
+    await expectRejection(b.transport.restartOffer()); // CLOSED 拒绝（不复活）
+  });
+
+  it('R2：recoverConnect 三态 + 防假成功门（channel open 但 pc 未 connected 不 resolve）', async () => {
+    // CONNECTED → 即 resolve
+    const a = makeTransport('host');
+    await connectHost(a);
+    await expect(a.transport.recoverConnect()).resolves.toBeUndefined();
+
+    // FAILED → 武装；真实 ICE 失败期 SCTP 通道常仍 open —— 不得在 restart
+    // 生效前假成功（必须等 connectionState connected）
+    a.pc.failConnection();
+    const armed = a.transport.recoverConnect(200);
+    await tick();
+    expect(a.transport.state).toBe(TransportState.CONNECTING);
+    let resolved = false;
+    void armed.then(() => {
+      resolved = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(resolved).toBe(false); // pc failed：channel open 也不 resolve
+
+    a.pc.restoreConnection(); // connected + channel open → 恢复完成
+    await armed;
+    expect(a.transport.connected).toBe(true);
+
+    // CLOSED → 拒绝
+    a.transport.close();
+    await expectRejection(a.transport.recoverConnect());
+  });
+
+  it('R3：防假成功门不伤初连 —— 通道 open 且 pc connected 时 connect() 即成', async () => {
+    const b = makeTransport('host');
+    b.channel?.simulateOpen(); // open 事件先于 connect()
+    b.pc.connectionState = 'connected';
+    await b.transport.connect();
+    expect(b.transport.connected).toBe(true);
+  });
+
+  it('R4：recheckConnection 补查 —— 后台 missed 的 failed 状态经手动重查触发失败链', async () => {
+    const b = makeTransport('host');
+    await connectHost(b);
+    const losses: string[] = [];
+    b.transport.onDisconnect((reason) => losses.push(reason ?? ''));
+    b.pc.connectionState = 'failed'; // 后台期 connectionstatechange 未派发
+    expect(losses.length).toBe(0);
+
+    b.transport.recheckConnection();
+    expect(losses).toEqual(['CONNECTION_FAILED']);
+    expect(b.transport.state).toBe(TransportState.FAILED);
+  });
+
+  it('R5：debugSimulateConnectionLost —— FAILED + lastLossReason，底层不真死（E2E 注入口）', async () => {
+    const b = makeTransport('host');
+    await connectHost(b);
+    b.transport.debugSimulateConnectionLost('CONNECTION_FAILED');
+    expect(b.transport.state).toBe(TransportState.FAILED);
+    expect(b.transport.lastLossReason).toBe('CONNECTION_FAILED');
+    expect(b.channel?.readyState).toBe('open');
+    expect(b.pc.connectionState).not.toBe('failed');
+  });
+
+  it('R6：close() 延后 pc.close()（SCTP close 刷出窗口）—— channel 即关、pc 存活至窗口后', async () => {
+    const pc = new FakeRTCPeerConnection();
+    const transport = new WebRTCTransport({
+      role: 'host',
+      peerConnectionFactory: () => pc as unknown as RTCPeerConnection,
+      pcCloseDelayMs: 15,
+    });
+    const channel = pc.dataChannels[0];
+    expect(channel).toBeDefined();
+    transport.close();
+
+    // 立即：通道已关（SCTP 流重置已发起）、transport 已终态；pc 仍存活等刷出
+    expect(channel?.closed).toBe(true);
+    expect(transport.state).toBe(TransportState.CLOSED);
+    expect(pc.closed).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(pc.closed).toBe(true); // 窗口后 pc 关闭
   });
 });

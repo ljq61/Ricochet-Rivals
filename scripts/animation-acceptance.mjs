@@ -3,7 +3,7 @@
  * Screenshots: scripts/art-acceptance-output (ignored).
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import puppeteer from 'puppeteer-core';
 
 const OUT_DIR = 'scripts/art-acceptance-output/animation';
@@ -130,7 +130,10 @@ async function inspect(browser, mobile) {
   await waitForScene(page,'BattleScene');
   await waitFor(async()=> (await dbg(page)).phase==='ACTION',10000,'ACTION');
   const visuals = async()=> (await dbg(page)).artAnimation;
-  if(mobile) await page.touchscreen.touchStart(64,326); else await page.keyboard.down('d');
+  if(mobile) {
+    const move=(await dbg(page)).moveButtons.right;
+    await page.touchscreen.touchStart(move.x,move.y);
+  } else await page.keyboard.down('d');
   const frames = new Set();
   for(let i=0;i<8;i++) {
     await pause(80);
@@ -143,7 +146,9 @@ async function inspect(browser, mobile) {
   if(frames.size<3) throw new Error(`Walk frames did not advance: ${[...frames]}`);
   if((await visuals()).some(v=>v.key==='art-blue-walk')) throw new Error('Walk did not return to idle');
   // Advance naturally to P2 so both character sheets are exercised by real input.
-  const ax=mobile?W-52:W/2, ay=mobile?H/2:H-104;
+  const aimBounds=(await dbg(page)).aimButtonBounds;
+  const aimUi=(await dbg(page)).uiScale;
+  const ax=aimBounds.x/aimUi, ay=aimBounds.y/aimUi;
   if(mobile) await page.touchscreen.tap(ax,ay); else await page.mouse.click(ax,ay);
   await waitFor(async()=> (await dbg(page)).cameraMode==='AIMING',3000,'aim');
   const d=await dbg(page);
@@ -158,17 +163,66 @@ async function inspect(browser, mobile) {
   }
   await waitFor(async()=> (await dbg(page)).currentPlayerId==='P2' && (await dbg(page)).phase==='ACTION',10000,'P2 turn');
   await pause(800);
-  if(mobile) await page.touchscreen.touchStart(64,326); else await page.keyboard.down('a');
+  // Observe every rendered frame without pausing input for repeated screenshots.
+  await page.evaluate(()=> {
+    window.__RR_WALK_FRAMES__=[];
+    window.__RR_WALK_RECORDING__=true;
+    const tick=()=> {
+      if(!window.__RR_WALK_RECORDING__) return;
+      const walk=window.__RR_DEBUG__.artAnimation.find(v=>v.key==='art-red-walk');
+      if(walk && !window.__RR_WALK_FRAMES__.includes(walk.frame)) window.__RR_WALK_FRAMES__.push(walk.frame);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    const stream=document.querySelector('canvas').captureStream(30);
+    const recorder=new MediaRecorder(stream,{mimeType:'video/webm'}), chunks=[];
+    recorder.ondataavailable=e=> {if(e.data.size) chunks.push(e.data);};
+    window.__RR_WALK_VIDEO__={recorder,stream,chunks};
+    recorder.start();
+  });
+  if(mobile) {
+    const move=(await dbg(page)).moveButtons.left;
+    await page.touchscreen.touchStart(move.x,move.y);
+  } else await page.keyboard.down('a');
   const redFrames=new Set();
-  for(let i=0;i<6;i++) {
-    await pause(80);
+  for(let i=0;i<32;i++) {
+    await pause(30);
     const walk=(await visuals()).find(v=>v.key==='art-red-walk');
-    if(walk) {redFrames.add(walk.frame); if(!walk.flipX) throw new Error('P2 left walk not mirrored');}
-    if(i===2) await page.screenshot({path:`${OUT_DIR}/${prefix}-red-walking.png`});
+    if(walk) {
+      redFrames.add(walk.frame);
+      if(!walk.flipX) throw new Error('P2 left walk not mirrored');
+    }
+    if(i===6) await page.screenshot({path:`${OUT_DIR}/${prefix}-red-walking.png`});
   }
   if(mobile) await page.touchscreen.touchEnd(); else await page.keyboard.up('a');
+  for(const frame of await page.evaluate(()=> {
+    window.__RR_WALK_RECORDING__=false;
+    return window.__RR_WALK_FRAMES__;
+  })) redFrames.add(frame);
   await pause(100);
-  if(redFrames.size<3 || (await visuals()).some(v=>v.key==='art-red-walk')) throw new Error('P2 walk/stop failed');
+  if(redFrames.size<8 || ![...redFrames].some(f=>Number(f)===2) || ![...redFrames].some(f=>Number(f)===6) ||
+      (await visuals()).some(v=>v.key==='art-red-walk')) throw new Error(`P2 complete alternating walk/stop failed: ${[...redFrames]}`);
+  if(mobile) {
+    const move=(await dbg(page)).moveButtons.right;
+    await page.touchscreen.touchStart(move.x,move.y);
+  } else await page.keyboard.down('d');
+  await pause(180);
+  const rightWalk=(await visuals()).find(v=>v.key==='art-red-walk');
+  if(!rightWalk || rightWalk.flipX) throw new Error('P2 right walk must face right');
+  if(mobile) await page.touchscreen.touchEnd(); else await page.keyboard.up('d');
+  await pause(100);
+  if((await visuals()).some(v=>v.key==='art-red-walk')) throw new Error('P2 right walk did not stop');
+  const video=await page.evaluate(()=>new Promise(resolve=> {
+    const {recorder,stream,chunks}=window.__RR_WALK_VIDEO__;
+    recorder.onstop=()=> {
+      stream.getTracks().forEach(track=>track.stop());
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result.split(',')[1]);
+      reader.readAsDataURL(new Blob(chunks,{type:'video/webm'}));
+    };
+    recorder.stop();
+  }));
+  writeFileSync(`${OUT_DIR}/${prefix}-red-walk-cycle.webm`,Buffer.from(video,'base64'));
   const pan = async(target)=> {
     for(let i=0;i<12;i++) {
       const d=await dbg(page);
@@ -208,8 +262,9 @@ async function inspect(browser, mobile) {
   await page.screenshot({path:`${OUT_DIR}/${prefix}-small-fire.png`});
   await page.evaluate(()=>window.__RR_DEBUG__.setHp('P1',2)); await pause(250);
   const big=(await visuals()).filter(v=>v.key==='art-base-fire');
-  if(big.length!==6 || !big.some(v=>Number(v.frame)>=8) || !big.some(v=>Number(v.frame)<8)) throw new Error('Expected mixed small/large flames at HP2');
-  if(new Set(big.map(v=>v.y)).size<4 || Math.max(...big.map(v=>v.height))<200) throw new Error('Fire distribution/scale regression');
+  if(big.length!==5 || !big.some(v=>Number(v.frame)>=8) || !big.some(v=>Number(v.frame)<8)) throw new Error('Expected mixed small/large flames at HP2');
+  const tallest = Math.max(...big.map(v=>v.height));
+  if(new Set(big.map(v=>v.y)).size<4 || tallest<100 || tallest>170) throw new Error('Fire distribution/scale regression');
   await page.screenshot({path:`${OUT_DIR}/${prefix}-large-fire.png`});
   await page.evaluate(()=>window.__RR_DEBUG__.setHp('P1',10)); await pause(100);
   if((await visuals()).some(v=>v.key==='art-base-fire')) throw new Error('Fire did not clear on state recovery');

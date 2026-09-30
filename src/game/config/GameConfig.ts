@@ -26,7 +26,8 @@ export const GAME_CONFIG = {
   player: {
     maxHp: 10,
 
-    maxMovePerTurn: 250,
+    /** 旧快照兼容占位；移动不再受每回合距离预算限制。 */
+    maxMovePerTurn: 0,
 
     leftBounds: {
       minX: 100,

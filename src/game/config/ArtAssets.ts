@@ -1,7 +1,9 @@
 /** Phase 17 first-look assets. Missing files retain the existing playable visuals. */
 export const ART = {
   harbor: 'art-harbor',
-  aimControls: 'art-aim-controls',
+  moveArrow: 'art-move-arrow',
+  aimReady: 'art-aim-gesture-ready',
+  aimActive: 'art-aim-gesture-active',
   platform: 'art-dock-platform',
   portraitFrame: 'art-portrait-frame',
   smoke: 'art-smoke',
@@ -31,7 +33,9 @@ export const ART = {
 
 export const ART_FILES = [
   [ART.harbor, 'harbor.png'],
-  [ART.aimControls, 'aim-controls.png'],
+  [ART.moveArrow, 'move-arrow.png'],
+  [ART.aimReady, 'aim-gesture-ready.png'],
+  [ART.aimActive, 'aim-gesture-active.png'],
   [ART.platform, 'dock-platform-tall.png'],
   [ART.portraitFrame, 'portrait-frame.png'],
   [ART.smoke, 'smoke-puff.png'],
@@ -39,7 +43,7 @@ export const ART_FILES = [
   [ART.P1, 'blue-chibi.png'],
   [ART.P2, 'red-chibi.png'],
   [ART.walkP1, 'blue-walk.png'],
-  [ART.walkP2, 'red-walk.png'],
+  [ART.walkP2, 'red-walk-v3.png'],
   [ART.projectile, 'normal-projectile.png'],
   [ART.explosion, 'explosion-impact.png'],
   [ART.baseP1, 'base-blue.png'],
@@ -52,6 +56,13 @@ export const ART_FILES = [
   [ART.baseFire, 'base-fire-varied.png'],
   [ART.octopus, 'octopus-flex.png'],
 ] as const;
+
+/** Generated controls: measured alpha bounds, so visible art matches the input layout. */
+export const CONTROL_ART_FRAMES = {
+  [ART.moveArrow]: { x: 55, y: 76, width: 1143, height: 1113 },
+  [ART.aimReady]: { x: 46, y: 50, width: 1162, height: 1154 },
+  [ART.aimActive]: { x: 46, y: 54, width: 1160, height: 1148 },
+} as const;
 
 /** Long-piling dock, measured alpha bounds; world and menu share the same aspect ratio. */
 export const DOCK_ART_FRAME = { x: 17, y: 65, width: 1739, height: 759 } as const;
@@ -130,8 +141,12 @@ export const AIM_POSE_BOUNDS: Record<ArtPlayerKey, Record<AimPoseAngle, ArtBound
   },
 };
 
-/** 4×2 walk sheets: measured planted soles, fixed scale preserves intentional head bob. */
+/** Measured feet and per-frame alignment preserve complete alternating walk cycles. */
 export const WALK_ART = {
-  P1: { key: ART.walkP1, visibleHeight: 420, soles: [436, 435, 435, 436, 431, 431, 430, 431] },
-  P2: { key: ART.walkP2, visibleHeight: 416, soles: [431, 429, 436, 435, 425, 425, 429, 424] },
+  P1: { key: ART.walkP1, cols: 4, rows: 2, originX: 0.5, strideDistance: 96,
+    visibleHeight: 420, soles: [436, 435, 435, 436, 431, 431, 430, 431] },
+  P2: { key: ART.walkP2, cols: 4, rows: 2, originX: 226 / 443, strideDistance: 240,
+    originsX: [220, 211, 228, 237, 223, 227, 226, 238].map(x => x / 443),
+    visibleHeight: 427, rowBounds: [{ top: 0, bottom: 443 }, { top: 443, bottom: 887 }],
+    soles: [437, 438, 441, 436, 425, 425, 426, 425] },
 } as const;

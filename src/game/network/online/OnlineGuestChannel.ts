@@ -62,6 +62,7 @@ export interface OnlineGuestChannelDeps {
   showRejected(payload: CommandRejectedPayload): void;
   /** Phase 15：恢复期间锁 Move/Aim/Fire（恢复完成解锁；Host 侧无此接线） */
   readonly setSyncLock: OnlineBattleDeps['setSyncLock'];
+  readonly onSnapshotApplied: OnlineBattleDeps['onSnapshotApplied'];
 }
 
 export class OnlineGuestChannel {
@@ -92,6 +93,8 @@ export class OnlineGuestChannel {
   private hostHashValue: string | null = null;
   /** gameOver 权威终局已被本端 hash 确认（isFinalStateConfirmed gate） */
   private finalConfirmedValue = false;
+  /** 重发快照的语义去重：新恢复 episode 可重新应用同一快照。 */
+  private lastAppliedSnapshotKey: string | null = null;
 
   constructor(
     nm: NetworkManager,
@@ -150,6 +153,22 @@ export class OnlineGuestChannel {
    */
   debugForceDesync(): void {
     this.deps.getState().turnId += 1;
+  }
+
+  /**
+   * SG-8：连接（ICE restart）恢复后的状态对账 —— 复用 Phase 15 恢复链。
+   * * 恢复已在途（断线前已进入 DESYNC 链）：重发 STATE_SYNC_REQUEST
+   *   （原请求可能随断线丢失；recoveryInFlight 防重入，幂等安全）。
+   * * 空闲：以 CONNECTION_RECOVERED 发起新恢复 episode —— 断线期
+   *   DataChannel 有序可靠也保证不了对端存活的接收窗口，快照对账是
+   *   唯一权威收敛路径（Host 永远权威）。
+   */
+  requestPostReconnectSync(): void {
+    if (this.recoveryInFlight) {
+      this.sendSyncRequest(this.recoveryReason ?? 'CONNECTION_RECOVERED');
+      return;
+    }
+    this.beginRecovery('CONNECTION_RECOVERED', 'post-reconnect');
   }
 
   /** Guest：本地结算完成（display / Barrier 的本地半条件） */
@@ -255,7 +274,9 @@ export class OnlineGuestChannel {
       return;
     }
     if (this.recoveryInFlight) {
-      console.warn('[OnlineGuestChannel] 恢复进行中收到 TURN_END —— 丢弃（Host 将在 ACK 后重发）');
+      // Host 可能已经切到下一回合；恢复快照及表现回调负责收口，
+      // 不能假设该 TURN_END 一定会在 ACK 后重发。
+      console.warn('[OnlineGuestChannel] 恢复进行中收到 TURN_END —— 由权威快照恢复回合');
       return;
     }
     const payload = envelope.payload;
@@ -280,10 +301,6 @@ export class OnlineGuestChannel {
     if (!this.utils.guardInbound(envelope, NetworkMessageType.STATE_SNAPSHOT, isStateSnapshotPayload)) {
       return;
     }
-    this.utils.setSyncState(
-      OnlineSyncState.APPLYING_SNAPSHOT,
-      `turn:${envelope.payload.generatedAtTurnId}`,
-    );
     const validation = validateAuthoritativeSnapshot(envelope.payload, {
       expectedMatchId: this.deps.getState().matchId,
     });
@@ -300,6 +317,21 @@ export class OnlineGuestChannel {
       this.utils.setSyncState(OnlineSyncState.SYNC_FAILED, this.lastSyncReasonValue);
       return;
     }
+    const snapshotKey = `${validation.snapshot.turnId}:${envelope.payload.stateHash}`;
+    if (
+      !this.recoveryInFlight &&
+      this.snapshotRetryCount === 0 &&
+      this.lastAppliedSnapshotKey === snapshotKey
+    ) {
+      // 相同权威数据可用新 sequence 重推。补 ACK 即可，不能把已完成
+      // 转场的 ACTION 回写成旧 END，也不能再次启动同一场景转场。
+      this.sendAck(validation.snapshot.turnId, envelope.payload.stateHash, true);
+      return;
+    }
+    this.utils.setSyncState(
+      OnlineSyncState.APPLYING_SNAPSHOT,
+      `turn:${envelope.payload.generatedAtTurnId}`,
+    );
     const { stateHash } = applyAuthoritativeSnapshot(this.deps.getState(), validation.snapshot);
     if (stateHash !== envelope.payload.stateHash) {
       // validator 已验自洽，apply 后仍不符 = hash/apply 契约破裂 —— 重试无意义
@@ -316,8 +348,8 @@ export class OnlineGuestChannel {
     this.hostHashValue = envelope.payload.stateHash;
     this.localHashValue = stateHash;
     this.hashMatch = true;
-    // 快照即权威结算（含已结算回合）—— 后续 TURN_END 可信；恢复前
-    // consume 的 TURN_END 作废，Host 将在本 ACK 后重发
+    // 快照即权威结算（含已结算回合）—— 后续 TURN_END 可信。若快照
+    // 已是下一回合，则场景表现回调恢复 END/ACTION，不等旧包重发。
     this.receivedTurnResult = true;
     this.pendingTurnEnd = null;
     // 恢复即视为 post-turn 表现停留完成：本地可能没有炮弹在飞
@@ -331,7 +363,10 @@ export class OnlineGuestChannel {
       `turn:${validation.snapshot.turnId}`,
     );
     // 补发本回合 ACK（Host barrier 在等）；Host 未在等待时会幂等忽略
-    this.sendAck(this.deps.getState().turnId, stateHash, true);
+    // 必须先于表现回调：END 转场收尾可能立即把本地 phase 改为 ACTION。
+    this.sendAck(validation.snapshot.turnId, stateHash, true);
+    this.lastAppliedSnapshotKey = snapshotKey;
+    this.deps.onSnapshotApplied?.(validation.snapshot);
   }
 
   private handleCommandRejected(envelope: NetworkEnvelope<unknown>): void {

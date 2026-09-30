@@ -39,7 +39,7 @@ describe('Online Loopback 双端完整对局（Phase 14 集成）', () => {
     await h.flush();
     expect(h.hostState.players.P1.x).toBe(550);
     expect(h.guestState.players.P1.x).toBe(550);
-    expect(h.guestState.players.P1.moveRemaining).toBe(150);
+    expect(h.guestState.players.P1.moveRemaining).toBe(0);
 
     // Host 开火：双端各恰一次 launch
     const fire1: FireCommand = {
@@ -109,7 +109,7 @@ describe('Online Loopback 双端完整对局（Phase 14 集成）', () => {
     await h.flush();
     expect(h.guestState.currentPlayerId).toBe('P2');
     expect(h.guestState.turnId).toBe(2);
-    expect(h.guestState.players.P2.moveRemaining).toBe(250);
+    expect(h.guestState.players.P2.moveRemaining).toBe(0);
     expect(h.guestResume).toHaveBeenCalledTimes(1);
     // 双端进入 P2 回合 ACTION
     h.hostTurn.notifyTurnTransitionComplete();
@@ -121,18 +121,18 @@ describe('Online Loopback 双端完整对局（Phase 14 集成）', () => {
     expect(h.hostCoord.isLocalTurn()).toBe(false);
     expect(h.guestCoord.isLocalTurn()).toBe(true);
 
-    // Guest 移动 100px：MOVE_REQUEST → Host 校验执行 → 权威 MOVE → 双端一致
+    // Guest 单帧移动24px：MOVE_REQUEST → Host 校验执行 → 权威 MOVE → 双端一致
     h.guestCoord.inputBus.dispatch({
       type: 'MOVE',
       playerId: 'P2',
       turnId: 2,
-      targetX: 4450,
+      targetX: 4526,
     });
     await h.flush();
-    expect(h.hostState.players.P2.x).toBe(4450);
-    expect(h.guestState.players.P2.x).toBe(4450);
-    expect(h.hostState.players.P2.moveRemaining).toBe(150);
-    expect(h.guestState.players.P2.moveRemaining).toBe(150);
+    expect(h.hostState.players.P2.x).toBe(4526);
+    expect(h.guestState.players.P2.x).toBe(4526);
+    expect(h.hostState.players.P2.moveRemaining).toBe(0);
+    expect(h.guestState.players.P2.moveRemaining).toBe(0);
 
     // Guest 开火：FIRE_REQUEST → Host 校验 → 广播 → 双端各再 launch 一次
     const fire2: FireCommand = {
@@ -140,7 +140,7 @@ describe('Online Loopback 双端完整对局（Phase 14 集成）', () => {
       playerId: 'P2',
       turnId: 2,
       weaponId: 'normal',
-      startX: 4450,
+      startX: 4526,
       startY: GAME_CONFIG.world.groundTopY + GAME_CONFIG.player.launcher.offsetY,
       velocityX: -1500,
       velocityY: -1500,

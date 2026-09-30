@@ -19,6 +19,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
+import net from 'node:net';
 import { existsSync } from 'node:fs';
 import puppeteer from 'puppeteer-core';
 
@@ -746,9 +747,10 @@ async function runMobile(browser) {
     `Δ=${(afterCam - beforeCam).toFixed(1)}`
   );
 
-  // 2. 按住 ◀ 移动按钮（大号触控，位于左下）
+  // 2. 按住 ◀ 移动按钮（跟随当前基地；点击画面实际显示位置）
   const xBefore = (await dbg(page)).players.P1;
-  await page.touchscreen.touchStart(64, 326);
+  const moveLeft = (await dbg(page)).moveButtons.left;
+  await page.touchscreen.touchStart(moveLeft.x, moveLeft.y);
   await sleep(500);
   await page.touchscreen.touchEnd();
   await sleep(100);
@@ -875,28 +877,21 @@ async function runMobile(browser) {
   );
   check('回合切换横幅：P2 · 第 2 回合', mBanner2 === true);
 
-  // 5. 快捷聚焦按钮（FREE_VIEW 激活）：当前玩家为 P2、相机已在其阵地，
-  //    先点「敌方」平移到 P1，再点「己方」回来，双向验证 panToX
-  const beforeFocus = (await dbg(page)).cameraScrollX;
-  await page.touchscreen.touchStart(438, 358); // 「敌方」（底部居中，Phase 9 反馈 ②）
-  await page.touchscreen.touchEnd();
-  await sleep(900);
-  const afterEnemy = (await dbg(page)).cameraScrollX;
-  check(
-    '点击「敌方」→ 相机平移到对方阵地',
-    Math.abs(afterEnemy - beforeFocus) > 1000,
-    `scroll ${beforeFocus.toFixed(0)} → ${afterEnemy.toFixed(0)}`
-  );
-
-  await page.touchscreen.touchStart(406, 358); // 「己方」
-  await page.touchscreen.touchEnd();
-  await sleep(900);
-  const afterSelf = (await dbg(page)).cameraScrollX;
-  check(
-    '点击「己方」→ 相机平移回己方阵地',
-    Math.abs(afterSelf - afterEnemy) > 1000,
-    `scroll ${afterEnemy.toFixed(0)} → ${afterSelf.toFixed(0)}`
-  );
+  // 5. 顶部小地图替换旧快捷定位；只显示状态，不改变镜头。
+  const overview = turn2.minimap;
+  check('旧己方/敌方快捷按钮已移除', turn2.legacyFocusButtons === false);
+  check('小地图标记来自双方实时位置并更新回合',
+    overview.currentPlayerId === 'P2' &&
+    Math.abs(overview.players.P1.worldX - turn2.players.P1) < 0.01 &&
+    Math.abs(overview.players.P2.worldX - turn2.players.P2) < 0.01 &&
+    overview.bases.P1.right < overview.bases.P2.left &&
+    overview.players.P1.x < overview.players.P2.x);
+  check('红方瞄准图整体镜像', turn2.aimIcon.flipped === true);
+  const beforeMapTap = (await dbg(page)).cameraScrollX;
+  await page.touchscreen.tap(overview.rect.x / turn2.uiScale, overview.rect.y / turn2.uiScale);
+  await sleep(200);
+  check('小地图为只读显示，点击不跳转镜头',
+    Math.abs((await dbg(page)).cameraScrollX - beforeMapTap) < 1);
 
   // 6. 竖屏门禁：显示旋转提示 + 手势被覆盖层拦截
   await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
@@ -996,11 +991,12 @@ async function runMobile(browser) {
   // 双指各按 ◀/▶（synthetic PointerEvent 多指：CDP 单点 API 无法真双指；
   // client 坐标经 InputRouter 归一化到画布空间，与真实触摸同链路）
   const m0 = (await dbg(vp)).players.P1;
-  await vp.evaluate(() => {
+  const twoFingerButtons = (await dbg(vp)).moveButtons;
+  await vp.evaluate(({ left, right }) => {
     const c = document.querySelector('canvas');
-    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 41, pointerType: 'touch', clientX: 64, clientY: 366, bubbles: true }));
-    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 42, pointerType: 'touch', clientX: 164, clientY: 366, bubbles: true }));
-  });
+    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 41, pointerType: 'touch', clientX: left.x, clientY: left.y, bubbles: true }));
+    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 42, pointerType: 'touch', clientX: right.x, clientY: right.y, bubbles: true }));
+  }, twoFingerButtons);
   await sleep(500);
   const m1 = (await dbg(vp)).players.P1;
   check(
@@ -1308,7 +1304,7 @@ async function runOnlineP2P(browser) {
   pageHost.on('pageerror', (e) => console.log('[HOST PAGEERROR]', e.message));
   pageHost.on('console', (m) => console.log(`[HOST console.${m.type()}]`, m.text().slice(0, 200)));
   await pageHost.setViewport({ width: 1280, height: 800 });
-  await pageHost.goto(URL, { waitUntil: 'load' });
+  await pageHost.goto(`${URL}?manual-sdp`, { waitUntil: 'load' });
   await this?.noop; // (占位防误删)
   try {
     await waitForScene(pageHost, 'MainMenuScene', 15000);
@@ -1333,7 +1329,7 @@ async function runOnlineP2P(browser) {
   pageGuest.on('pageerror', (e) => console.log('[GUEST PAGEERROR]', e.message));
   pageGuest.on('console', (m) => console.log(`[GUEST console.${m.type()}]`, m.text().slice(0, 200)));
   await pageGuest.setViewport({ width: 1280, height: 800 });
-  await pageGuest.goto(URL, { waitUntil: 'load' });
+  await pageGuest.goto(`${URL}?manual-sdp`, { waitUntil: 'load' });
   await waitForScene(pageGuest, 'MainMenuScene', 15000);
   await clickMenuButton(pageGuest, 'online');
   await waitForScene(pageGuest, 'OnlineConnectionScene', 5000);
@@ -1470,7 +1466,7 @@ async function runOnlineBattle(browser) {
   pageHost.on('pageerror', (e) => console.log('[HOST PAGEERROR]', e.message));
   pageHost.on('console', (m) => console.log(`[HOST console.${m.type()}]`, m.text().slice(0, 200)));
   await pageHost.setViewport({ width: 1280, height: 800 });
-  await pageHost.goto(URL, { waitUntil: 'load' });
+  await pageHost.goto(`${URL}?manual-sdp`, { waitUntil: 'load' });
   await waitForScene(pageHost, 'MainMenuScene', 15000);
   await clickMenuButton(pageHost, 'online');
   await waitForScene(pageHost, 'OnlineConnectionScene', 5000);
@@ -1479,7 +1475,7 @@ async function runOnlineBattle(browser) {
   pageGuest.on('pageerror', (e) => console.log('[GUEST PAGEERROR]', e.message));
   pageGuest.on('console', (m) => console.log(`[GUEST console.${m.type()}]`, m.text().slice(0, 200)));
   await pageGuest.setViewport({ width: 1280, height: 800 });
-  await pageGuest.goto(URL, { waitUntil: 'load' });
+  await pageGuest.goto(`${URL}?manual-sdp`, { waitUntil: 'load' });
   await waitForScene(pageGuest, 'MainMenuScene', 15000);
   await clickMenuButton(pageGuest, 'online');
   await waitForScene(pageGuest, 'OnlineConnectionScene', 5000);
@@ -1512,6 +1508,17 @@ async function runOnlineBattle(browser) {
   await waitFor(pageGuest, async () => (await dbg(pageGuest)).state === 'VERIFIED', 30000, 'Guest VERIFIED');
   check('双页配对 VERIFIED（真实 WebRTC DataChannel）', true);
 
+  await driveOnlineBattle(pageHost, pageGuest);
+}
+
+/**
+ * Phase 14/16 对战驱动（配对后通用，Manual / Room 两段复用）：
+ * ENTER BATTLE → 回合循环 → Rematch → Disconnect。
+ */
+async function driveOnlineBattle(pageHost, pageGuest, hooks = {}) {
+  const hostD = () => dbg(pageHost);
+  const guestD = () => dbg(pageGuest);
+
   // —— ENTER BATTLE：各自前台点击（PLAYER_READY 经事件循环对端即时可收）——
   await pageGuest.bringToFront();
   await clickMenuButton(pageGuest, 'enterBattle');
@@ -1527,9 +1534,6 @@ async function runOnlineBattle(browser) {
   await waitForScene(pageHost, 'BattleScene', 15000);
   await pageGuest.bringToFront();
   await waitForScene(pageGuest, 'BattleScene', 15000);
-
-  const hostD = () => dbg(pageHost);
-  const guestD = () => dbg(pageGuest);
 
   const h0 = await hostD();
   const g0 = await guestD();
@@ -1579,6 +1583,7 @@ async function runOnlineBattle(browser) {
   check('Host Move 双方可见（权威 MOVE 广播）', hostMoved && guestSyncMove);
 
   // Host 发炮：45° 求解瞄向 P2
+  if (hooks.beforeFirstFire) await hooks.beforeFirstFire(pageHost, pageGuest);
   const hostP2x = (await hostD()).players.P2;
   await fireFortyFiveShot(pageHost, 1280, 800, hostP2x);
   // Guest（后台）收到 FIRE 广播并本地发射 —— DataChannel 事件循环，无需前台
@@ -1589,6 +1594,15 @@ async function runOnlineBattle(browser) {
     'Guest 收到 FIRE 广播'
   );
   check('Host Fire 双方发射（广播 → 双端本地模拟）', guestFired);
+  // Each visible screen must render the shell. Chrome can suspend the hidden
+  // page's render loop even though its DataChannel has already received FIRE.
+  const hostShell = await waitFor(pageHost, async () =>
+    (await hostD()).minimap?.projectiles.find(p => p.ownerId === 'P1'), 2500, 'Host 小地图炮弹');
+  await pageGuest.bringToFront();
+  const guestShell = await waitFor(pageGuest, async () =>
+    (await guestD()).minimap?.projectiles.find(p => p.ownerId === 'P1'), 2500, 'Guest 小地图炮弹');
+  check('联机双方小地图显示同一炮弹标记', hostShell.id === guestShell.id);
+  await pageHost.bringToFront();
 
   // Host 前台：炮弹飞行 → 爆炸 → TURN_RESULT → dwell → TURN_END → P2 回合
   const hostToP2 = await waitFor(
@@ -1617,10 +1631,17 @@ async function runOnlineBattle(browser) {
 
   const hAfterT1 = await hostD();
   const gAfterT1 = await guestD();
+  check('联机双方结算后清除小地图炮弹标记',
+    hAfterT1.minimap.projectiles.length === 0 && gAfterT1.minimap.projectiles.length === 0);
   check(
     'Turn 1 权威结算后双端 HP 一致',
     JSON.stringify(hAfterT1.hp) === JSON.stringify(gAfterT1.hp)
   );
+
+  // —— SG-8（可选注入）：Turn 2 前做 ICE restart 恢复场景（Room 段专用）——
+  if (hooks.onMidBattle) {
+    await hooks.onMidBattle(pageHost, pageGuest);
+  }
 
   // —— P2 Turn 2（Guest 回合；guest 前台）——
   await pageGuest.keyboard.down('a');
@@ -1894,6 +1915,7 @@ async function runOnlineBattle(browser) {
   );
 
   // 双方点 REMATCH → 新 GAME_START → 新对局（HP 重置 / 新 matchId）
+  if (hooks.onResult) await hooks.onResult(pageHost, pageGuest);
   await pageHost.bringToFront();
   const hostRematchBtn = (await dbg(pageHost)).buttons.rematch;
   await pageHost.mouse.click(
@@ -1944,18 +1966,23 @@ async function runOnlineBattle(browser) {
     'Phase 16 Rematch：同一 WebRTC 连接复用 → 双方全新对局（HP 10/10、Turn 1）',
     hostInNewBattle && guestInNewBattle
   );
+  if (hooks.onRematch) await hooks.onRematch(pageHost, pageGuest);
 
   // —— Disconnect：Guest 优雅关闭通道（真实关标签页路径）→ Host 感知 ——
   // 进程异常崩溃只到 ICE 'disconnected'（瞬态，Phase 12 防误杀设计），
   // 'failed' 终局需数十秒 —— E2E 走确定性优雅关闭路径。
   await pageGuest.evaluate(() => window.__RR_DEBUG__.closeOnlineChannel());
-  await pageGuest.close();
+  // 先等 Host 感知优雅关闭（SCTP close 送达）再关页面 —— 消除 close 与页面
+  // 销毁的竞态（实测全量负载下浏览器 RST 可能先于 SCTP close 刷出，Host
+  // 只见 transient disconnected → 15s 超时假失败；若 close 真未送达，
+  // waitFor 依旧在此如实超时）
   const hostLost = await waitFor(
     pageHost,
     async () => (await hostD()).connectionLost === true,
-    15000,
+    15_000,
     'Host 感知断线'
   );
+  await pageGuest.close();
   await pageHost.bringToFront();
   const lostBanner = await waitFor(
     pageHost,
@@ -1982,6 +2009,348 @@ async function runOnlineBattle(browser) {
   );
 
   await pageHost.close();
+}
+
+// ---- Online Room 场景（SG-5：Room Code + 自动信令 + Trickle 全链路）------
+
+/**
+ * SG-5 E2E：spawn 真实 Signaling Server（server/signaling，tsx 直跑）→
+ * 双页 Room 流配对（CREATE/JOIN → 房间码 → 自动 SDP/Trickle → VERIFIED）→
+ * 复用 driveOnlineBattle 完成对战 / Rematch / Disconnect。
+ * Signaling 地址经 evaluateOnNewDocument 注入 window.__RR_SIGNALING_URL__
+ * （构建产物无 env 重Build依赖），端口 8791 避开默认 8787（防与本机开发服冲突）。
+ */
+async function startSignalingServer(port, config = {}) {
+  const child = spawn(
+    'npx',
+    // cwd 指向 server/signaling：tsx 只装在该 workspace（根目录 npx 会走
+    // registry 下载 → 探测超时，实测坑）；服务器内部 import 相对文件路径解析
+    ['tsx', 'src/index.ts'],
+    { shell: true, stdio: ['ignore', 'pipe', 'pipe'], cwd: 'server/signaling', env: { ...process.env, ...config, PORT: String(port) } },
+  );
+  child.stdout?.on('data', (d) => console.log('[SIGNALING]', String(d).trim()));
+  child.stderr?.on('data', (d) => console.log('[SIGNALING-ERR]', String(d).trim()));
+  const stop = () => {
+    if (process.platform === 'win32' && child.pid) {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { shell: true });
+    } else {
+      child.kill();
+    }
+  };
+  // 就绪探测：TCP connect 即可（Node 22.11 无全局 WebSocket 构造器——实测
+  // `WebSocket is not defined`；WS 握手由页面真实链路覆盖）
+  const portOpen = () =>
+    new Promise((resolve) => {
+      const socket = net.createConnection({ port, host: '127.0.0.1' });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once('error', () => resolve(false));
+    });
+  const started = Date.now();
+  for (;;) {
+    if (await portOpen()) {
+      console.log(`[SIGNALING] ready at ws://127.0.0.1:${port}`);
+      return stop;
+    }
+    if (Date.now() - started > 30_000) {
+      stop();
+      throw new Error('signaling server 就绪探测超时');
+    }
+    await sleep(400);
+  }
+}
+
+/** 保持恢复窗口打开，验证跨帧输入锁及已认领拖拽的取消。底层 RTC 保留存活。 */
+async function verifyRecoveryInputLock(page) {
+  await page.bringToFront();
+  await page.keyboard.press('Space');
+  await waitFor(page, async () => (await dbg(page)).cameraMode === 'AIMING', 5000, '恢复前瞄准');
+  const origin = await launchOriginScreen(page, 1280, 800);
+  await page.mouse.move(origin.x, origin.y - 60);
+  await page.mouse.down();
+  let pointerHeld = true;
+  await page.mouse.move(origin.x + 100, origin.y + 30, { steps: 4 });
+  const before = await dbg(page);
+  await page.evaluate(() => {
+    const pc = window.__RR_E2E_PC__;
+    Object.defineProperty(pc, 'connectionState', { configurable: true, get: () => 'failed' });
+    window.__RR_DEBUG__.forceConnectionLost();
+  });
+  try {
+    await waitFor(page, async () => (await dbg(page)).recoveryState === 'RECONNECTING', 5000, '持续重连窗口');
+    await page.mouse.up(); // 恢复前已认领的手势也不得在松手时发射
+    pointerHeld = false;
+    await page.keyboard.down('a');
+    await page.keyboard.press('Space');
+    await sleep(350);
+    await page.keyboard.up('a');
+    const locked = await dbg(page);
+    check('重连跨帧禁止移动、重新瞄准及旧拖拽发射',
+      locked.recoveryState === 'RECONNECTING' &&
+      locked.players.P2 === before.players.P2 && !locked.hasFired &&
+      locked.projectileCount === 0 && locked.cameraMode === 'FREE_VIEW' &&
+      locked.online?.lastTxType !== 'FIRE_REQUEST' && locked.online?.lastTxType !== 'MOVE_REQUEST');
+  } finally {
+    await page.keyboard.up('a');
+    if (pointerHeld) await page.mouse.up();
+    await page.evaluate(() => {
+      const pc = window.__RR_E2E_PC__;
+      delete pc.connectionState;
+      pc.dispatchEvent(new Event('connectionstatechange'));
+    });
+  }
+  await waitFor(page, async () => (await dbg(page)).recoveryState === 'RECOVERED', 15000, '输入锁测试后恢复');
+  await waitFor(page, async () => (await dbg(page)).syncState === 'SYNCED_AFTER_RECOVERY', 15000, '输入锁测试后对账');
+}
+
+async function runOnlineRoom(browser) {
+  section('Online Room — Room Code pairing（真实 Signaling Server + WebRTC 双页对战）');
+  const stopSignaling = await startSignalingServer(8791, {
+    SIGNALING_SLOT_GRACE_MS: '1500', SIGNALING_SWEEP_INTERVAL_MS: '200',
+  });
+
+  const rebuildHostSignaling = async (page) => {
+    const previousCount = await page.evaluate(() => {
+      const sockets = window.__RR_E2E_SIGNALING__;
+      sockets.at(-1).close();
+      return sockets.length;
+    });
+    await sleep(100); // close 事件送达客户端及服务端，再注入 RTC failure
+    await page.evaluate(() => window.__RR_DEBUG__.forceConnectionLost());
+    await waitFor(page, async () => {
+      const status = await dbg(page);
+      return status.recoveryState === 'RECOVERED' &&
+        await page.evaluate((count) => window.__RR_E2E_SIGNALING__.length > count &&
+          window.__RR_E2E_SIGNALING__.at(-1).readyState === WebSocket.OPEN, previousCount);
+    }, 15000, 'Host 重建信令并恢复连接');
+  };
+
+  const newRoomPage = async (label) => {
+    const page = await browser.newPage();
+    page.on('pageerror', (e) => console.log(`[${label} PAGEERROR]`, e.message));
+    page.on('console', (m) => console.log(`[${label} console.${m.type()}]`, m.text().slice(0, 200)));
+    await page.evaluateOnNewDocument((u) => {
+      window.__RR_SIGNALING_URL__ = u;
+      window.__RR_E2E_SIGNALING__ = [];
+      const NativeWebSocket = window.WebSocket;
+      window.WebSocket = class extends NativeWebSocket {
+        constructor(url, protocols) {
+          super(url, protocols);
+          if (String(url) === u) window.__RR_E2E_SIGNALING__.push(this);
+        }
+      };
+      const NativePeerConnection = window.RTCPeerConnection;
+      window.RTCPeerConnection = class extends NativePeerConnection {
+        constructor(config) {
+          super(config);
+          window.__RR_E2E_PC__ = this;
+          this.addEventListener('datachannel', (event) => { window.__RR_E2E_CHANNEL__ = event.channel; });
+        }
+      };
+    }, 'ws://127.0.0.1:8791');
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.goto(URL, { waitUntil: 'load' });
+    await waitForScene(page, 'MainMenuScene', 15000);
+    await clickMenuButton(page, 'online');
+    await waitForScene(page, 'OnlineConnectionScene', 5000);
+    return page;
+  };
+
+  try {
+    const pageHost = await newRoomPage('HOST');
+    const pageGuest = await newRoomPage('GUEST');
+
+    check('默认流 = Room（无 manual-sdp 参数）', (await dbg(pageHost)).flow === 'room');
+
+    // Host：CREATE GAME → ROOM_WAITING + 房间码（服务器生成）
+    await clickMenuButton(pageHost, 'create');
+    const roomCode = await waitFor(
+      pageHost,
+      async () => {
+        const d = await dbg(pageHost);
+        return d.roomState === 'ROOM_WAITING' ? d.roomCode : null;
+      },
+      20_000,
+      'Host 房间码',
+    );
+    check(
+      'Host 房间码 6 位高可读（排除 0/O/1/I/L）',
+      /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$/.test(roomCode),
+      roomCode,
+    );
+
+    // —— SG-7 失败 UX 全链路：错误码 → 分类文案 → TRY AGAIN → 非法码 → 输入保留 → 真码直连 ——
+    await clickMenuButton(pageGuest, 'join');
+    await pageGuest.evaluate(() => window.__RR_DEBUG__.setInputText('ZZZZZ9'));
+    await clickMenuButton(pageGuest, 'joinConfirm');
+    const notFound = await waitFor(
+      pageGuest,
+      async () => {
+        const d = await dbg(pageGuest);
+        return d.roomState === 'FAILED' && d.roomFailure?.reason === 'SERVER_ERROR' && d.roomFailure?.code === 'ROOM_NOT_FOUND';
+      },
+      10_000,
+      'Guest 不存在房间失败',
+    );
+    const notFoundText = (await dbg(pageGuest)).statusText ?? '';
+    check(
+      'SG-7 失败分类：ROOM_NOT_FOUND（SERVER_ERROR.code 保留）+ 简洁文案 + Debug reason 后缀',
+      notFound && notFoundText.includes('not found') && notFoundText.includes('[SERVER_ERROR:ROOM_NOT_FOUND]'),
+      notFoundText,
+    );
+
+    // TRY AGAIN → IDLE → 非法码（含字符 1）→ INVALID_ROOM_CODE + 输入保留
+    await clickMenuButton(pageGuest, 'tryAgain');
+    await waitFor(pageGuest, async () => (await dbg(pageGuest)).roomState === 'IDLE', 5000, 'Guest retry 回 IDLE');
+    await clickMenuButton(pageGuest, 'join');
+    await pageGuest.evaluate(() => window.__RR_DEBUG__.setInputText('ABC1EF'));
+    await clickMenuButton(pageGuest, 'joinConfirm');
+    const invalidCode = await waitFor(
+      pageGuest,
+      async () => {
+        const d = await dbg(pageGuest);
+        return d.roomState === 'FAILED' && d.roomFailure?.reason === 'INVALID_ROOM_CODE';
+      },
+      5000,
+      'Guest 非法码失败',
+    );
+    const invalidState = await dbg(pageGuest);
+    check(
+      'SG-7 失败分类：INVALID_ROOM_CODE + 输入保留（textarea 带码、JOIN 可直接重试）',
+      invalidCode && (invalidState.statusText ?? '').includes('Invalid room code') && invalidState.inputText === 'ABC1EF',
+      invalidState.statusText ?? '',
+    );
+
+    // 输入保留路径：直接改真码再按 JOIN（onJoinConfirm 内 retry + joinRoom）→ 正常配对
+    await pageGuest.evaluate((code) => window.__RR_DEBUG__.setInputText(code), roomCode);
+    await clickMenuButton(pageGuest, 'joinConfirm');
+    const verifiedHost = await waitFor(
+      pageHost,
+      async () => (await dbg(pageHost)).roomState === 'VERIFIED',
+      30_000,
+      'Host VERIFIED',
+    );
+    const verifiedGuest = await waitFor(
+      pageGuest,
+      async () => (await dbg(pageGuest)).roomState === 'VERIFIED',
+      30_000,
+      'Guest VERIFIED',
+    );
+    check(
+      'Room 配对 VERIFIED（自动 SDP + Trickle ICE，真实 DataChannel）',
+      verifiedHost && verifiedGuest,
+      `room=${roomCode}`,
+    );
+
+    // SG-6 诊断：真实浏览器 getStats → selected pair + 直连判定（本地 host 对）
+    const diag = await pageHost.evaluate(() => window.__RR_DEBUG__.awaitRtcDiagnostics());
+    check(
+      'RTC 诊断：selected candidate pair 可读（getStats）',
+      diag?.selectedPair != null,
+      JSON.stringify(diag?.selectedPair ?? null),
+    );
+    check(
+      'RTC 诊断：本地 P2P 路由判定 = DIRECT（无 TURN 部署时的基线）',
+      diag?.route === 'DIRECT',
+      `route=${diag?.route} types=${JSON.stringify(diag?.localCandidateTypes ?? [])}`,
+    );
+
+    await driveOnlineBattle(pageHost, pageGuest, {
+      beforeFirstFire: async (_pageHost, pageGuest) => {
+        await pageGuest.evaluate(() => {
+          const channel = window.__RR_E2E_CHANNEL__;
+          const intercept = (event) => {
+            if (JSON.parse(event.data).type !== 'TURN_END') return;
+            // 模拟 TURN_END 尚未应用就进入恢复：快照必须独立恢复下一回合。
+            event.stopImmediatePropagation();
+            channel.removeEventListener('message', intercept, true);
+            window.__RR_E2E_TURN_END_INTERCEPTED__ = true;
+            window.__RR_DEBUG__.forceConnectionLost();
+          };
+          channel.addEventListener('message', intercept, true);
+        });
+      },
+      /**
+       * SG-8 ICE Restart 恢复场景：debug 注入模拟连接失败（真实 pc 存活）→
+       * 后续是真实 createOffer({iceRestart:true}) 经活信令服务器的全协商。
+       * Host 侧验证 restart 发起/应答链；Guest 侧验证恢复后 Phase 15 对账
+       * （CONNECTION_RECOVERED → 权威快照全链）。
+       */
+      onMidBattle: async (pageHost, pageGuest) => {
+        const recoveredTurn = await dbg(pageGuest);
+        check('回合切换期间恢复：未应用 TURN_END 也能恢复到 ACTION / FREE_VIEW',
+          await pageGuest.evaluate(() => window.__RR_E2E_TURN_END_INTERCEPTED__ === true) &&
+          recoveredTurn.recoveryState === 'RECOVERED' && recoveredTurn.syncState === 'SYNCED_AFTER_RECOVERY' &&
+          recoveredTurn.phase === 'ACTION' && recoveredTurn.cameraMode === 'FREE_VIEW' && recoveredTurn.turnId === 2);
+        await verifyRecoveryInputLock(pageGuest);
+        // Host 侧：模拟失败 → RECONNECTING → 真实 restart offer 交换 → RECOVERED
+        await rebuildHostSignaling(pageHost);
+        const hostRecovered = await waitFor(
+          pageHost,
+          async () => (await dbg(pageHost)).recoveryState === 'RECOVERED',
+          30_000,
+          'Host ICE restart RECOVERED'
+        );
+        const hostAfter = await dbg(pageHost);
+        check(
+          'SG-8 Host 恢复：限次 ICE restart 经活信令完成 + 对局未终局',
+          hostRecovered && hostAfter.recoveryAttemptCount >= 1 && hostAfter.connectionLost === false,
+          `attempts=${hostAfter.recoveryAttemptCount}`
+        );
+
+        // Guest 侧（后台页恢复纯事件循环）：RECOVERED → Phase 15 对账
+        await pageGuest.evaluate(() => window.__RR_DEBUG__.forceConnectionLost());
+        const guestRecovered = await waitFor(
+          pageGuest,
+          async () => (await dbg(pageGuest)).recoveryState === 'RECOVERED',
+          30_000,
+          'Guest ICE restart RECOVERED'
+        );
+        const guestSynced = await waitFor(
+          pageGuest,
+          async () => {
+            const g = await dbg(pageGuest);
+            return g.syncState === 'SYNCED_AFTER_RECOVERY' && (g.recoveryCount ?? 0) >= 1;
+          },
+          15_000,
+          'Guest 恢复后 Phase 15 对账'
+        );
+        const hRec = await dbg(pageHost);
+        const gRec = await dbg(pageGuest);
+        check(
+          'SG-8 恢复后 Phase 15 对账：CONNECTION_RECOVERED → 权威快照 → 双端 parity',
+          guestRecovered &&
+            guestSynced &&
+            (hRec.lastSyncReason ?? '').includes('CONNECTION_RECOVERED') &&
+            hRec.turnId === gRec.turnId &&
+            hRec.hp.P1 === gRec.hp.P1 &&
+            hRec.hp.P2 === gRec.hp.P2,
+          `hostReason=${hRec.lastSyncReason} guestRecoveries=${gRec.recoveryCount} turn=${hRec.turnId}/${gRec.turnId}`
+        );
+      },
+      onResult: async (pageHost) => {
+        await sleep(2100); // 超过测试服务端 grace + sweep；新信令应跨 Result 保留
+        check('重建信令跨结算保留超过 grace', await pageHost.evaluate(() =>
+          window.__RR_E2E_SIGNALING__.length >= 2 &&
+          window.__RR_E2E_SIGNALING__.at(-1).readyState === WebSocket.OPEN));
+      },
+      onRematch: async (pageHost, pageGuest) => {
+        await rebuildHostSignaling(pageHost);
+        await pageGuest.evaluate(() => window.__RR_DEBUG__.forceConnectionLost());
+        await waitFor(pageGuest, async () => {
+          const status = await dbg(pageGuest);
+          return status.recoveryState === 'RECOVERED' && status.syncState === 'SYNCED_AFTER_RECOVERY';
+        }, 15000, '重赛 Guest 恢复对账');
+        const h = await dbg(pageHost), g = await dbg(pageGuest);
+        check('重赛后再次重建信令并完成对账', !h.connectionLost && !g.connectionLost &&
+          h.turnId === g.turnId && h.hp.P1 === g.hp.P1 && h.hp.P2 === g.hp.P2);
+      },
+    });
+  } finally {
+    stopSignaling();
+  }
 }
 
 // ---- 主流程 --------------------------------------------------------------
@@ -2024,6 +2393,7 @@ async function main() {
     if (!only || only === 'sp') await runSinglePlayer(browser);
     if (!only || only === 'online') await runOnlineP2P(browser);
     if (!only || only === 'battle') await runOnlineBattle(browser);
+    if (!only || only === 'online-room') await runOnlineRoom(browser);
   } catch (error) {
     failed++;
     failures.push(`场景异常: ${error.message}`);

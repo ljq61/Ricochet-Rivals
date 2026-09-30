@@ -180,12 +180,17 @@ export function isGameStartPayload(value: unknown): value is GameStartPayload {
 // MOVE 同步
 // ---------------------------------------------------------------------------
 
-/** MOVE_REQUEST（Guest → Host）：纯意图，只有 playerId + targetX */
+/** MOVE_REQUEST：帧增量为首选；旧 absolute 请求仍须经过 Host 限速。 */
 export function isMoveRequestPayload(value: unknown): value is MoveRequestPayload {
   if (!isPlainObject(value)) {
     return false;
   }
-  return isPlayerId(value.playerId) && isFiniteNumber(value.targetX);
+  return (
+    isPlayerId(value.playerId) &&
+    (value.deltaX !== undefined || value.targetX !== undefined) &&
+    (value.deltaX === undefined || isFiniteNumber(value.deltaX)) &&
+    (value.targetX === undefined || isFiniteNumber(value.targetX))
+  );
 }
 
 /** MOVE（Host → 双方）：权威移动结果（最终位置 + 剩余预算） */
@@ -308,6 +313,7 @@ const STATE_SYNC_REASON_FLAGS: Readonly<Record<StateSyncReason, true>> = {
   MISSING_TURN_RESULT: true,
   INVALID_LOCAL_STATE: true,
   MANUAL_DEBUG: true,
+  CONNECTION_RECOVERED: true,
 };
 
 export function isStateSyncReason(value: unknown): value is StateSyncReason {

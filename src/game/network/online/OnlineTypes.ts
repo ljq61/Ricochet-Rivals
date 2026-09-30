@@ -103,10 +103,11 @@ export interface AuthoritativeGameSnapshot {
 // MOVE 同步
 // ---------------------------------------------------------------------------
 
-/** Guest → Host：移动意图（只有 Intent，无任何结果字段） */
+/** Guest → Host：有符号帧增量；targetX 保留供旧客户端使用。 */
 export interface MoveRequestPayload {
   readonly playerId: PlayerId;
-  readonly targetX: number;
+  readonly deltaX?: number;
+  readonly targetX?: number;
 }
 
 /** Host → 双方语义（Host 本地已有，Guest 应用）：权威移动结果 */
@@ -125,6 +126,7 @@ export interface MovePayload {
 export interface FireRequestPayload {
   readonly playerId: PlayerId;
   readonly weaponId: WeaponId;
+  /** 起点意图可匹配当前回合最近2秒已接受移动；Host 始终从当前权威炮塔发射。 */
   readonly startX: number;
   readonly startY: number;
   readonly velocityX: number;
@@ -201,7 +203,9 @@ export type StateSyncReason =
   | 'HASH_MISMATCH'
   | 'MISSING_TURN_RESULT'
   | 'INVALID_LOCAL_STATE'
-  | 'MANUAL_DEBUG';
+  | 'MANUAL_DEBUG'
+  /** SG-8：ICE restart 连接恢复后主动对账（Gameplay 状态可能已落后） */
+  | 'CONNECTION_RECOVERED';
 
 /** STATE_SYNC_REQUEST（Guest → Host）：请求权威快照恢复本地状态 */
 export interface StateSyncRequestPayload {
@@ -290,6 +294,8 @@ export interface OnlineBattleDeps {
    * （transitionToPlayer → notifyTurnTransitionComplete）。
    */
   resumeNextTurn(): void;
+  /** Guest 权威快照恢复成功后重建相机/转场表现；不推进权威回合。 */
+  onSnapshotApplied?(snapshot: AuthoritativeGameSnapshot): void;
   /** Guest 专属：权威伤害数字展示（复用 DamageResult 形状） */
   showAuthoritativeDamage(result: DamageResult): void;
   /** Guest 收到 COMMAND_REJECTED 的轻量提示入口 */
@@ -319,6 +325,8 @@ export interface OnlineCoordinatorOptions {
   readonly createMatchIdentity: () => { matchId: string; seed: number };
   /** Phase 15：Host TURN_RESULT → ACK 等待超时（默认 8s；测试注入短值） */
   readonly hostAckTimeoutMs?: number;
+  /** Host 移动限速的单调时钟；默认 performance.now，测试可注入。 */
+  readonly hostMovementNow?: () => number;
 }
 
 /** DEBUG_NETWORK overlay + E2E 观测快照 */
@@ -418,6 +426,18 @@ export interface OnlineGameCoordinatorApi {
    * TURN_RESULT 边界自动 mismatch 并走完整恢复链。Host 调用为 no-op。
    */
   debugForceDesync(): void;
+
+  /**
+   * SG-8：连接恢复后的状态对账入口（复用 Phase 15 恢复链，不建第二套
+   * recovery）。Guest → STATE_SYNC_REQUEST(reason=CONNECTION_RECOVERED)
+   * → Host 权威快照 → 既有校验/应用/ACK 链；Host no-op（权威端状态即事实）。
+   */
+  requestPostReconnectSync(): void;
+  /**
+   * SG-8：连接层恢复（ICE restart）进行中标记。挂起 Host ACK 超时阶梯
+   *（断线窗口内不进阶 SYNC_FAILED 误杀对局）；恢复成功后阶梯自然继续。
+   */
+  setConnectionRecoveryActive(active: boolean): void;
 
   /** Battle 期保活（2s PING；测试不调用即零定时器） */
   startKeepAlive(): void;

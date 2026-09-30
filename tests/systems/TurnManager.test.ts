@@ -22,7 +22,7 @@ describe('TurnManager', () => {
   });
 
   describe('startMatch / beginTurn', () => {
-    it('startMatch：进入首位玩家 ACTION，预算与 hasFired 重置', () => {
+    it('startMatch：进入首位玩家 ACTION，兼容占位与 hasFired 重置', () => {
       state.players.P1.moveRemaining = 0;
       state.players.P1.hasFired = true;
 
@@ -127,7 +127,7 @@ describe('TurnManager', () => {
       expect(state.currentPlayerId).toBe('P2');
     });
 
-    it('新玩家预算 / hasFired 重置（Move resets / Fire once only 的回合侧）', () => {
+    it('新玩家兼容占位 / hasFired 重置', () => {
       manager.startMatch();
       state.players.P2.moveRemaining = 37;
       state.players.P2.hasFired = true;
@@ -142,7 +142,7 @@ describe('TurnManager', () => {
       expect(state.players.P2.hasFired).toBe(false);
     });
 
-    it('完整循环 P1→P2→P1：turnId 3，P1 预算重置', () => {
+    it('完整循环 P1→P2→P1：turnId 3，P1 兼容占位重置', () => {
       manager.startMatch();
       state.players.P1.moveRemaining = 5;
       // 回合 1：P1 攻击
@@ -198,7 +198,7 @@ describe('TurnManager', () => {
       vi.restoreAllMocks();
     });
 
-    it('RESOLVE 应用 Host TURN_END：END / turnId=Host 值 / 玩家切换 / 预算与 hasFired 复位，且不告警', () => {
+    it('RESOLVE 应用 Host TURN_END：END / turnId=Host 值 / 玩家切换 / 兼容占位与 hasFired 复位，且不告警', () => {
       manager.startMatch();
       manager.notifyProjectileLaunched();
       manager.notifyProjectileResolved(null);

@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { MenuArtwork } from '../ui/MenuArtwork';
-import { DEBUG_GAME } from '../config/DebugConfig';
+import { DEBUG_FORCE_RELAY, DEBUG_GAME } from '../config/DebugConfig';
 import { PALETTE, toCssColor } from '../config/Palette';
 import { InputRouter } from '../input/InputRouter';
 import { ViewportService } from '../platform/ViewportService';
@@ -10,8 +10,19 @@ import {
 } from '../network/OnlineConnectionController';
 import { OnlineConnectionState } from '../network/OnlineConnectionState';
 import {
+  RoomConnectionController,
+} from '../network/RoomConnectionController';
+import {
+  RoomConnectionState,
+  type RoomConnectionFailure,
+  type RoomConnectionFailureReason,
+} from '../network/RoomConnectionState';
+import { SignalingClient } from '../network/signaling/SignalingClient';
+import { resolveSignalingUrl } from '../network/signaling/signalingUrl';
+import {
   ONLINE_SESSION_MANAGER_KEY,
   OnlineSessionManager,
+  type OnlineSession,
 } from '../network/OnlineSession';
 import { OnlineGameCoordinator } from '../network/online/OnlineGameCoordinator';
 import type { OnlineBattleBootstrap } from '../network/online/OnlineTypes';
@@ -27,12 +38,54 @@ const TEXT_FONT = 16;
 const SMALL_WIDTH = 260;
 
 /**
- * OnlineConnectionScene（Phase 13 手动配对 + Phase 14 进局）—— 连接流程 UI。
+ * 流程选择（SG-5 迁移规格）：正式流 = Room Code + 自动信令；Manual SDP 仅
+ * Debug 构建 + ?manual-sdp 查询参数可达（E2E Debug fallback 回归入口）。
+ */
+const USE_MANUAL_FLOW =
+  DEBUG_GAME && new URLSearchParams(window.location.search).has('manual-sdp');
+
+
+/** SG-7：Room 流失败分类 → 简洁用户文案（技术细节只进 Debug 句柄 / console） */
+const ROOM_FAILURE_TEXT: Record<RoomConnectionFailureReason, string> = {
+  SIGNALING_FAILED: 'Cannot reach the matchmaking server',
+  SERVER_ERROR: 'Matchmaking error — try again',
+  INVALID_ROOM_CODE: 'Invalid room code',
+  SETUP_FAILED: 'Connection setup failed',
+  OFFER_FAILED: 'Connection setup failed',
+  ANSWER_FAILED: 'Connection setup failed',
+  PEER_LEFT: 'Opponent left',
+  ICE_FAILED: 'Connection failed — your network may block WebRTC',
+  TURN_UNAVAILABLE: 'Relay server unavailable — cannot reach opponent',
+  DATA_CHANNEL_FAILED: 'Connection failed',
+  VERIFICATION_TIMEOUT: 'Connection unstable — verification failed',
+};
+
+function roomFailureText(failure: RoomConnectionFailure): string {
+  if (failure.reason === 'SERVER_ERROR') {
+    switch (failure.code) {
+      case 'ROOM_NOT_FOUND':
+        return 'Room not found — check the code';
+      case 'ROOM_FULL':
+        return 'Room is full';
+      case 'ROOM_EXPIRED':
+        return 'Room expired — ask the host for a new code';
+      default:
+        return ROOM_FAILURE_TEXT.SERVER_ERROR;
+    }
+  }
+  return ROOM_FAILURE_TEXT[failure.reason];
+}
+
+/**
+ * OnlineConnectionScene（SG-5：Room 流正式 UI + Manual Debug fallback）。
  *
- * OnlineConnectionScene（本类，只渲染状态与转发输入）
- *   → OnlineConnectionController（流程编排 / 状态机 / 超时 / 清理）
- *     → NetworkManager → WebRTCTransport。
- * 本类不 import 任何 RTC API —— 连接码 / SDP 全部经 Controller。
+ * 双流（SG-5 迁移规格）：
+ * * Room 流（默认）：OnlineConnectionScene → RoomConnectionController →
+ *   SignalingClient + WebRTCTransport —— 房间码自动配对，用户零感知 SDP。
+ * * Manual 流（DEBUG_GAME && ?manual-sdp）：Phase 13 手动配对 UI 原样保留，
+ *   连接码互传；迁移稳定后单独 Cleanup。
+ * VERIFIED 之后的进局链（ENTER BATTLE → OnlineGameCoordinator → BattleScene）
+ * 两流完全共用。
  *
  * Phase 14 进局流：VERIFIED → ENTER BATTLE → OnlineGameCoordinator
  * （PLAYER_READY 双向握手 → Host 汇齐 → GAME_START）→ scene.start
@@ -43,8 +96,8 @@ const SMALL_WIDTH = 260;
  *
  * 平台：
  * - 屏幕空间布局（identity 相机，物理像素坐标 + uiScale）
- * - 连接码输入用 DOM textarea（真实文本选择 / 长按粘贴 / 系统键盘 /
- *   Ctrl+V；游戏 canvas 的 touch-action:none 不影响 DOM 层）；
+ * - 连接码 / 房间码输入用 DOM textarea（真实文本选择 / 长按粘贴 /
+ *   系统键盘 / Ctrl+V；游戏 canvas 的 touch-action:none 不影响 DOM 层）；
  *   动态创建、随场景销毁
  * - 连接流程允许竖屏（Phase 13：仅 Battle 强制横屏，复制 / 粘贴
  *   微信连接码时竖屏体验更佳）
@@ -57,7 +110,14 @@ export class OnlineConnectionScene extends Phaser.Scene {
   private viewport!: ViewportService;
   private artwork!: MenuArtwork;
   private inputRouter!: InputRouter;
+  /** Manual Debug 流控制器（仅 USE_MANUAL_FLOW 时创建） */
   private controller!: OnlineConnectionController;
+  /** Room 流控制器（正式流；USE_MANUAL_FLOW 时为 null） */
+  private roomController: RoomConnectionController | null = null;
+  /** Room 流 UI 子态：IDLE 下点 JOIN GAME 展开输入（不进控制器状态机） */
+  private joinInputVisible = false;
+  /** Room 流最近失败文案（RETRY 清除） */
+  private roomFailureMessage: string | null = null;
   /** Phase 14：game.registry 注入的跨 Scene 会话持有者（main.ts 组合根） */
   private sessionManager!: OnlineSessionManager;
   /** Phase 14：进局协调器（VERIFIED 后创建，交接后由 BattleScene 接管） */
@@ -102,6 +162,9 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.coordinator = null;
     this.lobbyCancel = null;
     this.pongCancel = null;
+    this.roomController = null; // scene.start 复用：room 流字段随 create 重建
+    this.joinInputVisible = false;
+    this.roomFailureMessage = null;
     // Phase 14：跨 Scene 会话持有者（game.registry；防御缺省本地实例）
     this.sessionManager =
       (this.registry.get(ONLINE_SESSION_MANAGER_KEY) as OnlineSessionManager | undefined) ??
@@ -111,33 +174,11 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.cameras.main.fadeIn(220, 0, 0, 0);
     this.artwork = new MenuArtwork(this, true);
 
-    this.controller = new OnlineConnectionController({
-      matchId: 'online-manual-pairing',
-      createTransport: (role) =>
-        new WebRTCTransport({ role, config: DEFAULT_WEBRTC_CONFIG }),
-    });
-    this.controller.onStateChange(() => this.renderState());
-    this.controller.onFailure((message) => {
-      this.failureMessage = message;
-      this.renderState();
-    });
-    this.controller.onSession((session) => {
-      this.sessionManager.store(session);
-      // VERIFIED 后持续 ping 展示 RTT（防重复：onSession 幂等失败时双保险）
-      if (this.pingTimer === null) {
-        this.pingTimer = setInterval(() => {
-          try {
-            session.networkManager.ping();
-          } catch {
-            // 会话已断（回菜单清理后）—— 定时器随 shutdown 清除
-          }
-        }, 2_000);
-      }
-      this.pongCancel = session.networkManager.onPong((envelope) => {
-        this.lastRttMs = Math.max(0, Date.now() - envelope.payload.sentAt);
-        this.renderState();
-      });
-    });
+    if (USE_MANUAL_FLOW) {
+      this.setupManualFlow();
+    } else {
+      this.setupRoomFlow();
+    }
 
     this.title = this.add
       .text(0, 0, 'ONLINE MULTIPLAYER', {
@@ -160,6 +201,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-create',
       viewport: this.viewport,
       label: 'CREATE GAME',
+      baseHeight: 56,
       onTap: () => void this.onCreateGame(),
     });
     this.buttons.join = new MenuButton(this, {
@@ -167,6 +209,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-join',
       viewport: this.viewport,
       label: 'JOIN GAME',
+      baseHeight: 56,
       onTap: () => this.onJoinGame(),
     });
     this.buttons.connect = new MenuButton(this, {
@@ -174,6 +217,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-connect',
       viewport: this.viewport,
       label: 'CONNECT',
+      baseHeight: 56,
       onTap: () => void this.onConnect(),
     });
     this.buttons.copy = new MenuButton(this, {
@@ -183,6 +227,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       label: 'COPY CODE',
       accent: 0x56698a,
       baseWidth: SMALL_WIDTH,
+      baseHeight: 56,
       onTap: () => void this.onCopyCode(),
     });
     this.buttons.createResponse = new MenuButton(this, {
@@ -190,7 +235,16 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-create-response',
       viewport: this.viewport,
       label: 'CREATE RESPONSE',
+      baseHeight: 56,
       onTap: () => void this.onCreateResponse(),
+    });
+    this.buttons.joinConfirm = new MenuButton(this, {
+      router: this.inputRouter,
+      id: 'online-join-confirm',
+      viewport: this.viewport,
+      label: 'JOIN',
+      baseHeight: 56,
+      onTap: () => void this.onJoinConfirm(),
     });
     this.buttons.tryAgain = new MenuButton(this, {
       router: this.inputRouter,
@@ -198,9 +252,16 @@ export class OnlineConnectionScene extends Phaser.Scene {
       viewport: this.viewport,
       label: 'TRY AGAIN',
       baseWidth: SMALL_WIDTH,
+      baseHeight: 56,
       onTap: () => {
-        this.controller.retry();
-        this.failureMessage = null;
+        if (this.useManualFlow()) {
+          this.controller.retry();
+          this.failureMessage = null;
+        } else {
+          this.roomController?.retry();
+          this.roomFailureMessage = null;
+        }
+        this.renderState();
       },
     });
     this.buttons.enterBattle = new MenuButton(this, {
@@ -208,6 +269,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-enter-battle',
       viewport: this.viewport,
       label: 'ENTER BATTLE',
+      baseHeight: 56,
       onTap: () => this.onEnterBattle(),
     });
     this.buttons.back = new MenuButton(this, {
@@ -227,6 +289,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       viewport: this.viewport,
       label: 'BACK TO MENU',
       accent: 0x56698a,
+      baseHeight: 56,
       onTap: () => this.leaveToMenu(),
     });
 
@@ -236,6 +299,74 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.installDebugHandles();
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
+  }
+
+  // ---- 流程装配（SG-5 双流） ---------------------------------------------
+
+  /** 当前页激活流（URL 查询参数决定，页面生命周期内恒定） */
+  private useManualFlow(): boolean {
+    return USE_MANUAL_FLOW;
+  }
+
+  /** Manual Debug 流（?manual-sdp）：Phase 13 控制器原样装配 */
+  private setupManualFlow(): void {
+    this.controller = new OnlineConnectionController({
+      matchId: 'online-manual-pairing',
+      createTransport: (role) =>
+        new WebRTCTransport({ role, config: DEFAULT_WEBRTC_CONFIG }),
+    });
+    this.controller.onStateChange(() => this.renderState());
+    this.controller.onFailure((message) => {
+      this.failureMessage = message;
+      this.renderState();
+    });
+    this.controller.onSession((session) => this.adoptSession(session));
+  }
+
+  /** Room 流（正式）：SG-3/4 控制器 —— SignalingClient + Trickle transport */
+  private setupRoomFlow(): void {
+    const controller = new RoomConnectionController({
+      // SG-6：iceServers 来自 Signaling ack（STUN + TURN 临时凭据）；
+      // DEBUG_FORCE_RELAY 强制全 relay 验证 TURN 可用性（production 保持 all）
+      createTransport: (role, config) =>
+        new WebRTCTransport({
+          role,
+          config: DEBUG_FORCE_RELAY ? { ...config, iceTransportPolicy: 'relay' as const } : config,
+        }),
+      createSignalingClient: () => new SignalingClient({ url: resolveSignalingUrl() }),
+    });
+    this.roomController = controller;
+    controller.onStateChange((state) => {
+      // 房间码就绪 → COPY 源更新（含 RETRY 后重建房）
+      if (state === RoomConnectionState.ROOM_WAITING) {
+        this.currentCode = controller.currentRoomCode;
+      }
+      this.renderState();
+    });
+    controller.onFailure((failure) => {
+      this.roomFailureMessage = roomFailureText(failure);
+      this.renderState();
+    });
+    controller.onSession((session) => this.adoptSession(session));
+  }
+
+  /** VERIFIED 会话收养（两流共用）：SessionManager 持有 + RTT 轮询 */
+  private adoptSession(session: OnlineSession): void {
+    this.sessionManager.store(session);
+    // VERIFIED 后持续 ping 展示 RTT（防重复：onSession 幂等失败时双保险）
+    if (this.pingTimer === null) {
+      this.pingTimer = setInterval(() => {
+        try {
+          session.networkManager.ping();
+        } catch {
+          // 会话已断（回菜单清理后）—— 定时器随 shutdown 清除
+        }
+      }, 2_000);
+    }
+    this.pongCancel = session.networkManager.onPong((envelope) => {
+      this.lastRttMs = Math.max(0, Date.now() - envelope.payload.sentAt);
+      this.renderState();
+    });
   }
 
   // ---- 用户动作 ---------------------------------------------------------
@@ -249,12 +380,10 @@ export class OnlineConnectionScene extends Phaser.Scene {
    */
   private onEnterBattle(): void {
     const session = this.sessionManager.current;
-    if (
-      session === null ||
-      this.coordinator !== null ||
-      this.controller.currentState !== OnlineConnectionState.VERIFIED ||
-      this.transitioning
-    ) {
+    const verified = this.useManualFlow()
+      ? this.controller.currentState === OnlineConnectionState.VERIFIED
+      : (this.roomController?.currentState ?? RoomConnectionState.IDLE) === RoomConnectionState.VERIFIED;
+    if (session === null || this.coordinator !== null || !verified || this.transitioning) {
       return;
     }
     this.coordinator = new OnlineGameCoordinator({
@@ -317,6 +446,15 @@ export class OnlineConnectionScene extends Phaser.Scene {
   }
 
   private async onCreateGame(): Promise<void> {
+    if (!this.useManualFlow()) {
+      // Room 流：建房（失败经 onFailure 渲染）
+      try {
+        await this.roomController?.createRoom();
+      } catch {
+        // failure 已渲染
+      }
+      return;
+    }
     try {
       const { connectionCode } = await this.controller.createHostSession();
       this.currentCode = connectionCode;
@@ -327,7 +465,31 @@ export class OnlineConnectionScene extends Phaser.Scene {
   }
 
   private onJoinGame(): void {
+    if (!this.useManualFlow()) {
+      // Room 流：展开房间码输入（控制器保持 IDLE，输入完成才 joinRoom）
+      this.joinInputVisible = true;
+      this.renderState();
+      return;
+    }
     this.controller.startGuestSession();
+  }
+
+  /** Room 流：JOIN 确认 —— 输入码送控制器（非法码失败保留输入可重试） */
+  private async onJoinConfirm(): Promise<void> {
+    const controller = this.roomController;
+    if (controller === null) {
+      return;
+    }
+    const code = this.textarea?.value ?? '';
+    if (controller.currentState !== RoomConnectionState.IDLE) {
+      controller.retry(); // INVALID_ROOM_CODE FAILED 后直接重试
+      this.roomFailureMessage = null;
+    }
+    try {
+      await controller.joinRoom(code);
+    } catch {
+      // 失败已由 onFailure 渲染（INVALID_ROOM_CODE 保留输入）
+    }
   }
 
   private async onConnect(): Promise<void> {
@@ -401,8 +563,13 @@ export class OnlineConnectionScene extends Phaser.Scene {
       return;
     }
     this.transitioning = true;
-    this.controller.back();
-    this.controller.dispose();
+    if (this.useManualFlow()) {
+      this.controller.back();
+      this.controller.dispose();
+    } else {
+      this.roomController?.back();
+      this.roomController?.dispose();
+    }
     this.coordinator?.dispose();
     this.coordinator = null;
     this.lobbyCancel = null;
@@ -426,9 +593,116 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.time.delayedCall(300, startMenu);
   }
 
-  // ---- 渲染（状态驱动） ---------------------------------------------------
+  // ---- 渲染（状态驱动，双流分派） -----------------------------------------
 
   private renderState(): void {
+    if (this.useManualFlow()) {
+      this.renderManualState();
+    } else {
+      this.renderRoomState();
+    }
+  }
+
+  /** Room 流渲染（SG-5 正式 UI：房间码 + 自动连接，零 SDP 露出） */
+  private renderRoomState(): void {
+    const state = this.roomController?.currentState ?? RoomConnectionState.IDLE;
+
+    const visibleButtons: OnlineButton[] = ['back'];
+    let showTextarea = false;
+    let status = '';
+    let prompt = '';
+
+    switch (state) {
+      case RoomConnectionState.IDLE:
+        if (this.joinInputVisible) {
+          status = 'Enter the 6-character room code.';
+          prompt = 'Press JOIN to connect.';
+          visibleButtons.push('joinConfirm');
+          showTextarea = true;
+        } else {
+          status = 'CREATE GAME or JOIN GAME';
+          visibleButtons.push('create', 'join');
+        }
+        break;
+      case RoomConnectionState.CONNECTING_SIGNALING:
+        status = 'Connecting to matchmaking…';
+        break;
+      case RoomConnectionState.CREATING_ROOM:
+        status = 'Creating room…';
+        break;
+      case RoomConnectionState.ROOM_WAITING:
+        status = `ROOM CODE: ${this.roomController?.currentRoomCode ?? ''}`;
+        prompt = 'Send the code to your friend — WAITING FOR OPPONENT…';
+        visibleButtons.push('copy');
+        break;
+      case RoomConnectionState.JOINING_ROOM:
+        status = 'Joining room…';
+        break;
+      case RoomConnectionState.NEGOTIATING:
+      case RoomConnectionState.CONNECTING:
+        status = 'CONNECTING…';
+        break;
+      case RoomConnectionState.CONNECTED:
+        status = 'Connected — verifying connection…';
+        break;
+      case RoomConnectionState.VERIFIED:
+        status = 'CONNECTION VERIFIED — ENTER BATTLE';
+        prompt = this.lobbyNotice ?? 'You can enter the game now — press ENTER BATTLE.';
+        visibleButtons.length = 0;
+        visibleButtons.push('enterBattle', 'backToMenu');
+        break;
+      case RoomConnectionState.FAILED: {
+        const failure = this.roomController?.lastFailure ?? null;
+        status = this.roomFailureMessage ?? 'Connection failed';
+        // Debug Mode 输出具体 reason（规格 SG-7）：正式构建保持简洁
+        if (DEBUG_GAME && failure !== null) {
+          status += ` [${failure.reason}${failure.code !== undefined ? `:${failure.code}` : ''}]`;
+        }
+        visibleButtons.length = 0;
+        visibleButtons.push('back');
+        // 非法码：保留输入直接改码重试（SG-5 UX：不强迫重开输入框）
+        if (failure?.reason === 'INVALID_ROOM_CODE' && this.joinInputVisible) {
+          visibleButtons.push('joinConfirm');
+          showTextarea = true;
+        } else {
+          visibleButtons.push('tryAgain');
+        }
+        break;
+      }
+      case RoomConnectionState.CLOSED:
+        status = 'Connection closed.';
+        visibleButtons.length = 0;
+        visibleButtons.push('back');
+        break;
+      default:
+        break;
+    }
+
+    if (state === RoomConnectionState.VERIFIED) {
+      const role = this.sessionManager.current?.role === 'guest' ? 'GUEST' : 'HOST';
+      const rtt = this.lastRttMs !== null ? `PING ${this.lastRttMs}ms` : 'PING …';
+      status =
+        this.lobbyPhase === 'waiting'
+          ? `WAITING FOR OPPONENT… — ${role} — ${rtt}`
+          : `CONNECTED — ${role} — ${rtt}`;
+    }
+
+    for (const [key, button] of Object.entries(this.buttons)) {
+      const typedKey = key as OnlineButton;
+      button?.setVisible(visibleButtons.includes(typedKey));
+    }
+
+    this.statusLine.setText(status);
+    this.promptLine.setText(prompt);
+    this.setTextareaVisible(showTextarea);
+    if (this.textarea !== null) {
+      this.textarea.readOnly = false;
+      this.textarea.placeholder = 'Enter room code';
+    }
+  }
+
+  /** Manual Debug 流渲染（Phase 13 原样） */
+  private renderManualState(): void {
     const state = this.controller.currentState;
     const message = this.failureMessage;
 
@@ -564,6 +838,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     el.spellcheck = false;
     el.autocapitalize = 'off';
     el.autocomplete = 'off';
+    if (!this.useManualFlow()) el.rows = 1;
     document.body.appendChild(el);
     this.textarea = el;
     this.positionTextarea();
@@ -576,21 +851,26 @@ export class OnlineConnectionScene extends Phaser.Scene {
     }
     const { height, safeArea, uiScale } = this.viewport.current;
     const dpr = window.devicePixelRatio || 1;
+    const short = (height - safeArea.top - safeArea.bottom) / uiScale < 380;
+    const roomInput = !this.useManualFlow();
     el.style.position = 'fixed';
-    el.style.left = '10%';
-    el.style.width = '80%';
-    el.style.height = '64px';
+    el.style.left = roomInput ? '50%' : '10%';
+    el.style.transform = roomInput ? 'translateX(-50%)' : '';
+    el.style.width = roomInput ? 'min(320px, 80%)' : '80%';
+    el.style.height = roomInput ? '52px' : '64px';
     // 与 reposition() 的动作行（CONNECT / CREATE RESPONSE / COPY）同源：
     // 输入框底边停在动作行顶沿上方 12 CSS px —— 保证不与按钮、不与顶部
     // 文案区重叠（旧布局 220px 固定抬高在手机上顶进说明文字区）
-    const bottomRowCss = (height - safeArea.bottom - (32 + 32) * uiScale) / dpr;
-    const actionTopCss = bottomRowCss - 40 - 32; // 动作行中心在 bottomRow 上方 40，半高 32
+    const bottomRowCss = (height - safeArea.bottom - (32 + 28) * uiScale) / dpr;
+    const actionTopCss = bottomRowCss - (short ? 0 : 40) - 28;
     const bottomPx = height / dpr - actionTopCss + 12;
     el.style.bottom = `${bottomPx}px`;
     el.style.zIndex = '10';
     el.style.resize = 'none';
     el.style.fontFamily = 'monospace';
-    el.style.fontSize = '13px';
+    el.style.fontSize = roomInput ? '18px' : '13px';
+    el.style.textAlign = roomInput ? 'center' : 'left';
+    el.style.textTransform = roomInput ? 'uppercase' : 'none';
     el.style.background = 'rgba(13, 20, 32, 0.9)';
     el.style.color = '#e8eef7';
     el.style.border = '1px solid #56698a';
@@ -607,36 +887,45 @@ export class OnlineConnectionScene extends Phaser.Scene {
   private reposition(): void {
     this.artwork.layout(this.viewport.current.width, this.viewport.current.height, this.viewport.current.uiScale);
     const { width, height, safeArea, uiScale } = this.viewport.current;
-    // Phase 17 修复轮：左上角返回 icon 让出顶部带 —— 标题 / 文案整体下移
-    // （icon 底沿 88*ui + 间隙 16*ui = 104*ui 起为标题区）
+    const availableCssHeight = (height - safeArea.top - safeArea.bottom) / uiScale;
+    const compact = availableCssHeight < 650;
+    const short = availableCssHeight < 380;
     this.buttons.back?.setPosition(
       safeArea.left + (24 + 32) * uiScale,
       safeArea.top + (24 + 32) * uiScale
     );
-    this.title.setFontSize(TITLE_FONT * uiScale);
-    this.title.setPosition(width / 2, safeArea.top + (104 + TITLE_FONT * 0.5) * uiScale);
+    this.title.setFontSize((short ? 24 : compact ? 28 : TITLE_FONT) * uiScale);
+    this.title.setPosition(width / 2, safeArea.top + (short ? 76 : compact ? 85 : 121) * uiScale);
 
-    // 文案区固定在标题下方（曾按状态挪到中部 —— 与 DOM textarea 相互遮挡）
-    const statusY = safeArea.top + 160 * uiScale;
-    this.statusLine.setFontSize(TEXT_FONT * uiScale);
-    this.promptLine.setFontSize(TEXT_FONT * uiScale);
+    // 横屏短视口把标题、说明和动作区各放独立行，保留 64px 按钮命中区。
+    const statusY = safeArea.top + (short ? 115 : compact ? 132 : 160) * uiScale;
+    this.statusLine.setFontSize((compact ? 14 : TEXT_FONT) * uiScale);
+    this.promptLine.setFontSize((compact ? 13 : TEXT_FONT) * uiScale);
+    const textWidth = width - safeArea.left - safeArea.right - 56 * uiScale;
+    this.statusLine.setWordWrapWidth(textWidth);
+    this.promptLine.setWordWrapWidth(textWidth);
     this.statusLine.setPosition(width / 2, statusY);
-    this.promptLine.setPosition(width / 2, statusY + 34 * uiScale);
+    this.promptLine.setPosition(width / 2, statusY + (short ? 25 : compact ? 28 : 34) * uiScale);
 
-    const buttonH = 64 * uiScale;
+    const buttonH = 56 * uiScale;
     const bottomRow = height - safeArea.bottom - 32 * uiScale - buttonH / 2;
     const centerX = width / 2;
-    const actionRowY = bottomRow - 40 * uiScale;
+    const actionRowY = bottomRow - (short ? 0 : 40) * uiScale;
 
-    this.buttons.create?.setPosition(centerX, height * 0.42);
-    this.buttons.join?.setPosition(centerX, height * 0.42 + (buttonH + 20 * uiScale));
+    const primaryY = compact
+      ? height - safeArea.bottom - (short ? 116 : 168) * uiScale
+      : height * 0.42;
+    this.buttons.create?.setPosition(centerX, primaryY);
+    this.buttons.join?.setPosition(centerX, primaryY + buttonH + 16 * uiScale);
     // 动作行：Host 页 CONNECT 与 COPY 并排；Guest 两个动作各占中央
     this.buttons.connect?.setPosition(centerX - 160 * uiScale, actionRowY);
     this.buttons.createResponse?.setPosition(centerX, actionRowY);
+    this.buttons.joinConfirm?.setPosition(centerX, actionRowY);
     this.buttons.copy?.setPosition(centerX + 170 * uiScale, actionRowY);
-    this.buttons.tryAgain?.setPosition(centerX, height * 0.6);
-    this.buttons.enterBattle?.setPosition(centerX, height * 0.58);
-    this.buttons.backToMenu?.setPosition(centerX, height * 0.72);
+    this.buttons.tryAgain?.setPosition(centerX, compact ? primaryY : height * 0.6);
+    const enterY = compact ? primaryY : height * 0.58;
+    this.buttons.enterBattle?.setPosition(centerX, enterY);
+    this.buttons.backToMenu?.setPosition(centerX, enterY + buttonH + 24 * uiScale);
 
     this.positionTextarea();
   }
@@ -653,7 +942,57 @@ export class OnlineConnectionScene extends Phaser.Scene {
         return 'OnlineConnectionScene';
       },
       get state(): string {
-        return self.controller.currentState;
+        // Room 流下 Manual 控制器未装配 —— 守卫防 debug 句柄崩溃
+        return self.controller?.currentState ?? 'MANUAL_FLOW_INACTIVE';
+      },
+      /** SG-5：Room 流状态 / 房间码 / 失败原因（E2E room 段驱动） */
+      get roomState(): string {
+        return self.roomController?.currentState ?? 'IDLE';
+      },
+      get roomCode(): string | null {
+        return self.roomController?.currentRoomCode ?? null;
+      },
+      get roomFailureReason(): string | null {
+        return self.roomController?.lastFailure?.reason ?? null;
+      },
+      /** SG-7：完整失败对象（reason + code + detail —— Debug Mode 具体输出） */
+      get roomFailure(): RoomConnectionFailure | null {
+        return self.roomController?.lastFailure ?? null;
+      },
+      /** SG-7：当前状态行文案（E2E 断言用户可见文本用） */
+      get statusText(): string {
+        return self.statusLine.text;
+      },
+      get textRects(): Record<'title' | 'status' | 'prompt', { top: number; bottom: number }> {
+        const ui = self.viewport.current.uiScale;
+        const rect = (text: Phaser.GameObjects.Text) => {
+          const bounds = text.getBounds();
+          return { top: bounds.top / ui, bottom: bounds.bottom / ui };
+        };
+        return {
+          title: rect(self.title),
+          status: rect(self.statusLine),
+          prompt: rect(self.promptLine),
+        };
+      },
+      get flow(): string {
+        return self.useManualFlow() ? 'manual' : 'room';
+      },
+      /**
+       * SG-6 诊断（异步方法 —— E2E 经 page.evaluate 调用）：连接期走控制器
+       * transport；VERIFIED 交接后走 sessionManager 持有的 WebRTCTransport。
+       * route = 'DIRECT' | 'RELAY' | null（未连接）。
+       */
+      async awaitRtcDiagnostics(): Promise<unknown> {
+        const viaController = await self.roomController?.getDiagnostics();
+        if (viaController !== null && viaController !== undefined) {
+          return viaController;
+        }
+        const transport = self.sessionManager.current?.transport;
+        if (transport instanceof WebRTCTransport) {
+          return transport.getDiagnostics();
+        }
+        return null;
       },
       get connectionCode(): string | null {
         return self.currentCode;
@@ -728,9 +1067,17 @@ export class OnlineConnectionScene extends Phaser.Scene {
     // 必须 detach：dispose 的 destroySession 会就地杀死已交接的通道。
     // 未交接（回菜单 / 失败退出）则彻底清理。
     if (this.handedOff) {
-      this.controller.detach();
+      if (this.useManualFlow()) {
+        this.controller.detach();
+      } else {
+        this.roomController?.detach();
+      }
     } else {
-      this.controller.dispose();
+      if (this.useManualFlow()) {
+        this.controller.dispose();
+      } else {
+        this.roomController?.dispose();
+      }
       this.coordinator?.dispose();
       this.coordinator = null;
       this.sessionManager.disposeSession();
@@ -749,6 +1096,7 @@ type OnlineButton =
   | 'connect'
   | 'copy'
   | 'createResponse'
+  | 'joinConfirm'
   | 'tryAgain'
   | 'enterBattle'
   | 'back'

@@ -66,7 +66,7 @@ export class AIController {
       return { moveTargetX: null, fire: this.applyError(solution, rng) };
     }
 
-    // 2. 无解：搜索移动候选（bounds 内、预算内；先朝敌后背敌，确定性顺序）
+    // 2. 无解：搜索基地内移动候选（先朝敌后背敌，确定性顺序）
     for (const candidateX of this.moveCandidates(me, enemy.x)) {
       const moved = solveTrajectory({
         originX: candidateX,
@@ -86,12 +86,9 @@ export class AIController {
 
   /**
    * 移动候选（简单搜索）：朝敌 / 背敌两个方向 × 全程 / 半程，
-   * clamp 在己方 bounds 与剩余预算内，跳过原地与重复。确定性顺序。
+   * clamp 在己方 bounds 内，跳过原地与重复。确定性顺序。
    */
   private moveCandidates(me: PlayerState, enemyX: number): number[] {
-    if (!(me.moveRemaining > 0)) {
-      return [];
-    }
     const bounds =
       me.side === 'left'
         ? GAME_CONFIG.player.leftBounds
@@ -100,7 +97,7 @@ export class AIController {
     const reach = (direction: number): number => {
       const boundRoom =
         direction > 0 ? bounds.maxX - me.x : me.x - bounds.minX;
-      return Math.max(0, Math.min(me.moveRemaining, boundRoom));
+      return Math.max(0, boundRoom);
     };
 
     const candidates: number[] = [];

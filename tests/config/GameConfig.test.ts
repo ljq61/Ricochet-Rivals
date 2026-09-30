@@ -49,8 +49,9 @@ describe('GAME_CONFIG integrity', () => {
     expect(GAME_CONFIG.explosion.splashDamage).toBeGreaterThan(0);
   });
 
-  it('每回合移动距离与生命值为正', () => {
-    expect(player.maxMovePerTurn).toBeGreaterThan(0);
+  it('生命值为正，旧移动预算配置仅保留有限兼容占位', () => {
+    expect(player.maxMovePerTurn).toBe(0);
+    expect(Number.isFinite(player.maxMovePerTurn)).toBe(true);
     expect(player.maxHp).toBeGreaterThan(0);
   });
 

@@ -70,8 +70,13 @@ export class FakeRTCPeerConnection {
   connectionState: RTCPeerConnectionState = 'new';
   iceConnectionState: RTCIceConnectionState = 'new';
   iceGatheringState: RTCIceGatheringState = 'new';
+  signalingState: RTCSignalingState = 'stable';
   closed = false;
   readonly dataChannels: FakeRTCDataChannel[] = [];
+  /** SG-4：经 transport.addIceCandidate 成功落库的对端 candidate（malformed 不入） */
+  readonly addedCandidates: RTCIceCandidateInit[] = [];
+  /** SG-6：getStats 注入报告（transport 诊断解析 selected pair） */
+  statsEntries: Array<Record<string, unknown>> = [];
   localDescription: { type: RTCSdpType; sdp: string } | null = null;
   remoteDescription: { type: RTCSdpType; sdp: string } | null = null;
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
@@ -105,10 +110,6 @@ export class FakeRTCPeerConnection {
     return channel;
   }
 
-  async createOffer(): Promise<RTCSessionDescriptionInit> {
-    return { type: 'offer', sdp: 'fake:offer-sdp' };
-  }
-
   async createAnswer(): Promise<RTCSessionDescriptionInit> {
     return { type: 'answer', sdp: 'fake:answer-sdp' };
   }
@@ -140,9 +141,55 @@ export class FakeRTCPeerConnection {
 
   // ---- 测试驱动 ----
 
+  /** SG-8：createOffer 收到的 options 逐次记录（iceRestart 断言用） */
+  readonly createOfferOptions: Array<RTCOfferOptions | undefined> = [];
+
+  async createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit> {
+    this.createOfferOptions.push(options);
+    return { type: 'offer', sdp: options?.iceRestart === true ? 'fake:offer-sdp-restart' : 'fake:offer-sdp' };
+  }
+
+  /** SG-8：模拟 ICE restart 后连接重建（connectionState → connected） */
+  restoreConnection(): void {
+    this.connectionState = 'connected';
+    this.emit('connectionstatechange');
+  }
+
   completeIceGathering(): void {
     this.iceGatheringState = 'complete';
     this.emit('icegatheringstatechange');
+    // browser contract：gathering 完结时 onicecandidate 收到 null candidate
+    this.emit('icecandidate', { candidate: null });
+  }
+
+  /** SG-4：模拟浏览器逐个产出本地 candidate */
+  emitLocalCandidate(candidate: {
+    candidate: string;
+    sdpMid?: string | null;
+    sdpMLineIndex?: number | null;
+  }): void {
+    this.emit('icecandidate', { candidate });
+  }
+
+  /** SG-6：最小 RTCStatsReport 形状（forEach 遍历注入条目） */
+  async getStats(): Promise<RTCStatsReport> {
+    const entries = this.statsEntries;
+    return {
+      forEach: (callback: (stat: Record<string, unknown>) => void) => {
+        for (const entry of entries) {
+          callback(entry);
+        }
+      },
+    } as unknown as RTCStatsReport;
+  }
+
+  /** SG-4：真实浏览器对畸形 candidate 会 reject —— fake 以 'candidate:' 前缀校验模拟 */
+  async addIceCandidate(candidate?: RTCIceCandidateInit | null): Promise<void> {
+    const text = candidate?.candidate;
+    if (typeof text !== 'string' || !text.startsWith('candidate:')) {
+      throw new Error(`FakeRTCPeerConnection.addIceCandidate malformed: ${String(text)}`);
+    }
+    this.addedCandidates.push(candidate ?? {});
   }
 
   failConnection(): void {
@@ -162,6 +209,7 @@ export function makeTransport(role: PeerRole): Bundle {
   const transport = new WebRTCTransport({
     role,
     peerConnectionFactory: () => pc as unknown as RTCPeerConnection,
+    pcCloseDelayMs: 0, // 单测即时关闭（延迟刷出行为由 WebRTCTransport.test R6 专测）
   });
   return { transport, pc, channel: role === 'host' ? pc.dataChannels[0] ?? null : null };
 }

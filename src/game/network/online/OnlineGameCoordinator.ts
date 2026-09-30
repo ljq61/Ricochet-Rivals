@@ -86,6 +86,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
   /** onSyncFailure 终局去重（每场恰一次） */
   private syncFailureNotified = false;
   private readonly hostAckTimeoutMs: number;
+  private readonly hostMovementNow: (() => number) | undefined;
 
   private inputBusValue: CommandBus | null = null;
   private damageSystemValue: DamageSystem | null = null;
@@ -95,6 +96,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
     this.nm = options.session.networkManager;
     this.createMatchIdentity = options.createMatchIdentity;
     this.hostAckTimeoutMs = options.hostAckTimeoutMs ?? 8_000;
+    this.hostMovementNow = options.hostMovementNow;
     // 通道中断订阅与生命周期同寿（Lobby / Battle 各自回调槽转发）
     this.cancels.push(this.nm.onDisconnect((reason) => this.handleDisconnect(reason)));
   }
@@ -258,7 +260,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
           gameLogic: deps.gameLogic,
           resumeNextTurn: deps.resumeNextTurn,
         },
-        { ackTimeoutMs: this.hostAckTimeoutMs },
+        { ackTimeoutMs: this.hostAckTimeoutMs, movementNow: this.hostMovementNow },
       );
       this.cancels.push(this.hostChannel.attach());
       return;
@@ -279,6 +281,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
       showAuthoritativeDamage: deps.showAuthoritativeDamage,
       showRejected: deps.showRejected,
       setSyncLock: deps.setSyncLock,
+      onSnapshotApplied: deps.onSnapshotApplied,
     });
     this.cancels.push(this.guestChannel.attach());
   }
@@ -387,6 +390,23 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
   /** DEBUG_GAME：Guest 侧制造 desync（下一次 TURN_RESULT 边界自动恢复）；Host no-op */
   debugForceDesync(): void {
     this.guestChannel?.debugForceDesync();
+  }
+
+  /**
+   * SG-8：连接（ICE restart）恢复后的状态对账 —— 复用 Phase 15 恢复链。
+   * Guest：STATE_SYNC_REQUEST(reason=CONNECTION_RECOVERED) → 权威快照；
+   * Host no-op —— 权威端状态即事实，Guest 的请求会经既有快照链收敛。
+   */
+  requestPostReconnectSync(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.guestChannel?.requestPostReconnectSync();
+  }
+
+  /** SG-8：连接层恢复标记（Host ACK 阶梯挂起 / 恢复窗口不误杀） */
+  setConnectionRecoveryActive(active: boolean): void {
+    this.hostChannel?.setAckLadderSuspended(active);
   }
 
   // ---- 断线 / 生命周期 --------------------------------------------------

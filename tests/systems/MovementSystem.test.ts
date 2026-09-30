@@ -19,21 +19,19 @@ describe('MovementSystem', () => {
   });
 
   describe('P1 Bounds（左侧阵地 100–850）', () => {
-    it('普通移动被接受，按距离消耗预算', () => {
+    it('普通移动被接受，旧预算字段保持兼容占位', () => {
       const result = system.execute(state, move('P1', 500));
 
       expect(result.accepted).toBe(true);
       expect(result.previousX).toBe(450);
       expect(result.nextX).toBe(500);
       expect(result.distanceConsumed).toBe(50);
-      expect(result.remainingMovement).toBe(200);
+      expect(result.remainingMovement).toBe(0);
       expect(state.players.P1.x).toBe(500);
-      expect(state.players.P1.moveRemaining).toBe(200);
+      expect(state.players.P1.moveRemaining).toBe(0);
     });
 
     it('超出左边界时 clamp 到 minX=100', () => {
-      // 预算调大以单独验证边界
-      state.players.P1.moveRemaining = 10000;
       const result = system.execute(state, move('P1', -500));
 
       expect(result.accepted).toBe(true);
@@ -42,7 +40,6 @@ describe('MovementSystem', () => {
     });
 
     it('超出右边界时 clamp 到 maxX=850', () => {
-      state.players.P1.moveRemaining = 10000;
       const result = system.execute(state, move('P1', 900));
 
       expect(result.accepted).toBe(true);
@@ -74,7 +71,6 @@ describe('MovementSystem', () => {
     });
 
     it('超出左边界时 clamp 到 minX=4150', () => {
-      state.players.P2.moveRemaining = 10000;
       const result = system.execute(state, move('P2', 4100));
 
       expect(result.accepted).toBe(true);
@@ -82,7 +78,6 @@ describe('MovementSystem', () => {
     });
 
     it('超出右边界时 clamp 到 maxX=4900', () => {
-      state.players.P2.moveRemaining = 10000;
       const result = system.execute(state, move('P2', 5200));
 
       expect(result.accepted).toBe(true);
@@ -90,63 +85,51 @@ describe('MovementSystem', () => {
     });
   });
 
-  describe('Movement Budget（每回合 250px）', () => {
-    it('预算耗尽后拒绝移动', () => {
-      const first = system.execute(state, move('P1', 700)); // 消耗 250
-      expect(first.accepted).toBe(true);
-      expect(first.remainingMovement).toBe(0);
-
-      const second = system.execute(state, move('P1', 710));
-      expect(second.accepted).toBe(false);
-      expect(second.reason).toBe('NO_MOVE_BUDGET');
-      expect(state.players.P1.x).toBe(700);
+  describe('Unlimited movement within the base', () => {
+    it.each(['P1', 'P2'] as const)('%s can repeatedly cross the whole base beyond the former 250px budget', (playerId) => {
+      state.currentPlayerId = playerId;
+      const bounds = playerId === 'P1'
+        ? GAME_CONFIG.player.leftBounds
+        : GAME_CONFIG.player.rightBounds;
+      let totalDistance = 0;
+      for (let cycle = 0; cycle < 5; cycle++) {
+        for (const targetX of [bounds.minX, bounds.maxX]) {
+          const result = system.execute(state, move(playerId, targetX));
+          expect(result.accepted).toBe(true);
+          expect(result.nextX).toBe(targetX);
+          expect(result.remainingMovement).toBe(0);
+          totalDistance += result.distanceConsumed;
+        }
+      }
+      expect(totalDistance).toBeGreaterThan(2500);
+      expect(state.players[playerId].moveRemaining).toBe(0);
+      expect(Number.isFinite(state.players[playerId].moveRemaining)).toBe(true);
     });
 
-    it('长距离移动被预算截断', () => {
+    it('a zero legacy budget never prevents movement', () => {
+      state.players.P1.moveRemaining = 0;
+      const result = system.execute(state, move('P1', 800));
+      expect(result.accepted).toBe(true);
+      expect(result.nextX).toBe(800);
+      expect(result.distanceConsumed).toBe(350);
+    });
+
+    it('old snapshot budget values do not truncate distance and become a finite zero placeholder', () => {
+      state.players.P1.moveRemaining = 1;
       const result = system.execute(state, move('P1', 900));
-
-      // 目标被 clamp 到 850，但预算只剩 250：450 + 250 = 700
       expect(result.accepted).toBe(true);
-      expect(result.nextX).toBe(700);
-      expect(result.distanceConsumed).toBe(250);
-      expect(result.remainingMovement).toBe(0);
+      expect(result.nextX).toBe(GAME_CONFIG.player.leftBounds.maxX);
+      expect(result.distanceConsumed).toBe(400);
+      expect(state.players.P1.moveRemaining).toBe(0);
     });
 
-    it('剩余预算不足时移动到预算允许的位置', () => {
-      system.execute(state, move('P1', 500)); // 消耗 50，剩 200
-      const result = system.execute(state, move('P1', 800)); // 需要 300 > 200
-
+    it('returning from a boundary restores movement immediately, with no accumulated budget restriction', () => {
+      system.execute(state, move('P1', 900));
+      expect(system.execute(state, move('P1', 900)).reason).toBe('NO_MOVEMENT');
+      const result = system.execute(state, move('P1', 100));
       expect(result.accepted).toBe(true);
-      expect(result.nextX).toBe(700);
-      expect(result.distanceConsumed).toBe(200);
-      expect(result.remainingMovement).toBe(0);
-    });
-  });
-
-  describe('反向移动仍按实际距离消耗', () => {
-    it('向右 100 再向左 40 = 消耗 140，而不是净位移 60', () => {
-      system.execute(state, move('P1', 550)); // +100
-      const result = system.execute(state, move('P1', 510)); // -40
-
-      expect(result.accepted).toBe(true);
-      expect(result.nextX).toBe(510);
-      expect(result.distanceConsumed).toBe(40);
-      expect(result.remainingMovement).toBe(110); // 250 - 100 - 40
-      expect(state.players.P1.moveRemaining).toBe(110);
-    });
-
-    it('来回走动可以耗尽全部预算', () => {
-      system.execute(state, move('P1', 550)); // +100
-      system.execute(state, move('P1', 470)); // -80 → 180
-      const result = system.execute(state, move('P1', 620)); // +150 需要 150 > 剩 70
-
-      expect(result.accepted).toBe(true);
-      expect(result.nextX).toBe(540); // 470 + 70
-      expect(result.remainingMovement).toBe(0);
-
-      const after = system.execute(state, move('P1', 500));
-      expect(after.accepted).toBe(false);
-      expect(after.reason).toBe('NO_MOVE_BUDGET');
+      expect(result.nextX).toBe(100);
+      expect(result.distanceConsumed).toBe(750);
     });
   });
 
@@ -158,7 +141,7 @@ describe('MovementSystem', () => {
       expect(result.accepted).toBe(false);
       expect(result.reason).toBe('ALREADY_FIRED');
       expect(state.players.P1.x).toBe(450);
-      expect(state.players.P1.moveRemaining).toBe(250);
+      expect(state.players.P1.moveRemaining).toBe(0);
     });
   });
 
@@ -200,7 +183,7 @@ describe('MovementSystem', () => {
       expect(result.accepted).toBe(false);
       expect(result.reason).toBe('NO_MOVEMENT');
       expect(result.distanceConsumed).toBe(0);
-      expect(state.players.P1.moveRemaining).toBe(250);
+      expect(state.players.P1.moveRemaining).toBe(0);
     });
   });
 
@@ -216,7 +199,7 @@ describe('MovementSystem', () => {
       expect(aim.accepted).toBe(false);
       expect(aim.reason).toBe('WRONG_PHASE');
       expect(state.players.P1.x).toBe(450);
-      expect(state.players.P1.moveRemaining).toBe(250);
+      expect(state.players.P1.moveRemaining).toBe(0);
     });
 
     it('PROJECTILE 阶段拒绝移动（发射后本回合锁定）', () => {

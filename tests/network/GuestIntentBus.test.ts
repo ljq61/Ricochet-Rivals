@@ -50,11 +50,11 @@ const FIRE: FireCommand = {
 };
 
 describe('GuestIntentBus（Phase 14）', () => {
-  it('① MOVE：ACTION 相位转发且 payload 精确为 {playerId, targetX}（无 turnId）', () => {
+  it('① MOVE：ACTION 相位转发有符号帧增量（无 turnId，不改本地位置）', () => {
     const { bus, sendMoveRequest } = makeBus(TurnPhase.ACTION);
     bus.dispatch(MOVE);
     expect(sendMoveRequest).toHaveBeenCalledTimes(1);
-    expect(sendMoveRequest).toHaveBeenCalledWith({ playerId: 'P2', targetX: 500 });
+    expect(sendMoveRequest).toHaveBeenCalledWith({ playerId: 'P2', deltaX: -4050, targetX: 500 });
     const payload = sendMoveRequest.mock.calls[0]?.[0];
     expect(payload).toBeDefined();
     expect(isMoveRequestPayload(payload)).toBe(true);

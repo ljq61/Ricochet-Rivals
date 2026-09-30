@@ -60,11 +60,11 @@ describe('Rematch 语义：同 setup 重建全新 GameState', () => {
     const first = createInitialGameState({ matchId: 'a', seed: 1 });
     const second = createInitialGameState({ matchId: 'a', seed: 1 });
 
-    // 污染旧局：HP / 位置 / 预算 / 回合
+    // 污染旧局：HP / 位置 / 旧兼容字段 / 回合
     first.players.P1.hp = 3;
     first.players.P1.hasFired = true;
     first.players.P1.x = 850;
-    first.players.P2.moveRemaining = 0;
+    first.players.P2.moveRemaining = 37;
     first.turnId = 9;
     first.currentPlayerId = 'P2';
 
@@ -72,7 +72,7 @@ describe('Rematch 语义：同 setup 重建全新 GameState', () => {
     expect(second.players.P1.hp).toBe(10);
     expect(second.players.P1.hasFired).toBe(false);
     expect(second.players.P1.x).toBe(450);
-    expect(second.players.P2.moveRemaining).toBe(250);
+    expect(second.players.P2.moveRemaining).toBe(0);
     expect(second.turnId).toBe(1);
     expect(second.currentPlayerId).toBe('P1');
     expect(second.gameOver).toBe(false);

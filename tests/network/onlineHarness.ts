@@ -15,6 +15,7 @@ import { OnlineGameCoordinator } from '../../src/game/network/online/OnlineGameC
 import { stateFromSnapshot } from '../../src/game/network/online/AuthoritativeState';
 import type {
   CommandRejectedPayload,
+  AuthoritativeGameSnapshot,
   OnlineBattleBootstrap,
 } from '../../src/game/network/online/OnlineTypes';
 import type { DamageResult } from '../../src/game/state/DamageResult';
@@ -59,6 +60,7 @@ export interface OnlineHarness {
   readonly hostSyncFailure: Mock<() => void>;
   readonly guestSyncFailure: Mock<() => void>;
   readonly guestSetSyncLock: Mock<(locked: boolean) => void>;
+  readonly guestSnapshotApplied: Mock<(snapshot: AuthoritativeGameSnapshot) => void>;
   readonly hostBoot: OnlineBattleBootstrap;
   readonly guestBoot: OnlineBattleBootstrap;
   /** onStart 各自触发次数（幂等回归断言用） */
@@ -75,6 +77,8 @@ export interface OnlineHarnessOptions {
   readonly attach?: boolean;
   /** Phase 15：Host ACK 超时（缺省 8s；测试注入短值走重试阶梯） */
   readonly hostAckTimeoutMs?: number;
+  readonly latencyMs?: number;
+  readonly hostMovementNow?: () => number;
 }
 
 /** loopback 投递为 setTimeout(0) macrotask：每轮冲洗一跳链 */
@@ -92,7 +96,7 @@ export async function createOnlineHarness(
   const attach = options.attach ?? true;
 
   // 1. 双端通道 + NetworkManager（同 pairing matchId）
-  const { a, b } = createLoopbackPair();
+  const { a, b } = createLoopbackPair({ latencyMs: options.latencyMs });
   const hostNm = new NetworkManager({ transport: a, matchId: 'm', localPlayerId: 'P1' });
   const guestNm = new NetworkManager({ transport: b, matchId: 'm', localPlayerId: 'P2' });
 
@@ -116,6 +120,7 @@ export async function createOnlineHarness(
     session: hostSession,
     createMatchIdentity,
     ...(options.hostAckTimeoutMs !== undefined ? { hostAckTimeoutMs: options.hostAckTimeoutMs } : {}),
+    hostMovementNow: options.hostMovementNow,
   });
   const guestCoord = new OnlineGameCoordinator({ session: guestSession, createMatchIdentity });
 
@@ -140,6 +145,9 @@ export async function createOnlineHarness(
   await guestNm.connect();
   hostCoord.sendPlayerReady();
   guestCoord.sendPlayerReady();
+  if (options.latencyMs) {
+    await new Promise<void>((resolve) => setTimeout(resolve, options.latencyMs! * 2 + 10));
+  }
   await flushLoopback();
 
   const hostBoot = hostBoots[0];
@@ -180,6 +188,7 @@ export async function createOnlineHarness(
   const hostSyncFailure: Mock<() => void> = vi.fn();
   const guestSyncFailure: Mock<() => void> = vi.fn();
   const guestSetSyncLock: Mock<(locked: boolean) => void> = vi.fn();
+  const guestSnapshotApplied: Mock<(snapshot: AuthoritativeGameSnapshot) => void> = vi.fn();
 
   if (attach) {
     hostCoord.attach({
@@ -204,6 +213,7 @@ export async function createOnlineHarness(
       showRejected: guestRejected,
       onDisconnected: guestDisconnected,
       setSyncLock: guestSetSyncLock,
+      onSnapshotApplied: guestSnapshotApplied,
       onSyncStateChange: guestSyncStateChange,
       onSyncFailure: guestSyncFailure,
     });
@@ -240,6 +250,7 @@ export async function createOnlineHarness(
     hostSyncFailure,
     guestSyncFailure,
     guestSetSyncLock,
+    guestSnapshotApplied,
     hostBoot,
     guestBoot,
     hostBootCount: hostBoots.length,

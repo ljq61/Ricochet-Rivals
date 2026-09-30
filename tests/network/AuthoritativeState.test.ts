@@ -6,7 +6,9 @@ import {
   computeStateHash,
   stateFromSnapshot,
 } from '../../src/game/network/online/AuthoritativeState';
-import { isTurnResultPayload } from '../../src/game/network/online/OnlinePayloads';
+import { isAuthoritativeGameSnapshot, isTurnResultPayload } from '../../src/game/network/online/OnlinePayloads';
+import { validateAuthoritativeSnapshot } from '../../src/game/network/online/sync/SnapshotValidator';
+import { MovementSystem } from '../../src/game/systems/MovementSystem';
 import { createInitialGameState, TurnPhase } from '../../src/game/state/GameState';
 import type { GameState } from '../../src/game/state/GameState';
 import type { DamageResult } from '../../src/game/state/DamageResult';
@@ -82,6 +84,38 @@ describe('AuthoritativeState（Phase 14）', () => {
       expect(snapshot.players.P1.hp).toBe(10);
       expect(state.items).toHaveLength(0);
       expect(snapshot.items).toHaveLength(0);
+    });
+
+    it('③ 同回合往返1750px后，JSON快照与结算均保留有限0字段和hash parity', () => {
+      const host = createInitialGameState({ matchId: 'm', seed: 7 });
+      host.phase = TurnPhase.ACTION;
+      const movement = new MovementSystem();
+      let travelled = 0;
+      for (const targetX of [800, 100, 800]) {
+        const result = movement.execute(host, { type: 'MOVE', playerId: 'P1', turnId: 1, targetX });
+        expect(result.accepted).toBe(true);
+        travelled += result.distanceConsumed;
+      }
+      expect(travelled).toBe(1750);
+      const snapshot: unknown = JSON.parse(JSON.stringify(buildSnapshot(host)));
+      expect(isAuthoritativeGameSnapshot(snapshot)).toBe(true);
+      if (!isAuthoritativeGameSnapshot(snapshot)) throw new Error('invalid unlimited movement snapshot');
+      const stateHash = computeStateHash(host);
+      expect(validateAuthoritativeSnapshot({ snapshot, stateHash, generatedAtTurnId: host.turnId }, { expectedMatchId: 'm' }).ok).toBe(true);
+      const guest = stateFromSnapshot(snapshot);
+      for (const player of Object.values(guest.players)) {
+        expect(player.moveRemaining).toBe(0);
+        expect(Number.isFinite(player.moveRemaining)).toBe(true);
+      }
+      expect(computeStateHash(guest)).toBe(stateHash);
+
+      host.phase = guest.phase = TurnPhase.RESOLVE;
+      const result: unknown = JSON.parse(JSON.stringify(buildTurnResultPayload(host, null, null)));
+      expect(isTurnResultPayload(result)).toBe(true);
+      if (!isTurnResultPayload(result)) throw new Error('invalid unlimited movement turn result');
+      expect(result.players.P1.moveRemaining).toBe(0);
+      expect(result.players.P2.moveRemaining).toBe(0);
+      expect(applyTurnResult(guest, result).hashMatch).toBe(true);
     });
   });
 

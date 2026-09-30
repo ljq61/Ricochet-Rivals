@@ -44,20 +44,19 @@ const TIER_PARAMS: readonly TierParams[] = [
   {
     smokeEveryMs: 360, smokeScaleStart: 0.05, smokeScaleEnd: 0.16, smokeAlpha: 0.5,
     flames: [
-      { offset: -0.19, rise: 0.24, heightRatio: 0.14, size: 'small' },
-      { offset: 0.12, rise: 0.43, heightRatio: 0.12, size: 'small' },
-      { offset: -0.04, rise: 0.52, heightRatio: 0.1, size: 'small' },
+      { offset: -0.21, rise: 0.31, heightRatio: 0.09, size: 'small' },
+      { offset: 0.11, rise: 0.38, heightRatio: 0.08, size: 'small' },
+      { offset: 0.22, rise: 0.14, heightRatio: 0.07, size: 'small' },
     ],
   },
   {
     smokeEveryMs: 220, smokeScaleStart: 0.06, smokeScaleEnd: 0.2, smokeAlpha: 0.58,
     flames: [
-      { offset: -0.19, rise: 0.24, heightRatio: 0.25, size: 'large' },
-      { offset: 0.12, rise: 0.43, heightRatio: 0.23, size: 'large' },
-      { offset: -0.04, rise: 0.52, heightRatio: 0.18, size: 'small' },
-      { offset: 0.28, rise: 0.15, heightRatio: 0.21, size: 'large' },
-      { offset: -0.3, rise: 0.1, heightRatio: 0.12, size: 'small' },
-      { offset: 0.02, rise: 0.08, heightRatio: 0.14, size: 'small' },
+      { offset: -0.21, rise: 0.31, heightRatio: 0.15, size: 'large' },
+      { offset: 0.11, rise: 0.38, heightRatio: 0.13, size: 'large' },
+      { offset: 0.22, rise: 0.14, heightRatio: 0.12, size: 'large' },
+      { offset: -0.27, rise: 0.1, heightRatio: 0.08, size: 'small' },
+      { offset: -0.02, rise: 0.07, heightRatio: 0.09, size: 'small' },
     ],
   },
 ];
@@ -126,8 +125,8 @@ export class BaseDamageEffects {
       emitting: true,
       frequency: params.smokeEveryMs,
       quantity: 1,
-      x: { min: center - dockWidth * 0.3, max: center + dockWidth * 0.3 },
-      y: deckTopY - dockWidth * 0.5,
+      x: { min: center - dockWidth * 0.24, max: center + dockWidth * 0.24 },
+      y: { min: deckTopY - dockWidth * 0.38, max: deckTopY - dockWidth * 0.1 },
       lifespan: { min: 1700, max: 2900 },
       speedX: { min: -16, max: 16 },
       speedY: { min: -58, max: -26 },
@@ -183,7 +182,7 @@ export class BaseDamageEffects {
         .setOrigin(0.5, flame.size === 'small' ? 0.9 : 0.94)
         .setDisplaySize(height, height)
         .setDepth(-15);
-      if (Math.random() < 0.3) {
+      if (index % 3 === 1) {
         sprite.setFlipX(true);
       }
       sprite.play({

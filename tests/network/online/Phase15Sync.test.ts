@@ -417,3 +417,75 @@ describe('Phase 15 — 失败收敛', () => {
     }
   });
 });
+
+describe('SG-8 — 连接恢复挂钩（ICE restart 后对账复用 Phase 15 既有链）', () => {
+  it('⑭ requestPostReconnectSync（空闲态）：CONNECTION_RECOVERED 请求 → 快照恢复全链复用 → parity + recoveryCount+1', async () => {
+    const send = spyGuestSend();
+    h.guestCoord.requestPostReconnectSync();
+    await h.flush();
+
+    const syncReq = send.mock.calls.find((c) => c[0] === NetworkMessageType.STATE_SYNC_REQUEST);
+    expect(syncReq).toBeDefined();
+    expect((syncReq?.[1] as StateSyncRequestPayload).reason).toBe('CONNECTION_RECOVERED');
+    expect(h.guestSetSyncLock).toHaveBeenCalledWith(true); // 恢复期锁输入
+    expect(h.guestCoord.syncState).toBe(OnlineSyncState.SYNCED_AFTER_RECOVERY);
+    expect(h.guestCoord.getSyncDiagnostics().recoveryCount).toBe(1);
+    // 状态本就一致：快照应用后 parity（幂等恢复不破坏对局）
+    expect(computeStateHash(h.guestState)).toBe(computeStateHash(h.hostState));
+    expect(h.guestSetSyncLock).toHaveBeenLastCalledWith(false);
+  });
+
+  it('⑮ requestPostReconnectSync（恢复在途）：重发 STATE_SYNC_REQUEST（复用 episode 原 reason，不重置计数）', async () => {
+    const send = spyGuestSend();
+    h.hostTurn.notifyProjectileLaunched();
+    h.guestTurn.notifyProjectileLaunched();
+    h.hostTurn.notifyProjectileResolved(null);
+    h.guestTurn.notifyProjectileResolved(null);
+    h.guestState.turnId = 5; // 篡改 → mismatch → 在途恢复 episode
+    h.hostCoord.notifyTurnResolved(null, null);
+    await flushLoopback(2);
+    expect(h.guestCoord.syncState).toBe(OnlineSyncState.SYNC_REQUESTED);
+    const firstCount = send.mock.calls.filter(
+      (c) => c[0] === NetworkMessageType.STATE_SYNC_REQUEST,
+    ).length;
+    expect(firstCount).toBe(1);
+
+    h.guestCoord.requestPostReconnectSync(); // 在途 → 重发（原 episode reason）
+    const requests = send.mock.calls.filter((c) => c[0] === NetworkMessageType.STATE_SYNC_REQUEST);
+    expect(requests.length).toBe(firstCount + 1);
+    expect((requests[requests.length - 1]?.[1] as StateSyncRequestPayload).reason).toBe('HASH_MISMATCH');
+
+    await h.flush(); // Host 快照 → 恢复闭环
+    // 重发使 Host 回两张快照（原请求可能已在断线前送达，无法区分）—— 第二张
+    // 被 handleStateSnapshot 幂等消费（快照应用幂等 + ACK 非预期忽略），无害
+    expect(h.guestCoord.getSyncDiagnostics().recoveryCount).toBeGreaterThanOrEqual(1);
+    expect(h.guestCoord.syncState).toBe(OnlineSyncState.SYNCED_AFTER_RECOVERY);
+    expect(computeStateHash(h.guestState)).toBe(computeStateHash(h.hostState));
+  });
+
+  it('⑯ Host ACK 阶梯挂起（setConnectionRecoveryActive）：恢复期不进阶不误杀，恢复后继续自然收敛', async () => {
+    const hf = await createOnlineHarness({ hostAckTimeoutMs: 50 });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      hf.hostTurn.notifyProjectileLaunched();
+      hf.hostTurn.notifyProjectileResolved(null);
+      hf.hostCoord.notifyTurnResolved(null, null);
+      hf.guestCoord.dispose(); // ACK 黑洞
+      expect(hf.hostCoord.onLocalAttackResolved()).toBe('waiting');
+
+      // 恢复挂起：推进 4× 超时周期 —— 零进阶（无重发 / 无 SYNC_FAILED 误杀）
+      hf.hostCoord.setConnectionRecoveryActive(true);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(hf.hostCoord.getSyncDiagnostics().lastSyncReason ?? '').not.toContain('ACK_TIMEOUT');
+      expect(hf.hostCoord.syncState).toBe(OnlineSyncState.SYNCED);
+      expect(hf.hostSyncFailure).not.toHaveBeenCalled();
+
+      // 恢复结束：阶梯继续 —— 下一超时进 stage1 重发 TURN_RESULT
+      hf.hostCoord.setConnectionRecoveryActive(false);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(hf.hostCoord.getSyncDiagnostics().lastSyncReason).toContain('ACK_TIMEOUT_RETRY');
+    } finally {
+      hf.dispose();
+    }
+  });
+});

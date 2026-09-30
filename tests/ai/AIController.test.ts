@@ -90,7 +90,7 @@ describe('AIController', () => {
     expect(d.fire!.angleDeg).toBeLessThan(180);
   });
 
-  it('过近无解：先移动（远离）再发射，目标在 bounds 与预算内', () => {
+  it('过近无解：先移动（远离）再发射，目标在己方 bounds 内', () => {
     // P1 在 850（阵地右缘），敌方合成在 1050（距离 200 < 最小落点偏移）
     state.currentPlayerId = 'P1';
     state.players.P1.x = 850;
@@ -100,9 +100,7 @@ describe('AIController', () => {
     const bounds = GAME_CONFIG.player.leftBounds;
     expect(d.moveTargetX!).toBeGreaterThanOrEqual(bounds.minX);
     expect(d.moveTargetX!).toBeLessThanOrEqual(bounds.maxX);
-    expect(Math.abs(d.moveTargetX! - 850)).toBeLessThanOrEqual(
-      GAME_CONFIG.player.maxMovePerTurn
-    );
+    expect(Math.abs(d.moveTargetX! - 850)).toBeGreaterThan(250);
     expect(d.moveTargetX!).toBeLessThan(850); // 远离敌方
     expect(d.fire).not.toBeNull();
     // 移动后位置确实可解（决策自洽）
@@ -115,13 +113,15 @@ describe('AIController', () => {
     ).not.toBeNull();
   });
 
-  it('预算耗尽（moveRemaining = 0）：不移动、出尽力弹', () => {
+  it('旧兼容预算为 0：仍能在基地内移动再发射', () => {
     state.currentPlayerId = 'P1';
     state.players.P1.x = 850;
     state.players.P1.moveRemaining = 0;
     state.players.P2.x = 1050;
     const d = new AIController('normal').decide(state, new SeededRandom(6));
-    expect(d.moveTargetX).toBeNull();
+    expect(d.moveTargetX).not.toBeNull();
+    expect(d.moveTargetX!).toBeGreaterThanOrEqual(GAME_CONFIG.player.leftBounds.minX);
+    expect(d.moveTargetX!).toBeLessThanOrEqual(GAME_CONFIG.player.leftBounds.maxX);
     expect(d.fire).not.toBeNull();
   });
 

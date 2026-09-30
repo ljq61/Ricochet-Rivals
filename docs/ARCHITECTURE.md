@@ -448,7 +448,7 @@ GAME_OVER：回合冻结（不切换、输入与命令全拒）
   gameOver / winnerId（Phase 7），本状态机只消费该标志；
 - **GAME_OVER 后续**：Phase 11 菜单 / Phase 16 Rematch 在此接续。
 
-## 6. 联机（Phase 12 Transport + Phase 13 Connection + Phase 14 Gameplay Sync + Phase 16 Online Rematch 已落地）
+## 6. 联机（Phase 12 Transport / Phase 13 Connection / Phase 14 Gameplay Sync / Phase 15 Desync / Phase 16 Rematch + 房间码信令迁移 SG-0~8 全部已落地 —— 分支 `dev_signaling_turn`）
 
 ### 分层
 
@@ -482,13 +482,22 @@ WebRTCTransport（P2P dataChannel）      LocalLoopbackTransport（离线开发 
 
 - 单一可靠有序 dataChannel（`'game'`，`ordered: true`；禁
   maxRetransmits / maxPacketLifeTime —— 回合制命令不可丢）。
-- Offer/Answer（JSON string 编码）由信令通道搬运；
-  `createOffer/createAnswer` 等待 ICE gathering complete（2s 超时兜底，
-  Phase 13 Connection Code 需完整 SDP）。
+- 协商双路径（SG-4 定型）：**Room 流 = Trickle ICE** —— Offer/Answer 先经
+  信令通道出站，ICE candidate 增量交换（`onLocalIceCandidate` 逐条发送，
+  null 终止；`addIceCandidate` 在 remoteDescription 之前走 pending 队列，
+  去重 + 容忍畸形）；**Manual Debug 流**（`DEBUG_GAME && ?manual-sdp`）保留
+  全量 `createOffer/createAnswer` 等待 ICE gathering complete（2s 超时兜底
+  —— 手动复制粘贴需要完整 SDP；须在 gather 完成后重读 `pc.localDescription`
+  再序列化，candidate 在 gather 过程中追加进 SDP）。
 - **WebRTC P2P ≠ 所有网络可直连**：默认 STUN（`stun:stun.l.google.com:19302`）
-  仅协助 NAT traversal；严格 NAT / 防火墙场景可能需要 TURN 中继。
-  Phase 12 仅架构支持（`WebRTCConfig.iceServers` 可注入 TURN），不部署
-  任何 TURN；TURN 凭据属部署环境，禁止入仓库。
+  仅协助 NAT traversal；严格 NAT / 防火墙场景走 TURN 中继。SG-6 已落地
+  coturn 时限 REST 凭据：信令服务器随房间 ack 下发
+  （`username = <expiry unix 秒>`、`credential = base64(HMAC-SHA1(secret, username))`，
+  coturn `use-auth-secret` 契约）；shared secret 只经环境变量存在于
+  TURN 与 Signaling 两侧（成对 fail-fast），禁止入仓库。
+  `iceTransportPolicy` 默认 `'all'`，`DEBUG_FORCE_RELAY` 强制 relay 验证；
+  `WebRTCTransport.getDiagnostics()` 提供候选类型 / 错误计数 / selected pair
+  route（DIRECT/RELAY）判定。
 
 ### Phase 14 落地架构（P2P Gameplay Sync，HOST AUTHORITATIVE）
 
@@ -573,6 +582,55 @@ ResultScene：双方点 REMATCH → 新 OnlineGameCoordinator（共享同一 Onl
   （tap 同步执行无 TOCTOU）→ 直接 OPPONENT LEFT —— 不向死通道发送
   （sendPlayerReady 会抛 TransportError）。
 
+### 房间码信令迁移落地架构（SG-0~8，分支 `dev_signaling_turn`）
+
+把联机连接从「手动复制粘贴 SDP + STUN-only」升级为「6 位房间码 + 自动 WebSocket
+信令 + Trickle ICE + TURN 兜底」；Phase 12~16 gameplay 网络架构零改动
+（NetworkManager / OnlineGameCoordinator / desync 恢复链原样，SG-0 审计定性）。
+
+三条架构红线（全部成立）：
+
+- **WebSocket 只做 Signaling** —— Gameplay 一律 DataChannel。
+- **SignalingMessage 是独立 wire 协议，与 NetworkEnvelope 零 import** ——
+  环境无关纯 TS，client / server 共享
+  `src/game/network/signaling/SignalingMessage.ts` 单一事实源。
+- **Manual SDP 流保留为 Debug 门控回退**（E2E 手动回归入口）。
+
+```
+OnlineConnectionScene（默认 Room 流；?manual-sdp 走 Phase 13 控制器）
+   ├─ RoomConnectionController（SG-3：CREATE/JOIN 编排 → 自动 offer/answer
+   │    → 验证 → VERIFIED → SessionManager 交接；组合复用 PING-PONG /
+   │    OnlineSession / detach 语义，不修改 manual 控制器）
+   │     ├─ SignalingClient（SG-1：7 态 WS 客户端状态机；持 roomCode +
+   │     │    peerToken；joinRoom(roomCode, peerToken?) 断线重进同一入口）
+   │     └─ WebRTCTransport.beginOffer/beginAnswer（SG-4：trickle 协商编排）
+   └─ server/signaling（SG-2：独立 Node workspace —— SignalingRoom host/guest
+        槽位 + grace 窗口（Host 掉线超窗 → 房间删除）；RoomManager crypto
+        房间码（31 字符表 / 6 位）+ token 原位恢复 + 过期清扫；角色由动作
+        固化：CREATE_ROOM=Host=P1、JOIN_ROOM=Guest=P2，wire 上无角色声明）
+```
+
+信令地址解析：E2E 页面注入 > 构建期 `VITE_SIGNALING_URL` > 本地
+`ws://127.0.0.1:8787`。失败分类（SG-7）：`ICE_FAILED` / `DATA_CHANNEL_FAILED` /
+`TURN_UNAVAILABLE`（turn: URL 采集错误优先）+ `SERVER_ERROR` code 细分
+（ROOM_NOT_FOUND / ROOM_FULL / ROOM_EXPIRED）—— 用户文案简洁，`DEBUG_GAME`
+状态行追加 `[REASON:CODE]` 后缀。
+
+SG-8 预留：`OnlineSession.signaling?` 让信令客户端随 session 存续到对局 ——
+SG-8 已落地（ICE Restart）：`OnlineSession.signaling? + recovery?{roomCode,peerToken}`
+随 session 存续到对局；BattleScene 组装 **RoomRecoveryController**（限次
+3×20s：信令按需重建 + token 原位重入 → Host `restartOffer({iceRestart:true})`
+经活信令交换 → `recoverConnect` 武装 → PONG 验证；visibilitychange 回前台
+`recheckConnection` 补查后台 missed 事件；dispose 打断在途尝试）。恢复成功后
+对账走既有 Phase 15 链 —— Guest `requestPostReconnectSync()`（空闲 →
+`beginRecovery('CONNECTION_RECOVERED')`，在途 → 重发原 reason；Host no-op
+权威端即事实）；恢复挂起期 Host ACK 超时阶梯只 re-arm 不进阶（断线窗口不
+误杀）。断线路由：网络断族丢失（CONNECTION_FAILED/ICE_FAILED/CHANNEL_ERROR）
+→ RECONNECTING 恢复窗；对端主动离场（CHANNEL_CLOSED/PEER_CLOSED/ICE_CLOSED）
+→ 即时 OPPONENT DISCONNECTED（旧 UX）；耗尽 → 同旧 UX 收口。
+`WebRTCTransport.close()` 延后 `pc.close()`（默认 300ms）保证 SCTP close
+送达对端（立即关 pc 会让对端只见 pc failed、误入恢复窗）。
+
 ### 阶段边界
 
 - **Phase 12**：Transport only —— 协议层 + NetworkManager +
@@ -584,6 +642,10 @@ ResultScene：双方点 REMATCH → 新 OnlineGameCoordinator（共享同一 Onl
   恢复策略）。
 - **Phase 16**：Online Rematch（同连接重开局：握手复用 / 协调器重置 /
   交接闭环 + 边缘路径防线）。
+- **Online Connection Migration（SG-0~8，分支 `dev_signaling_turn`）**：
+  SG-0~8 全部已落地（协议+客户端 / 信令服务器 / 自动协商 / Trickle ICE /
+  Room UI + 真实信令 E2E / TURN / 失败分类 / ICE Restart 恢复）；
+  逐 Stage 记录见 TASKS.md「Online Connection Migration」章节。
 
 ## 7. 质量门禁
 
@@ -591,8 +653,9 @@ ResultScene：双方点 REMATCH → 新 OnlineGameCoordinator（共享同一 Onl
 
 ```bash
 npm run typecheck   # tsc --noEmit（strict）
-npm run test        # vitest run
+npm run test        # vitest run（不含信令服务器 workspace）
 npm run build       # tsc --noEmit && vite build
+cd server/signaling && npm run typecheck && npm test   # 信令服务器（31 项）
 ```
 
 失败必须先修复，禁止带错进入下一 Phase（CODELY.md §20/§21）。

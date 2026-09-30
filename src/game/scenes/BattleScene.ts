@@ -30,6 +30,8 @@ import { AimButton } from '../ui/AimButton';
 import { AimRenderer } from '../ui/AimRenderer';
 import { SfxBus, SFX, type SfxKey } from '../audio/SfxBus';
 import { PlayerHud } from '../ui/PlayerHud';
+import { BattleMiniMap } from '../ui/BattleMiniMap';
+import { battleHudLayout } from '../ui/miniMapMath';
 import { TurnBanner } from '../ui/TurnBanner';
 import { DamageNumbers } from '../ui/DamageNumbers';
 import { DebugOverlay } from '../ui/DebugOverlay';
@@ -48,6 +50,10 @@ import {
   ONLINE_SESSION_MANAGER_KEY,
   type OnlineSessionManager,
 } from '../network/OnlineSession';
+import { RoomRecoveryController } from '../network/RoomRecoveryController';
+import { SignalingClient } from '../network/signaling/SignalingClient';
+import { resolveSignalingUrl } from '../network/signaling/signalingUrl';
+import { WebRTCTransport } from '../network/WebRTCTransport';
 
 /**
  * 战斗场景（CODELY.md §3）。
@@ -110,6 +116,7 @@ export class BattleScene extends Phaser.Scene {
   /** Phase 17 Juice：音效总线（发射/飞行/爆炸/命中/回合/胜负） */
   private sfx!: SfxBus;
   private playerHud!: PlayerHud;
+  private miniMap!: BattleMiniMap;
   private turnBanner!: TurnBanner;
   private damageNumbers!: DamageNumbers;
   /** Phase 17 Juice：基地受损表现（烟/火随 HP 分档，State 驱动纯视觉） */
@@ -126,6 +133,9 @@ export class BattleScene extends Phaser.Scene {
   private onlineBootstrap: OnlineBattleBootstrap | null = null;
   /** 通道中断冻结（OPPONENT DISCONNECTED 后禁输入） */
   private connectionLost = false;
+  private connectionRecoveryActive = false;
+  /** 快照取代旧表现后，旧爆炸停留和转场回调不得再推进回合。 */
+  private presentationEpoch = 0;
   /** Phase 15：Guest desync 恢复期间输入锁（coordinator setSyncLock 驱动） */
   private syncLocked = false;
   /** Phase 15：SYNC_FAILED 终局（onSyncFailure 后禁重复处理） */
@@ -134,6 +144,11 @@ export class BattleScene extends Phaser.Scene {
   private handedToResult = false;
   /** 断线后的返回菜单按钮（懒创建） */
   private disconnectButton: MenuButton | null = null;
+  /**
+   * SG-8：对局期连接恢复（限次 ICE restart）。Room 流 session 才装配；
+   * Manual debug / 离线 = null（沿用即时 OPPONENT DISCONNECTED 旧 UX）。
+   */
+  private roomRecovery: RoomRecoveryController | null = null;
   /** COMMAND_REJECTED 轻量提示防刷屏 */
   private lastRejectedToastMs = 0;
   /** 相机/回合流事件环形日志（E2E 排查 aim/transition 时序用） */
@@ -172,15 +187,19 @@ export class BattleScene extends Phaser.Scene {
     //   bannerTurnKey / bannerGameOverShown —— 横幅去重 / 转场单次守卫状态
     //   disconnectButton / connectionLost / lastRejectedToastMs —— Phase 14
     //   联机专属条件状态（联机局结束后转离线必须清）
+    //   roomRecovery —— SG-8 恢复控制器（旧实例已在 onShutdown dispose）
     this.aiInput = null;
     this.touchControls = null;
     this.bannerTurnKey = null;
     this.bannerGameOverShown = false;
     this.connectionLost = false;
+    this.connectionRecoveryActive = false;
+    this.presentationEpoch += 1;
     this.syncLocked = false;
     this.syncFailed = false;
     this.handedToResult = false;
     this.disconnectButton = null;
+    this.roomRecovery = null;
     this.lastRejectedToastMs = 0;
   }
 
@@ -250,7 +269,9 @@ export class BattleScene extends Phaser.Scene {
         // syncLocked 并入 isRemoteControlledTurn —— 相机自由观察保留）
         setSyncLock: (locked) => {
           this.syncLocked = locked;
+          if (locked) this.freezeOnlineInput();
         },
+        onSnapshotApplied: () => this.restoreSnapshotPresentation(),
         onSyncStateChange: (state, detail) => {
           this.handleOnlineSyncStateChange(state, detail);
         },
@@ -259,6 +280,8 @@ export class BattleScene extends Phaser.Scene {
         },
       });
       this.online.startKeepAlive();
+      // SG-8：Room 流装配对局期连接恢复（ICE restart；Manual debug = null）
+      this.roomRecovery = this.createRoomRecovery();
     }
     // Phase 7：爆炸结算链（Projectile 不直接改 HP）。
     // 联机 Guest 注入 calculate-only 伤害系统 —— 本地 HP 只经
@@ -294,6 +317,7 @@ export class BattleScene extends Phaser.Scene {
       router: this.inputRouter,
       viewport: this.viewportService,
       isTouchProfile: isTouch,
+      getPlayerId: () => this.state.currentPlayerId,
       onTap: () => this.onAimButtonTap(),
     });
 
@@ -309,16 +333,6 @@ export class BattleScene extends Phaser.Scene {
         commandBus: inputBus,
         router: this.inputRouter,
         viewport: this.viewportService,
-        onFocusSelf: () =>
-          this.cameraController.panToX(
-            this.state.players[this.state.currentPlayerId].x
-          ),
-        onFocusEnemy: () => {
-          const enemyId: PlayerId =
-            this.state.currentPlayerId === 'P1' ? 'P2' : 'P1';
-          this.cameraController.panToX(this.state.players[enemyId].x);
-        },
-        getCameraMode: () => this.cameraController.currentMode,
       });
       this.controls = this.touchControls;
     } else {
@@ -356,6 +370,7 @@ export class BattleScene extends Phaser.Scene {
       commandBus: inputBus,
       isTouchProfile: isTouch,
       getUiScale: () => this.viewportService.current.uiScale,
+      canControl: () => this.isLocalControlledTurn(),
     });
     this.inputRouter.registerClaimant(this.aimController);
     this.aimRenderer = new AimRenderer(this);
@@ -369,10 +384,8 @@ export class BattleScene extends Phaser.Scene {
     this.projectileSystem.onLaunched((projectile) => {
       this.playerViews[projectile.ownerId].playFireReaction();
       this.logCameraEvent(`launched`);
-      // Phase 17 Juice：发射音 + 飞行口哨各播一次（真机反馈：口哨循环
-      // 在 desync 清场路径下停不掉且听感重复 —— 单次播放，无循环句柄）
+      // 只播放发射音；飞行口哨按本轮试玩反馈移除。
       this.sfx.play(SFX.launch);
-      this.sfx.play(SFX.projectile);
       this.turnManager.notifyProjectileLaunched();
       this.cameraController.followProjectile(() => {
         const projectile = this.projectileSystem.activeProjectiles[0];
@@ -404,9 +417,15 @@ export class BattleScene extends Phaser.Scene {
       if (this.online === null || this.online.role === 'host') {
         this.damageNumbers.show(result, this.state.players);
       }
+      const epoch = this.presentationEpoch;
+      const turnId = this.state.turnId;
       void this.cameraController
         .focusImpact({ x: impact.x, y: impact.y })
-        .then(() => this.onAttackResolved());
+        .then(() => {
+          if (epoch === this.presentationEpoch && turnId === this.state.turnId) {
+            this.onAttackResolved();
+          }
+        });
     });
     this.projectileSystem.onOutOfBounds(() => {
       this.logCameraEvent('outOfBounds');
@@ -418,7 +437,11 @@ export class BattleScene extends Phaser.Scene {
 
     // 12. HUD：HP 血条（伤害动画由 State 变化驱动）+ 回合横幅（Phase 9 热座）
     this.playerHud = new PlayerHud(this, this.viewportService);
-    this.turnBanner = new TurnBanner(this, this.viewportService);
+    this.miniMap = new BattleMiniMap(this, this.viewportService);
+    this.refreshMiniMap();
+    // Renderer RENDER runs after Camera.preRender computes this frame's worldView.
+    this.game.renderer.on(Phaser.Renderer.Events.RENDER, this.onMiniMapRender, this);
+    this.turnBanner = new TurnBanner(this, this.viewportService, (viewport) => battleHudLayout(viewport).banner);
     this.damageNumbers = new DamageNumbers(this, this.viewportService);
 
     // 13. Debug Overlay + E2E 观测句柄
@@ -454,7 +477,7 @@ export class BattleScene extends Phaser.Scene {
     // Phase 14：联机对手回合隐藏瞄准 / 移动按钮（相机 Free View 仍可用）
     const localControls = this.isLocalControlledTurn();
     this.aimButton.refresh(this.cameraController.currentMode, localControls);
-    this.touchControls?.refresh(this.cameraController.currentMode, localControls);
+    this.touchControls?.refresh(localControls);
     this.playerHud.refresh(this.state.players);
     this.baseDamageEffects.refresh(this.state.players);
     this.octopusTentacle.refresh(this.state.players);
@@ -466,7 +489,8 @@ export class BattleScene extends Phaser.Scene {
     const turnKey = `${this.state.currentPlayerId}:${this.state.turnId}`;
     if (
       this.bannerTurnKey !== turnKey &&
-      this.state.phase === TurnPhase.ACTION
+      this.state.phase === TurnPhase.ACTION &&
+      !this.connectionRecoveryActive && !this.syncLocked
     ) {
       this.bannerTurnKey = turnKey;
       // 断线 / 同步失败后不再弹回合横幅 —— 迟到的转场 showTurn 会
@@ -530,6 +554,18 @@ export class BattleScene extends Phaser.Scene {
       // Phase 14：DEBUG_NETWORK 段（离线 null = 不显示）
       online:
         this.online !== null && DEBUG_NETWORK ? this.online.debugInfo() : null,
+    });
+  }
+
+  private onMiniMapRender(scene: Phaser.Scene, camera: Phaser.Cameras.Scene2D.Camera): void {
+    if (scene === this && camera === this.cameras.main) this.refreshMiniMap();
+  }
+
+  private refreshMiniMap(): void {
+    const view = this.cameras.main.worldView;
+    this.miniMap.refresh(this.state.players, this.state.currentPlayerId, {
+      cameraWorldView: { x: view.x, y: view.y, width: view.width, height: view.height },
+      projectiles: this.projectileSystem.activeProjectiles,
     });
   }
 
@@ -649,6 +685,7 @@ export class BattleScene extends Phaser.Scene {
   private isRemoteControlledTurn(): boolean {
     return (
       this.connectionLost ||
+      this.connectionRecoveryActive ||
       this.syncLocked || // Phase 15：desync 恢复期间锁 Move/Aim/Fire
       (this.online !== null && !this.online.isLocalTurn())
     );
@@ -739,6 +776,8 @@ export class BattleScene extends Phaser.Scene {
 
   /** 相机 TURN_TRANSITION 到新玩家 → ACTION（Host/离线/Guest 共用收尾） */
   private beginNextTurnTransition(): void {
+    const epoch = this.presentationEpoch;
+    const turnId = this.state.turnId;
     this.logCameraEvent(
       `beginTransition→cam=${this.cameraController.currentMode}`
     );
@@ -746,7 +785,34 @@ export class BattleScene extends Phaser.Scene {
       .transitionToPlayer(
         () => this.state.players[this.state.currentPlayerId].x
       )
-      .then(() => this.turnManager.notifyTurnTransitionComplete());
+      .then(() => {
+        if (epoch === this.presentationEpoch && turnId === this.state.turnId) {
+          this.turnManager.notifyTurnTransitionComplete();
+        }
+      });
+  }
+
+  /** 取消旧手势和回家 Tween；锁由每帧统一门禁持续维持。 */
+  private freezeOnlineInput(): void {
+    this.controls.setEnabled(false);
+    this.inputRouter.releaseAll();
+    this.aimController.cancel();
+    this.cameraController.cancelAim();
+    this.turnManager.cancelAim();
+  }
+
+  /** Guest 快照已经应用并 ACK；此处只恢复表现，不再次切换玩家或重置预算。 */
+  private restoreSnapshotPresentation(): void {
+    this.presentationEpoch += 1;
+    this.inputRouter.releaseAll();
+    this.aimController.cancel();
+    this.cameraController.enableFreeView();
+    if (this.state.phase === TurnPhase.END) {
+      this.beginNextTurnTransition();
+    } else if (this.state.phase === TurnPhase.ACTION) {
+      this.cameraController.centerOnX(this.state.players[this.state.currentPlayerId].x);
+    }
+    // RESOLVE 仍等 Host 的 TURN_END；GAME_OVER 仍由正常终局入口处理。
   }
 
   // ---- Phase 14 联机表现层 ----------------------------------------------
@@ -765,10 +831,89 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * 通道中断：冻结输入 + 持久横幅 + 返回菜单入口（无重连 ——
-   * 复杂 reconnect 属 Phase 15+；对局结束后的正常关闭已被协调器抑制）。
+   * 通道中断路由（SG-8）：网络断族丢失（connectionState failed 等）且
+   * Room 流可恢复 → 限次 ICE restart；其余（对端主动离场 / Manual debug /
+   * 恢复耗尽）→ 既有终局 UX。对局结束后的正常关闭已被协调器抑制。
    */
   private handleOnlineDisconnected(): void {
+    if (this.connectionLost || this.connectionRecoveryActive) {
+      return;
+    }
+    const recovery = this.roomRecovery;
+    if (recovery !== null && recovery.shouldAttempt()) {
+      void this.beginOnlineRecovery(recovery);
+      return;
+    }
+    this.showOpponentLostUi();
+  }
+
+  /**
+   * SG-8 限次恢复：RECONNECTING 横幅 + 输入冻结 + Host ACK 阶梯挂起 →
+   * attemptRecovery()（重信令按需 + restart 交换 + PONG 验证，限 3 轮）。
+   * 成功 ≠ 状态一致 —— 对账一律走 Phase 15 既有链
+   *（requestPostReconnectSync → STATE_SYNC_REQUEST(CONNECTION_RECOVERED)
+   * → 权威快照恢复）；耗尽 → 终局 UX。
+   */
+  private async beginOnlineRecovery(recovery: RoomRecoveryController): Promise<void> {
+    this.connectionRecoveryActive = true;
+    this.freezeOnlineInput();
+    this.turnBanner.showMessage('RECONNECTING…', 0xffc24d);
+    this.online?.setConnectionRecoveryActive(true);
+    const result = await recovery.attemptRecovery();
+    this.online?.setConnectionRecoveryActive(false);
+    // 终局守卫：恢复期间对局可能已被其他路径接管 —— 对端主动离开
+    //（connectionLost）/ SYNC_FAILED / **gameOver 交接 ResultScene
+    //（handedToResult：SHUTDOWN 已 dispose 恢复器并销毁场景对象，
+    // 续体不得再触碰已 destroy 的 turnBanner/controls —— test-reviewer
+    // 验收修复）**
+    if (this.connectionLost || this.syncFailed || this.handedToResult) {
+      return;
+    }
+    if (result === 'RECOVERED') {
+      this.logCameraEvent(`recovery=RECOVERED`);
+      this.online?.requestPostReconnectSync();
+      this.connectionRecoveryActive = false;
+      this.syncInputOwnership();
+      return;
+    }
+    this.connectionRecoveryActive = false;
+    this.showOpponentLostUi();
+  }
+
+  /** Room 流 session 装配恢复控制器（session.recovery 缺失 = 不可恢复） */
+  private createRoomRecovery(): RoomRecoveryController | null {
+    const sessionManager = this.registry.get(ONLINE_SESSION_MANAGER_KEY) as
+      | OnlineSessionManager
+      | undefined;
+    const session = sessionManager?.current ?? null;
+    if (session === null || session.recovery === undefined) {
+      return null; // Manual debug 流 / 离线：不可恢复（即时断线 UX）
+    }
+    if (!(session.transport instanceof WebRTCTransport)) {
+      return null; // 防御：非 WebRTC transport（loopback 测试局不恢复）
+    }
+    const signaling = session.signaling;
+    if (signaling === undefined) {
+      return null;
+    }
+    return new RoomRecoveryController({
+      role: session.role,
+      transport: session.transport,
+      networkManager: session.networkManager,
+      signaling,
+      roomCode: session.recovery.roomCode,
+      peerToken: session.recovery.peerToken,
+      createSignalingClient: () => new SignalingClient({ url: resolveSignalingUrl() }),
+      adoptSignaling: (client) => sessionManager?.replaceSignaling(session, client) ?? false,
+      onStateChange: (state) => this.logCameraEvent(`recovery=${state}`),
+    });
+  }
+
+  /**
+   * 通道终局：冻结输入 + 持久横幅 + 返回菜单入口
+   *（原 handleOnlineDisconnected 主体 —— SG-8 起由恢复耗尽 / 不可恢复路径共用）。
+   */
+  private showOpponentLostUi(): void {
     if (this.connectionLost) {
       return;
     }
@@ -795,6 +940,7 @@ export class BattleScene extends Phaser.Scene {
       // 重述；后台冻结的炮弹迟发 impact 会把相机打回 IMPACT 且无重试
       // 路径 → 永久滞留（E2E 全量复现：cam=IMPACT 而 phase=ACTION）
       this.projectileSystem.clearInFlightSimulations();
+      this.presentationEpoch += 1;
       this.turnBanner.showMessage('SYNCHRONIZING…', 0xffc24d);
     } else if (state === OnlineSyncState.SYNC_FAILED) {
       this.handleOnlineSyncFailure();
@@ -1003,6 +1149,50 @@ export class BattleScene extends Phaser.Scene {
           ? self.touchControls.isMoveButtonsVisible
           : null;
       },
+      get minimap() { return self.miniMap.debugState; },
+      get cameraWorldView() {
+        const v = self.cameras.main.worldView;
+        return { x: v.x, y: v.y, width: v.width, height: v.height };
+      },
+      get turnBannerLayout() { return self.turnBanner.layoutState; },
+      get legacyFocusButtons(): boolean { return false; },
+      get aimIcon() { return self.aimButton.visualState; },
+      get aimButtonBounds(): { x: number; y: number; width: number; height: number } {
+        return self.aimButton.screenBounds;
+      },
+      get moveButtonSizes(): { visual: number; hit: number } | null {
+        return self.touchControls?.moveButtonSizes ?? null;
+      },
+      get moveButtons(): { left: { x: number; y: number }; right: { x: number; y: number } } | null {
+        if (!self.touchControls) return null;
+        const scale = self.viewportService.current.uiScale;
+        const centers = self.touchControls.moveButtonCenters;
+        return {
+          left: { x: centers.left.x / scale, y: centers.left.y / scale },
+          right: { x: centers.right.x / scale, y: centers.right.y / scale },
+        };
+      },
+      /** SG-8：连接恢复状态（IDLE/RECONNECTING/RECOVERED/FAILED；离线 = null） */
+      get recoveryState(): string | null {
+        return self.roomRecovery?.state ?? null;
+      },
+      /** SG-8：已消耗恢复尝试次数 */
+      get recoveryAttemptCount(): number {
+        return self.roomRecovery?.currentAttemptCount ?? 0;
+      },
+      /**
+       * E2E 注入用（仅 DEBUG_GAME）：模拟连接失败事件路径（真实 pc 存活
+       * —— 后续走真实 restartOffer/信令交换全协商；SG-8 恢复链验证口）。
+       */
+      forceConnectionLost(): void {
+        const sessionManager = self.registry.get(ONLINE_SESSION_MANAGER_KEY) as
+          | OnlineSessionManager
+          | undefined;
+        const transport = sessionManager?.current?.transport;
+        if (transport instanceof WebRTCTransport) {
+          transport.debugSimulateConnectionLost('CONNECTION_FAILED');
+        }
+      },
       /** E2E 注入用（仅 DEBUG_GAME）：构造击杀场景，不经过 DamageSystem */
       setHp(playerId: string, hp: number): void {
         const player = self.state.players[playerId as PlayerId];
@@ -1013,6 +1203,8 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private onShutdown(): void {
+    this.presentationEpoch += 1;
+    this.game.renderer.off(Phaser.Renderer.Events.RENDER, this.onMiniMapRender, this);
     this.viewportService.destroy();
     this.inputRouter.destroy();
     this.cameraController.destroy();
@@ -1023,10 +1215,14 @@ export class BattleScene extends Phaser.Scene {
     this.aimButton.destroy();
     this.aimRenderer.destroy();
     this.playerHud.destroy();
+    this.miniMap.destroy();
     this.turnBanner.destroy();
     this.projectileSystem.destroy();
     this.disconnectButton?.destroy();
     this.disconnectButton = null;
+    // SG-8：恢复控制器全清理（transport / session 信令归 SessionManager dispose 链）
+    this.roomRecovery?.dispose();
+    this.roomRecovery = null;
     // Phase 14：协调器与联机会话随对局结束彻底清理
     //（coordinator.dispose 尽力而为发 DISCONNECT；SessionManager 关
     // transport —— 对端经 onDisconnect 收到通知，gameOver 后被抑制）

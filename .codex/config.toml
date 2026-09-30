@@ -1,0 +1,55 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+
+# Ricochet Rivals — Codex multi-agent configuration
+
+# Main orchestrator
+model = "gpt-6.1-sol"
+model_reasoning_effort = "high"
+
+[features]
+multi_agent = true
+
+[agents]
+enabled = true
+default_subagent_model = "gpt-6.1-sol"
+default_subagent_reasoning_effort = "high"
+
+[agents.gameplay-engineer]
+description = """
+Gameplay specialist for rules, projectile physics, movement, aiming, firing,
+turn systems, weapons/items, damage/HP, pickups, state machines, input,
+mobile gameplay feel, and deterministic gameplay logic.
+"""
+config_file = "agents/gameplay-engineer.toml"
+
+[agents.network-engineer]
+description = """
+Networking specialist for WebRTC/P2P, synchronization, authority, replication,
+serialization, reconnect/disconnect handling, multiplayer turn state, race
+conditions, stale/duplicate events, latency behavior, and desync investigation.
+"""
+config_file = "agents/network-engineer.toml"
+
+[agents.test-reviewer]
+description = """
+Independent verification specialist for tests, regression analysis, edge cases,
+cross-module correctness, multiplayer/mobile consequences, architecture review,
+and release-readiness checks.
+"""
+config_file = "agents/test-reviewer.toml"
+
+[agents.repo-scanner]
+description = """
+Fast repository exploration specialist for locating files, tracing references,
+mapping dependencies, summarizing modules, finding interfaces, and identifying
+affected areas before implementation.
+"""
+config_file = "agents/repo-scanner.toml"
+
+[agents.escalation-engineer]
+description = """
+High-capability escalation specialist. Use only after repeated failed targeted
+repairs, for ambiguous cross-system failures, visual/computer-use-heavy diagnosis,
+or release-critical architecture decisions requiring maximum confidence.
+"""
+config_file = "agents/escalation-engineer.toml"
