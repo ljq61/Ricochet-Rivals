@@ -3,7 +3,7 @@
 横版 2D 回合制弹道对战网页游戏。
 Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
-当前进度：**Phase 0～16 完成；Phase 17 美术持续精修；Phase 18 代码侧加固已落地，真实设备 QA 待完成**；并行轨道 **联机信令迁移（SG-0～8 全部完成，分支 `dev_signaling_turn`：房间码自动配对 + WebSocket 信令 + Trickle ICE + TURN 兜底 + 对局期 ICE Restart 恢复；剩余公网部署与真机 QA）**（见 `TASKS.md`）。已包含 WebRTC P2P 对战、Desync 恢复与联机再战；海港场景、二头身角色、炮弹火焰拖尾与爆炸、分档基地火烟、低血量章鱼障碍和音效已接入。
+当前进度：**Phase 0～16 完成；Phase 17 美术持续精修；Phase 18 代码侧加固已落地，真实设备 QA 待完成**；并行轨道 **联机信令迁移（SG-0～8 全部完成，分支 `dev_signaling_turn`：房间码自动配对 + WebSocket 信令 + Trickle ICE + TURN 兜底 + 对局期 ICE Restart 恢复；公网信令已部署，Pages 发布构建已接入，剩余公网 TURN 配置与真机 QA）**（见 `TASKS.md`）。已包含 WebRTC P2P 对战、Desync 恢复与联机再战；海港场景、二头身角色、炮弹火焰拖尾与爆炸、分档基地火烟、低血量章鱼障碍和音效已接入。
 
 最新美术调整：蓝红角色各 8 帧走路循环；基地大小火各 8 帧，按血量分层布点；章鱼触角 16 帧卷曲，从海面下方完整升起。见 [动画制作与验证记录](docs/ArtDesign/ANIMATION_REFINEMENT.md)。此前的 [长支架与标题菜单](docs/ArtDesign/DOCK_MENU_REFINEMENT.md) 保持。独立视差层及走路以外的完整角色动作仍为后续精制项，真机验收见 [设备 QA 清单](docs/PHASE18_DEVICE_QA.md)。
 
@@ -12,7 +12,7 @@ Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 - TypeScript (strict) + Vite
 - Phaser 4.x + Matter Physics
 - Vitest（575 单测，49 文件）+ 独立信令服务器单测（31 项，workspace `server/signaling`）+ puppeteer-core E2E（desktop / mobile / sp / online 手动配对回归 / online 对战 / online-room 房间码真实信令 + ICE restart 恢复；基线 184 项，复跑记录见 `TASKS.md`）
-- WebRTC RTCDataChannel P2P 联机（HOST AUTHORITATIVE，已落地；含 desync 防护与对局期 ICE Restart 重连恢复）；自托管 WebSocket 信令房间码配对（SG 迁移已落地，公网部署待做）+ coturn TURN 时限 REST 凭据兜底
+- WebRTC RTCDataChannel P2P 联机（HOST AUTHORITATIVE，已落地；含 desync 防护与对局期 ICE Restart 重连恢复）；Render 公网 WebSocket 信令房间码配对（`wss://ricochet-rivals.onrender.com`）+ coturn TURN 时限 REST 凭据兜底（代码已支持，公网 TURN 待配置）
 
 ## 开发
 

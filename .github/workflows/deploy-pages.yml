@@ -38,6 +38,8 @@ jobs:
         run: npm run test
 
       - name: Build
+        env:
+          VITE_SIGNALING_URL: ${{ vars.VITE_SIGNALING_URL || 'wss://ricochet-rivals.onrender.com' }}
         run: npm run build
 
       - name: Configure Pages

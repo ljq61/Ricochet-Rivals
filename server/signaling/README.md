@@ -1,5 +1,16 @@
 # Ricochet Rivals — Signaling Server（SG-2）
 
+## 公网信令（2026-09-30）
+
+- Render 服务：`wss://ricochet-rivals.onrender.com`。
+- GitHub Pages 发布流程在构建时注入这个地址；仓库 Actions 变量 `VITE_SIGNALING_URL` 可覆盖它。更换地址后需重新发布网页。
+- 本地开发仍默认使用 `ws://127.0.0.1:8787`，可通过 `VITE_SIGNALING_URL` 指定公网或局域网服务。
+- 服务只提供 WebSocket；直接用浏览器访问 HTTPS 地址返回 `426 Upgrade Required` 属于正常行为。
+- 部署单实例，房间保存在内存中；服务重启或免费实例休眠后需重新创建房间。免费实例唤醒可能需要约一分钟。
+- 当前公网服务下发 STUN，尚未配置 TURN。房间配对可用不代表所有跨网络组合都能建立直连，仍需两部手机分别使用 Wi-Fi / 蜂窝网络验收。
+
+Render 配置：Root Directory 留空，Node.js 22，Build Command 为 `npm --prefix server/signaling ci --include=dev`，Start Command 为 `npm --prefix server/signaling start`。Health Check Path 留空使用 TCP 检查；服务读取平台提供的 `PORT`。
+
 WebSocket **Signaling** 服务器：房间配对（6 位 Room Code）+ Offer/Answer/ICE candidate
 转发。**只处理连接协议（SignalingMessage）**——Gameplay 全部经 WebRTC DataChannel，
 本服务不接触任何游戏状态（架构红线见仓库 TASKS.md「Online Connection Migration」）。
