@@ -304,9 +304,12 @@ export class WebRTCTransport implements NetworkTransport {
   // ---- Offer / Answer（Phase 13 手动流：全量 gather SDP —— ICE 收齐再返回） ----
 
   async createOffer(): Promise<string> {
-    const encoded = await this.beginOffer();
+    await this.beginOffer(); // setLocalDescription（其返回快照不含 candidate，弃用）
     await waitForIceGatheringComplete(this.pc, this.pendingIceRejects);
-    return encoded;
+    // 必须在等待之后重读：candidate 在 gathering 过程中追加进 localDescription
+    // SDP —— 若返回 beginOffer 的序列化快照则零 candidate（SG-4 实测回归：
+    // Manual 配对通道永不 open；FakeRTC SDP 恒定故单测不可见）
+    return this.encodeCurrentLocalDescription('createOffer');
   }
 
   async acceptOffer(encodedOffer: string): Promise<void> {
@@ -317,9 +320,9 @@ export class WebRTCTransport implements NetworkTransport {
   }
 
   async createAnswer(): Promise<string> {
-    const encoded = await this.beginAnswer();
+    await this.beginAnswer();
     await waitForIceGatheringComplete(this.pc, this.pendingIceRejects);
-    return encoded;
+    return this.encodeCurrentLocalDescription('createAnswer');
   }
 
   async acceptAnswer(encodedAnswer: string): Promise<void> {
@@ -395,6 +398,18 @@ export class WebRTCTransport implements NetworkTransport {
     for (const candidate of queued) {
       await this.applyRemoteCandidate(candidate);
     }
+  }
+
+  /** 全量 gather 出口：等待后重读 localDescription（candidate 已并入 SDP） */
+  private encodeCurrentLocalDescription(operation: string): string {
+    const local = this.pc.localDescription;
+    if (local === null) {
+      throw new TransportError(
+        'INVALID_SIGNALING',
+        `[WebRTCTransport] ${operation}: local description missing after gathering`,
+      );
+    }
+    return encodeDescription(local);
   }
 
   // ---- 内部 ----

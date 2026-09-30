@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
-> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 协议+Client ✅ / SG-2 Server ✅ / SG-3 RoomConnectionController（自动 SDP）✅ / SG-4 Trickle ICE ✅（2026-09-30，server 25/25 + 根 549/549）；SG-5 起待做。详见「Online Connection Migration」章节。**
+> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 协议+Client ✅ / SG-2 Server ✅ / SG-3 自动 SDP ✅ / SG-4 Trickle ICE ✅ / SG-5 Room UI + E2E ✅（2026-09-30，根 549/549 + server 25/25 + 全量 E2E **178/178** 含真实 Signaling Server room 段）；SG-6 起待做。详见「Online Connection Migration」章节。**
 > 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；Phase 18 agent 侧 + P3 修复后 `npm run e2e` 全量 **147 passed / 0 failed**（含 932×430@DPR3 移动段 17 项；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
@@ -2470,13 +2470,73 @@ null candidate 事件）：
 验证（2026-09-30）：根 typecheck ✅ / 根 test **549/549** ✅ / 根 build ✅ /
 server/signaling **25/25** ✅（未动回归确认）
 
+## SG-5 Room Connection UI + E2E ✅（2026-09-30）
+
+正式 Online UI 切换为 Room 流（规格 Stage SG-5）：**ONLINE → CREATE GAME / JOIN
+GAME → 房间码 + COPY → WAITING FOR OPPONENT → CONNECTING → CONNECTED → VERIFIED**；
+用户全程不见 SDP / 连接码。Manual SDP 仅 Debug 构建 + `?manual-sdp` 查询参数可达
+（E2E Debug fallback 回归入口；发布构建 DEBUG_GAME=false 时不可达）。
+
+OnlineConnectionScene 双流接线：
+
+- [x] 流程选择：`DEBUG_GAME && ?manual-sdp` → Manual（Phase 13 UI 原样，
+      renderManualState）；默认 → Room 流（renderRoomState，SG-3/4 控制器）
+- [x] Room UI 状态渲染：IDLE（CREATE/JOIN）→ JOIN GAME 展开 textarea 输入 +
+      JOIN 按钮（控制器保持 IDLE，确认才 joinRoom）→ ROOM_WAITING（`ROOM CODE:
+      XXXXXX` + COPY + WAITING FOR OPPONENT）→ CONNECTING_SIGNALING /
+      CREATING_ROOM / JOINING_ROOM / NEGOTIATING / CONNECTING（CONNECTING…）→
+      CONNECTED（verifying）→ VERIFIED（ENTER BATTLE，两流共用进局链）→ FAILED
+      （分类文案 + TRY AGAIN/BACK）
+- [x] 失败分类文案（SG-7 前置）：SIGNALING_FAILED / SERVER_ERROR（code 细分
+      ROOM_NOT_FOUND·ROOM_FULL·ROOM_EXPIRED）/ INVALID_ROOM_CODE（**保留输入
+      直接改码重试**）/ SETUP_FAILED / OFFER·ANSWER_FAILED / PEER_LEFT /
+      CONNECT_FAILED / VERIFICATION_TIMEOUT → 简洁用户文案，技术细节只进 debug
+- [x] Signaling 地址解析：`window.__RR_SIGNALING_URL__`（E2E 注入）>
+      `VITE_SIGNALING_URL`（构建期部署配置）> `ws://127.0.0.1:8787`（本地开发）；
+      新增 `src/vite-env.d.ts`（import.meta.env 类型）
+- [x] 交接链共用：adoptSession（SessionManager 持有 + RTT 轮询）/ onEnterBattle
+      / startOnlineBattle / leaveToMenu / onShutdown（detach vs dispose 流感知）；
+      scene.start 复位清单补 room 字段（roomController / joinInputVisible /
+      roomFailureMessage）；debug 句柄扩展（roomState / roomCode /
+      roomFailureReason / flow + joinConfirm 按钮）
+
+E2E（`scripts/e2e.mjs`）：
+
+- [x] 既有 manual 段（P2P + Battle）补 `?manual-sdp` 导航（Debug fallback 回归）
+- [x] **battle 驱动抽取**：runOnlineBattle 的 ENTER BATTLE → 回合循环 → Force
+      Desync 恢复 → Rematch → Disconnect 主体提取为 `driveOnlineBattle(pageHost,
+      pageGuest)`，配对方式与对战驱动解耦（Manual / Room 两段复用）
+- [x] **online-room 新段**（31 项）：spawn 真实 Signaling Server（tsx，cwd 指
+      server/signaling —— 根目录 npx 走 registry 下载实测超时坑）→ Signaling
+      地址经 evaluateOnNewDocument 注入 `__RR_SIGNALING_URL__`（构建产物免重
+      Build）→ 双页 CREATE/JOIN → 房间码 6 位 alphabet 校验 → 自动协商 VERIFIED
+      → driveOnlineBattle 全链路（GAME_START / 回合 / Host 权威 / desync 恢复 /
+      Rematch / Disconnect）；段注册 `RR_E2E_ONLY=online-room`
+- [x] Signaling 就绪探测：TCP connect（Node 22.11 **无全局 WebSocket 构造器**，
+      `WebSocket is not defined` 实测 —— 弃 WS 探测改 `node:net`）
+
+**实测回归修复（SG-4 遗留 capture-time bug，全量 E2E 实锤）**：
+
+- 现象：Manual 段 Host VERIFIED 超时（offer/response 均正常）——单段复现非 flake
+- 诊断（临时脚本 + SDP 解码）：连接码内 SDP **零 `a=candidate:` 行** ——
+  SG-4 把 `createOffer/createAnswer` 改为返回 `beginOffer()` 的序列化快照，
+  该快照在 ICE gathering 等待**之前**定格；旧实现是等待后重读
+  `pc.localDescription`（candidate 在 gather 过程中追加进 SDP）
+- 修复：等待后经 `encodeCurrentLocalDescription()` 重读重编码；**FakeRTC 的
+  SDP 恒定 → 单测盲区**（316 网络单测全绿仍回归），只有真实 Chrome 暴露 ——
+  Room 流不受影响（trickle candidate 走独立信令帧）
+
+验证（2026-09-30）：根 typecheck ✅ / 根 test **549/549** ✅ / 根 build ✅ /
+server/signaling **25/25** ✅ / **全量 E2E 178 passed / 0 failed**（147 存量 +
+31 room 新增；六段：desktop / mobile / sp / online-manual / battle /
+online-room 全绿）
+
 ## 待办（后续 Stage）
 
-- SG-5 Room Connection UI（Scene 接线：ONLINE → CREATE/JOIN → 房间码显示 + COPY +
-  WAITING/CONNECTING/CONNECTED/VERIFIED 渲染 / JOIN 输入 / 失败分类文案 / RETRY·BACK；
-  DEBUG_GAME 门控切 Manual SDP fallback）+ E2E（真实 Signaling Server 驱动双页）
-- SG-6 TURN/coturn 动态凭据（Signaling 下发 iceServers 含临时凭据）+ SG-7 失败
-  分类 UX + SG-8 ICE Restart（复用 session.signaling 活通道 + peerToken）
+- SG-6 TURN/coturn 动态凭据（Signaling 下发 iceServers 含临时凭据；iceTransportPolicy
+  支持 + DEBUG_FORCE_RELAY 开发选项 + 诊断：candidate types / selected pair /
+  icecandidateerror）+ SG-7 失败分类 UX 精修 + SG-8 ICE Restart（复用
+  session.signaling 活通道 + peerToken）
 - 部署 host（公网 WSS）与 coturn 落地待 SG-6 阶段定
 
 ---

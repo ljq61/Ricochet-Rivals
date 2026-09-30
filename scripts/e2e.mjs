@@ -19,6 +19,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
+import net from 'node:net';
 import { existsSync } from 'node:fs';
 import puppeteer from 'puppeteer-core';
 
@@ -1308,7 +1309,7 @@ async function runOnlineP2P(browser) {
   pageHost.on('pageerror', (e) => console.log('[HOST PAGEERROR]', e.message));
   pageHost.on('console', (m) => console.log(`[HOST console.${m.type()}]`, m.text().slice(0, 200)));
   await pageHost.setViewport({ width: 1280, height: 800 });
-  await pageHost.goto(URL, { waitUntil: 'load' });
+  await pageHost.goto(`${URL}?manual-sdp`, { waitUntil: 'load' });
   await this?.noop; // (占位防误删)
   try {
     await waitForScene(pageHost, 'MainMenuScene', 15000);
@@ -1333,7 +1334,7 @@ async function runOnlineP2P(browser) {
   pageGuest.on('pageerror', (e) => console.log('[GUEST PAGEERROR]', e.message));
   pageGuest.on('console', (m) => console.log(`[GUEST console.${m.type()}]`, m.text().slice(0, 200)));
   await pageGuest.setViewport({ width: 1280, height: 800 });
-  await pageGuest.goto(URL, { waitUntil: 'load' });
+  await pageGuest.goto(`${URL}?manual-sdp`, { waitUntil: 'load' });
   await waitForScene(pageGuest, 'MainMenuScene', 15000);
   await clickMenuButton(pageGuest, 'online');
   await waitForScene(pageGuest, 'OnlineConnectionScene', 5000);
@@ -1470,7 +1471,7 @@ async function runOnlineBattle(browser) {
   pageHost.on('pageerror', (e) => console.log('[HOST PAGEERROR]', e.message));
   pageHost.on('console', (m) => console.log(`[HOST console.${m.type()}]`, m.text().slice(0, 200)));
   await pageHost.setViewport({ width: 1280, height: 800 });
-  await pageHost.goto(URL, { waitUntil: 'load' });
+  await pageHost.goto(`${URL}?manual-sdp`, { waitUntil: 'load' });
   await waitForScene(pageHost, 'MainMenuScene', 15000);
   await clickMenuButton(pageHost, 'online');
   await waitForScene(pageHost, 'OnlineConnectionScene', 5000);
@@ -1479,7 +1480,7 @@ async function runOnlineBattle(browser) {
   pageGuest.on('pageerror', (e) => console.log('[GUEST PAGEERROR]', e.message));
   pageGuest.on('console', (m) => console.log(`[GUEST console.${m.type()}]`, m.text().slice(0, 200)));
   await pageGuest.setViewport({ width: 1280, height: 800 });
-  await pageGuest.goto(URL, { waitUntil: 'load' });
+  await pageGuest.goto(`${URL}?manual-sdp`, { waitUntil: 'load' });
   await waitForScene(pageGuest, 'MainMenuScene', 15000);
   await clickMenuButton(pageGuest, 'online');
   await waitForScene(pageGuest, 'OnlineConnectionScene', 5000);
@@ -1512,6 +1513,17 @@ async function runOnlineBattle(browser) {
   await waitFor(pageGuest, async () => (await dbg(pageGuest)).state === 'VERIFIED', 30000, 'Guest VERIFIED');
   check('双页配对 VERIFIED（真实 WebRTC DataChannel）', true);
 
+  await driveOnlineBattle(pageHost, pageGuest);
+}
+
+/**
+ * Phase 14/16 对战驱动（配对后通用，Manual / Room 两段复用）：
+ * ENTER BATTLE → 回合循环 → Rematch → Disconnect。
+ */
+async function driveOnlineBattle(pageHost, pageGuest) {
+  const hostD = () => dbg(pageHost);
+  const guestD = () => dbg(pageGuest);
+
   // —— ENTER BATTLE：各自前台点击（PLAYER_READY 经事件循环对端即时可收）——
   await pageGuest.bringToFront();
   await clickMenuButton(pageGuest, 'enterBattle');
@@ -1527,9 +1539,6 @@ async function runOnlineBattle(browser) {
   await waitForScene(pageHost, 'BattleScene', 15000);
   await pageGuest.bringToFront();
   await waitForScene(pageGuest, 'BattleScene', 15000);
-
-  const hostD = () => dbg(pageHost);
-  const guestD = () => dbg(pageGuest);
 
   const h0 = await hostD();
   const g0 = await guestD();
@@ -1984,6 +1993,125 @@ async function runOnlineBattle(browser) {
   await pageHost.close();
 }
 
+// ---- Online Room 场景（SG-5：Room Code + 自动信令 + Trickle 全链路）------
+
+/**
+ * SG-5 E2E：spawn 真实 Signaling Server（server/signaling，tsx 直跑）→
+ * 双页 Room 流配对（CREATE/JOIN → 房间码 → 自动 SDP/Trickle → VERIFIED）→
+ * 复用 driveOnlineBattle 完成对战 / Rematch / Disconnect。
+ * Signaling 地址经 evaluateOnNewDocument 注入 window.__RR_SIGNALING_URL__
+ * （构建产物无 env 重Build依赖），端口 8791 避开默认 8787（防与本机开发服冲突）。
+ */
+async function startSignalingServer(port) {
+  const child = spawn(
+    'npx',
+    // cwd 指向 server/signaling：tsx 只装在该 workspace（根目录 npx 会走
+    // registry 下载 → 探测超时，实测坑）；服务器内部 import 相对文件路径解析
+    ['tsx', 'src/index.ts'],
+    { shell: true, stdio: ['ignore', 'pipe', 'pipe'], cwd: 'server/signaling', env: { ...process.env, PORT: String(port) } },
+  );
+  child.stdout?.on('data', (d) => console.log('[SIGNALING]', String(d).trim()));
+  child.stderr?.on('data', (d) => console.log('[SIGNALING-ERR]', String(d).trim()));
+  const stop = () => {
+    if (process.platform === 'win32' && child.pid) {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { shell: true });
+    } else {
+      child.kill();
+    }
+  };
+  // 就绪探测：TCP connect 即可（Node 22.11 无全局 WebSocket 构造器——实测
+  // `WebSocket is not defined`；WS 握手由页面真实链路覆盖）
+  const portOpen = () =>
+    new Promise((resolve) => {
+      const socket = net.createConnection({ port, host: '127.0.0.1' });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once('error', () => resolve(false));
+    });
+  const started = Date.now();
+  for (;;) {
+    if (await portOpen()) {
+      console.log(`[SIGNALING] ready at ws://127.0.0.1:${port}`);
+      return stop;
+    }
+    if (Date.now() - started > 30_000) {
+      stop();
+      throw new Error('signaling server 就绪探测超时');
+    }
+    await sleep(400);
+  }
+}
+
+async function runOnlineRoom(browser) {
+  section('Online Room — Room Code pairing（真实 Signaling Server + WebRTC 双页对战）');
+  const stopSignaling = await startSignalingServer(8791);
+
+  const newRoomPage = async (label) => {
+    const page = await browser.newPage();
+    page.on('pageerror', (e) => console.log(`[${label} PAGEERROR]`, e.message));
+    page.on('console', (m) => console.log(`[${label} console.${m.type()}]`, m.text().slice(0, 200)));
+    await page.evaluateOnNewDocument((u) => { window.__RR_SIGNALING_URL__ = u; }, 'ws://127.0.0.1:8791');
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.goto(URL, { waitUntil: 'load' });
+    await waitForScene(page, 'MainMenuScene', 15000);
+    await clickMenuButton(page, 'online');
+    await waitForScene(page, 'OnlineConnectionScene', 5000);
+    return page;
+  };
+
+  try {
+    const pageHost = await newRoomPage('HOST');
+    const pageGuest = await newRoomPage('GUEST');
+
+    check('默认流 = Room（无 manual-sdp 参数）', (await dbg(pageHost)).flow === 'room');
+
+    // Host：CREATE GAME → ROOM_WAITING + 房间码（服务器生成）
+    await clickMenuButton(pageHost, 'create');
+    const roomCode = await waitFor(
+      pageHost,
+      async () => {
+        const d = await dbg(pageHost);
+        return d.roomState === 'ROOM_WAITING' ? d.roomCode : null;
+      },
+      20_000,
+      'Host 房间码',
+    );
+    check(
+      'Host 房间码 6 位高可读（排除 0/O/1/I/L）',
+      /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$/.test(roomCode),
+      roomCode,
+    );
+
+    // Guest：JOIN GAME → 输入房间码 → JOIN → 自动协商（零 SDP 露出）
+    await clickMenuButton(pageGuest, 'join');
+    await pageGuest.evaluate((code) => window.__RR_DEBUG__.setInputText(code), roomCode);
+    await clickMenuButton(pageGuest, 'joinConfirm');
+    const verifiedHost = await waitFor(
+      pageHost,
+      async () => (await dbg(pageHost)).roomState === 'VERIFIED',
+      30_000,
+      'Host VERIFIED',
+    );
+    const verifiedGuest = await waitFor(
+      pageGuest,
+      async () => (await dbg(pageGuest)).roomState === 'VERIFIED',
+      30_000,
+      'Guest VERIFIED',
+    );
+    check(
+      'Room 配对 VERIFIED（自动 SDP + Trickle ICE，真实 DataChannel）',
+      verifiedHost && verifiedGuest,
+      `room=${roomCode}`,
+    );
+
+    await driveOnlineBattle(pageHost, pageGuest);
+  } finally {
+    stopSignaling();
+  }
+}
+
 // ---- 主流程 --------------------------------------------------------------
 
 async function main() {
@@ -2024,6 +2152,7 @@ async function main() {
     if (!only || only === 'sp') await runSinglePlayer(browser);
     if (!only || only === 'online') await runOnlineP2P(browser);
     if (!only || only === 'battle') await runOnlineBattle(browser);
+    if (!only || only === 'online-room') await runOnlineRoom(browser);
   } catch (error) {
     failed++;
     failures.push(`场景异常: ${error.message}`);
