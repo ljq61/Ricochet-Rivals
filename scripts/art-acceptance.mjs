@@ -132,6 +132,27 @@ function assertMinimap(d, width, height) {
   if (map.currentPlayerId !== d.currentPlayerId || map.bases.P1.right >= map.bases.P2.left) {
     throw new Error('Minimap must preserve world order and active turn');
   }
+  const view = map.cameraView;
+  const actual = d.cameraWorldView;
+  if (!view || Object.keys(actual).some(key => Math.abs(actual[key] - view.world[key]) > 0.01)) {
+    throw new Error('Minimap view outline must match this rendered camera frame');
+  }
+  const project = (wx, wy) => ({
+    x: map.plot.left + Math.max(0, Math.min(1, wx / 5000)) * (map.plot.right - map.plot.left),
+    y: map.plot.top + Math.max(0, Math.min(1, wy / 1080)) * (map.plot.bottom - map.plot.top),
+  });
+  const from = project(actual.x, actual.y), to = project(actual.x + actual.width, actual.y + actual.height);
+  const expected = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2,
+    width: to.x - from.x, height: to.y - from.y };
+  if (Object.keys(expected).some(key => Math.abs(expected[key] - view.frame[key]) > 0.01)) {
+    throw new Error('Minimap white frame has the wrong world projection');
+  }
+  for (const shell of map.projectiles) {
+    const p = project(shell.worldX, shell.worldY);
+    if (Math.abs(shell.x - p.x) > 0.01 || Math.abs(shell.y - p.y) > 0.01) {
+      throw new Error('Minimap shell marker has the wrong world projection');
+    }
+  }
 }
 
 async function inspect(browser, mobile) {
@@ -170,6 +191,13 @@ async function inspect(browser, mobile) {
   assertMinimap(battle, W, H);
   if (battle.aimIcon.flipped) throw new Error('Blue aim badge must retain its original direction');
   if (mobile) {
+    if (battle.aimButtonBounds.width / battle.uiScale !== 64) throw new Error('Aim circle must be 64 CSS pixels');
+    const aim = battle.aimButtonBounds;
+    // The transparent square corner must pass through, not activate the circular icon.
+    await page.touchscreen.tap((aim.x + aim.width * 0.46) / battle.uiScale,
+      (aim.y + aim.height * 0.46) / battle.uiScale);
+    await pause(100);
+    if ((await dbg(page)).aimIcon.active) throw new Error('Transparent aim corner captured input');
     const initial = await dbg(page);
     const sizes = initial.moveButtonSizes;
     if (sizes.hit / initial.uiScale < 48 ||
@@ -214,7 +242,7 @@ async function inspect(browser, mobile) {
   };
   await tap();
   await waitFor(async () => (await dbg(page)).cameraMode === 'AIMING', 3000, 'button enters AIMING');
-  if (!(await dbg(page)).aimIcon.active) throw new Error('Aiming must use the red active badge');
+  if (!(await dbg(page)).aimIcon.active) throw new Error('Aiming must use the colorful active badge');
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-aim-cancel.png` });
   await tap();
   await waitFor(async () => (await dbg(page)).cameraMode === 'FREE_VIEW', 3000, 'button cancels AIMING');
@@ -240,6 +268,9 @@ async function inspect(browser, mobile) {
   await shoot(45, 1);
   await waitFor(async () => (await dbg(page)).hasFired, 3000, 'shot fires');
   await pause(300);
+  const flight = await dbg(page);
+  assertMinimap(flight, W, H);
+  if (!flight.minimap.projectiles.some(p => p.ownerId === 'P1')) throw new Error('Flying shell marker missing');
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-trail.png` });
   await waitFor(async () => (await dbg(page)).cameraMode === 'IMPACT', 6000, 'platform impact');
   await pause(100);
@@ -249,6 +280,7 @@ async function inspect(browser, mobile) {
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-red-base.png` });
   const red = await dbg(page);
   assertMinimap(red, W, H);
+  if (red.minimap.projectiles.length) throw new Error('Resolved shells must leave the minimap');
   if (!red.aimIcon.flipped || red.aimIcon.active) throw new Error('Red turn must use the mirrored ready badge');
   if (mobile) {
     const buttons = (await dbg(page)).moveButtons;

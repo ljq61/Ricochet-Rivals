@@ -2,6 +2,7 @@ import { GAME_CONFIG } from '../config/GameConfig';
 import type { ViewportMetrics } from '../platform/viewportMath';
 import type { PlayerState } from '../state/PlayerState';
 import type { PlayerId } from '../state/ids';
+import type { ProjectileState } from '../state/ProjectileState';
 import { touchAimRect, type ScreenRect } from './touchAimLayout';
 
 /** Shared screen-space positions keep the map, HP cards and turn message separate. */
@@ -54,23 +55,68 @@ export function miniMapWorldX(x: number, width: number, uiScale: number): number
   return -width / 2 + inset + ratio * (width - 2 * inset);
 }
 
+export interface MiniMapWorldRect { x: number; y: number; width: number; height: number }
+export interface MiniMapContext {
+  cameraWorldView: MiniMapWorldRect;
+  projectiles: readonly ProjectileState[];
+}
+
+/** Map the full world into a small 2D plot; high arcs stay visible on its top edge. */
+export function miniMapProjection(viewport: ViewportMetrics) {
+  const { map } = battleHudLayout(viewport);
+  const ui = viewport.uiScale;
+  const plot = { left: map.x - map.width / 2 + 8 * ui, right: map.x + map.width / 2 - 8 * ui,
+    top: map.y - map.height / 2 + 6 * ui, bottom: map.y + map.height / 2 - 6 * ui };
+  const project = (x: number, y: number) => ({
+    x: plot.left + Math.max(0, Math.min(1, x / GAME_CONFIG.world.width)) * (plot.right - plot.left),
+    y: plot.top + Math.max(0, Math.min(1, y / GAME_CONFIG.world.height)) * (plot.bottom - plot.top),
+  });
+  return { plot, project };
+}
+
+export function miniMapCameraFrame(viewport: ViewportMetrics, world: MiniMapWorldRect) {
+  const { project } = miniMapProjection(viewport);
+  const clampX = (x: number) => Math.max(0, Math.min(GAME_CONFIG.world.width, x));
+  const clampY = (y: number) => Math.max(0, Math.min(GAME_CONFIG.world.height, y));
+  const left = clampX(world.x), right = clampX(world.x + Math.max(0, world.width));
+  const top = clampY(world.y), bottom = clampY(world.y + Math.max(0, world.height));
+  const first = project(left, top), last = project(right, bottom);
+  return {
+    world: { ...world },
+    clampedWorld: { x: left, y: top, width: right - left, height: bottom - top },
+    frame: { x: (first.x + last.x) / 2, y: (first.y + last.y) / 2,
+      width: last.x - first.x, height: last.y - first.y },
+    visible: right > left && bottom > top,
+  };
+}
+
 export function miniMapSnapshot(
   viewport: ViewportMetrics,
   players: Record<PlayerId, PlayerState>,
   currentPlayerId: PlayerId,
+  context?: MiniMapContext,
 ) {
   const { map } = battleHudLayout(viewport);
+  const { plot, project: projectPoint } = miniMapProjection(viewport);
   const project = (x: number) => map.x + miniMapWorldX(x, map.width, viewport.uiScale);
   const base = (id: PlayerId) => {
     const bounds = id === 'P1' ? GAME_CONFIG.player.leftBounds : GAME_CONFIG.player.rightBounds;
-    return { left: project(bounds.minX), right: project(bounds.maxX), y: map.y + 8 * viewport.uiScale };
+    return { left: project(bounds.minX), right: project(bounds.maxX),
+      y: projectPoint(bounds.minX, GAME_CONFIG.world.groundTopY).y };
   };
   const player = (id: PlayerId) => ({
-    x: project(players[id].x), worldX: players[id].x, y: map.y - 3 * viewport.uiScale,
+    ...projectPoint(players[id].x, players[id].y), worldX: players[id].x, worldY: players[id].y,
+    markerY: projectPoint(players[id].x, players[id].y).y - 5 * viewport.uiScale,
     alive: players[id].isAlive, current: id === currentPlayerId,
   });
-  return { rect: map, bases: { P1: base('P1'), P2: base('P2') },
-    players: { P1: player('P1'), P2: player('P2') }, currentPlayerId };
+  const projectiles = (context?.projectiles ?? []).filter((p) => p.status === 'flying').map((p) => ({
+    id: p.id, ownerId: p.ownerId, worldX: p.x, worldY: p.y,
+    ...projectPoint(p.x, p.y),
+    clamped: p.x < 0 || p.x > GAME_CONFIG.world.width || p.y < 0 || p.y > GAME_CONFIG.world.height,
+  }));
+  return { rect: map, plot, bases: { P1: base('P1'), P2: base('P2') },
+    players: { P1: player('P1'), P2: player('P2') }, currentPlayerId, projectiles,
+    cameraView: context ? miniMapCameraFrame(viewport, context.cameraWorldView) : null };
 }
 
 export type MiniMapSnapshot = ReturnType<typeof miniMapSnapshot>;

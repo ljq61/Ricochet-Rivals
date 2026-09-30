@@ -1594,6 +1594,15 @@ async function driveOnlineBattle(pageHost, pageGuest, hooks = {}) {
     'Guest 收到 FIRE 广播'
   );
   check('Host Fire 双方发射（广播 → 双端本地模拟）', guestFired);
+  // Each visible screen must render the shell. Chrome can suspend the hidden
+  // page's render loop even though its DataChannel has already received FIRE.
+  const hostShell = await waitFor(pageHost, async () =>
+    (await hostD()).minimap?.projectiles.find(p => p.ownerId === 'P1'), 2500, 'Host 小地图炮弹');
+  await pageGuest.bringToFront();
+  const guestShell = await waitFor(pageGuest, async () =>
+    (await guestD()).minimap?.projectiles.find(p => p.ownerId === 'P1'), 2500, 'Guest 小地图炮弹');
+  check('联机双方小地图显示同一炮弹标记', hostShell.id === guestShell.id);
+  await pageHost.bringToFront();
 
   // Host 前台：炮弹飞行 → 爆炸 → TURN_RESULT → dwell → TURN_END → P2 回合
   const hostToP2 = await waitFor(
@@ -1622,6 +1631,8 @@ async function driveOnlineBattle(pageHost, pageGuest, hooks = {}) {
 
   const hAfterT1 = await hostD();
   const gAfterT1 = await guestD();
+  check('联机双方结算后清除小地图炮弹标记',
+    hAfterT1.minimap.projectiles.length === 0 && gAfterT1.minimap.projectiles.length === 0);
   check(
     'Turn 1 权威结算后双端 HP 一致',
     JSON.stringify(hAfterT1.hp) === JSON.stringify(gAfterT1.hp)

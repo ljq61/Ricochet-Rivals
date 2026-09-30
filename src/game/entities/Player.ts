@@ -17,7 +17,7 @@ import { GAME_CONFIG } from '../config/GameConfig';
  * 玩家视觉实体（渲染层）。
  *
  * - 不持有任何规则逻辑；位置完全由 PlayerState 驱动（每帧同步）
- * - 按实际位移播放 8 帧走路序列；缺素材时回退轻微起伏
+ * - 按实际位移播放角色各自的走路序列；缺素材时回退轻微起伏
  * - 朝向随移动方向翻转，初始朝向战场中央
  * - Phase 17 修复轮：瞄准姿态序列（15–75° 抬枪图，setAimPose 按
  *   仰角分桶切换纹理；素材缺失自动回退 idle，Graphics 占位不受影响）
@@ -113,10 +113,16 @@ export class Player {
     if (this.walking && this.sprite) {
       // Distance-driven cadence also works for AI and remote authoritative movement.
       this.walkDistance += Math.min(Math.abs(deltaX), 16);
-      const frame = Math.floor(this.walkDistance / 12) % 8;
+      // Each character's full stride uses distance, keeping its cadence across frame rates.
+      const frameCount = walk.cols * walk.rows;
+      const frame = Math.floor(this.walkDistance * frameCount / walk.strideDistance) % frameCount;
+      const originX = 'originsX' in walk ? walk.originsX[frame]! : walk.originX;
       this.sprite.setTexture(walk.key, frame)
         .setScale(GAME_CONFIG.player.collision.height / walk.visibleHeight)
-        .setOrigin(0.5, walk.soles[frame]! / this.sprite.frame.height);
+        .setOrigin(
+          this.facing < 0 ? 1 - originX : originX,
+          walk.soles[frame]! / this.sprite.frame.height,
+        );
       this.currentPoseKey = walk.key;
     } else if (this.currentPoseKey === walk.key) {
       this.walkDistance = 0;

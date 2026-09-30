@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { MainMenuScene } from './MainMenuScene';
-import { ART, ART_FILES, AIM_POSE_FILES, SHEET_GRID, DOCK_ART_FRAME, CONTROL_ART_FRAMES } from '../config/ArtAssets';
+import { ART, ART_FILES, AIM_POSE_FILES, SHEET_GRID, WALK_ART, DOCK_ART_FRAME, CONTROL_ART_FRAMES } from '../config/ArtAssets';
 import { SFX_FILES } from '../audio/SfxBus';
 
 /**
@@ -63,12 +63,21 @@ export class BootScene extends Phaser.Scene {
         );
       }
     }
-    for (const key of [ART.walkP1, ART.walkP2]) {
-      if (!this.textures.exists(key)) continue;
-      const texture = this.textures.get(key);
+    for (const walk of Object.values(WALK_ART)) {
+      if (!this.textures.exists(walk.key)) continue;
+      const texture = this.textures.get(walk.key);
       const source = texture.getSourceImage();
-      const w = Math.floor(source.width / 4), h = Math.floor(source.height / 2);
-      for (let i = 0; i < 8; i++) texture.add(i, 0, (i % 4) * w, Math.floor(i / 4) * h, w, h);
+      const w = Math.floor(source.width / walk.cols), h = Math.floor(source.height / walk.rows);
+      for (let i = 0; i < walk.cols * walk.rows; i++) {
+        const row = Math.floor(i / walk.cols);
+        // Generated atlases may have uneven row gutters; keep each whole pose intact.
+        const bounds = 'rowBounds' in walk
+          ? (walk.rowBounds as readonly { top: number; bottom: number }[])[row]
+          : null;
+        const top = bounds?.top ?? row * h;
+        const height = bounds ? bounds.bottom - bounds.top : h;
+        texture.add(i, 0, (i % walk.cols) * w, top, w, height);
+      }
     }
     this.scene.start(MainMenuScene.KEY);
   }

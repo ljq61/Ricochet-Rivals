@@ -43,7 +43,7 @@ export const ART_FILES = [
   [ART.P1, 'blue-chibi.png'],
   [ART.P2, 'red-chibi.png'],
   [ART.walkP1, 'blue-walk.png'],
-  [ART.walkP2, 'red-walk-v2.png'],
+  [ART.walkP2, 'red-walk-v3.png'],
   [ART.projectile, 'normal-projectile.png'],
   [ART.explosion, 'explosion-impact.png'],
   [ART.baseP1, 'base-blue.png'],
@@ -60,8 +60,8 @@ export const ART_FILES = [
 /** Generated controls: measured alpha bounds, so visible art matches the input layout. */
 export const CONTROL_ART_FRAMES = {
   [ART.moveArrow]: { x: 55, y: 76, width: 1143, height: 1113 },
-  [ART.aimReady]: { x: 48, y: 57, width: 1160, height: 1143 },
-  [ART.aimActive]: { x: 48, y: 54, width: 1160, height: 1147 },
+  [ART.aimReady]: { x: 46, y: 50, width: 1162, height: 1154 },
+  [ART.aimActive]: { x: 46, y: 54, width: 1160, height: 1148 },
 } as const;
 
 /** Long-piling dock, measured alpha bounds; world and menu share the same aspect ratio. */
@@ -141,8 +141,12 @@ export const AIM_POSE_BOUNDS: Record<ArtPlayerKey, Record<AimPoseAngle, ArtBound
   },
 };
 
-/** 4×2 walk sheets: measured planted soles, fixed scale preserves intentional head bob. */
+/** Measured feet and per-frame alignment preserve complete alternating walk cycles. */
 export const WALK_ART = {
-  P1: { key: ART.walkP1, visibleHeight: 420, soles: [436, 435, 435, 436, 431, 431, 430, 431] },
-  P2: { key: ART.walkP2, visibleHeight: 420, soles: [441, 441, 441, 441, 421, 421, 421, 421] },
+  P1: { key: ART.walkP1, cols: 4, rows: 2, originX: 0.5, strideDistance: 96,
+    visibleHeight: 420, soles: [436, 435, 435, 436, 431, 431, 430, 431] },
+  P2: { key: ART.walkP2, cols: 4, rows: 2, originX: 226 / 443, strideDistance: 240,
+    originsX: [220, 211, 228, 237, 223, 227, 226, 238].map(x => x / 443),
+    visibleHeight: 427, rowBounds: [{ top: 0, bottom: 443 }, { top: 443, bottom: 887 }],
+    soles: [437, 438, 441, 436, 425, 425, 426, 425] },
 } as const;

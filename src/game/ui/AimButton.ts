@@ -24,8 +24,8 @@ export interface AimButtonDeps {
  * - 命中走 InputRouter zone（UI 最高优先级），不再用 Phaser
  *   setInteractive —— 一次手势生命周期只有一个 Owner
  * - AIMING 时点击 = 取消瞄准（触屏没有 Esc / 右键，按钮即取消入口）
- * - 两态生成图片：READY 金（可瞄准）/ AIMING 红（瞄准中），
- *   持枪黑影与右上向左下的手指箭头；红方水平镜像，激活态加呼吸脉冲，
+ * - 圆形两态图片：READY 灰色 / AIMING 彩色，
+ *   简化持枪角色与右上向左下的手指箭头；红方水平镜像，激活态加呼吸脉冲，
  *   素材缺失回退程序绘制）
  * - 跟随 ViewportService 变化重定位（resize / 旋转 / DPR 变化）
  *
@@ -111,7 +111,7 @@ export class AimButton {
 
   /**
    * 根据相机模式刷新按钮外观与文案（两态，Phase 17 真机反馈轮）。
-   * READY = 金（点击发起瞄准）；AIMING = 红热 + 呼吸脉冲（点击取消）。
+   * READY = 灰色（点击发起瞄准）；AIMING = 彩色 + 呼吸脉冲（点击取消）。
    * interactable（Phase 14 联机）：本地玩家回合 = true；对手回合 = false
    * → 按钮隐藏且 zone 失活（对手回合 Move/Aim/Fire 全部禁用，
    * 相机 Free View 仍可用）。离线不传 = 恒可交互，行为不变。
@@ -135,20 +135,20 @@ export class AimButton {
     this.drawDesktopButton(aiming, inFlow);
   }
 
-  /** 桌面态：金属药丸（MenuButton 同语言）—— 金=瞄准，红=取消 */
+  /** 桌面态：金属药丸（MenuButton 同语言），灰色待机 / 彩色激活。 */
   private drawDesktopButton(aiming: boolean, inFlow: boolean): void {
     const ui = this.deps.viewport.current.uiScale;
     const { width, height } = this;
-    const accent = aiming ? 0xff5063 : 0xf3a725;
+    const accent = aiming ? 0xf3a725 : 0x899298;
     const active = aiming || (this.hovered && inFlow);
 
     this.label.setText(
       aiming ? '取消瞄准 · Esc / 右键' : '回到炮手 / 瞄准 [Space]'
     );
-    this.label.setColor(aiming ? '#fff4db' : '#151c22');
+    this.label.setColor('#151c22');
     this.label.setX(this.icon ? 34 * ui : 0);
     this.updateIcon(aiming);
-    this.icon?.setPosition(-width / 2 + 44 * ui, 0).setDisplaySize(72 * ui, 72 * ui);
+    this.icon?.setPosition(-width / 2 + 44 * ui, 0).setDisplaySize(60 * ui, 60 * ui);
     this.label.setFontStyle('bold');
 
     const radius = 4 * ui;
@@ -189,8 +189,8 @@ export class AimButton {
 
   /**
    * 触屏态：生成图标两态（真机反馈轮）——
-   * READY = 金色滑动操作示意图（点击发起瞄准）；
-   * AIMING = 红色操作示意图 + 呼吸脉冲（点击取消）。
+   * READY = 灰色圆形操作示意图（点击发起瞄准）；
+   * AIMING = 彩色操作示意图 + 呼吸脉冲（点击取消）。
    * 图标缺失时回退程序绘制（金属盘 + 准星，无斜杠禁止语义）。
    */
   private drawTouchIcon(aiming: boolean, inFlow: boolean): void {
@@ -240,10 +240,10 @@ export class AimButton {
     this.icon?.setAlpha(1);
   }
 
-  /** Graphics 回退：金属盘 + 准星刻线（金=可瞄准 / 红=瞄准中） */
+  /** Graphics 回退：金属盘 + 准星刻线（灰=可瞄准 / 金=瞄准中） */
   private drawTouchFallback(aiming: boolean, _inFlow: boolean, alpha: number): void {
     const ui = this.deps.viewport.current.uiScale;
-    const accent = aiming ? 0xff5063 : 0xf3a725;
+    const accent = aiming ? 0xf3a725 : 0x899298;
 
     this.label.setText('');
     this.bg.clear();
@@ -286,6 +286,9 @@ export class AimButton {
   }
 
   private contains(x: number, y: number): boolean {
+    if (this.deps.isTouchProfile) {
+      return (x - this.screenX) ** 2 + (y - this.screenY) ** 2 <= (this.width / 2) ** 2;
+    }
     return (
       x >= this.screenX - this.width / 2 &&
       x <= this.screenX + this.width / 2 &&

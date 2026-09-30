@@ -438,7 +438,9 @@ export class BattleScene extends Phaser.Scene {
     // 12. HUD：HP 血条（伤害动画由 State 变化驱动）+ 回合横幅（Phase 9 热座）
     this.playerHud = new PlayerHud(this, this.viewportService);
     this.miniMap = new BattleMiniMap(this, this.viewportService);
-    this.miniMap.refresh(this.state.players, this.state.currentPlayerId);
+    this.refreshMiniMap();
+    // Renderer RENDER runs after Camera.preRender computes this frame's worldView.
+    this.game.renderer.on(Phaser.Renderer.Events.RENDER, this.onMiniMapRender, this);
     this.turnBanner = new TurnBanner(this, this.viewportService, (viewport) => battleHudLayout(viewport).banner);
     this.damageNumbers = new DamageNumbers(this, this.viewportService);
 
@@ -477,7 +479,6 @@ export class BattleScene extends Phaser.Scene {
     this.aimButton.refresh(this.cameraController.currentMode, localControls);
     this.touchControls?.refresh(localControls);
     this.playerHud.refresh(this.state.players);
-    this.miniMap.refresh(this.state.players, this.state.currentPlayerId);
     this.baseDamageEffects.refresh(this.state.players);
     this.octopusTentacle.refresh(this.state.players);
 
@@ -553,6 +554,18 @@ export class BattleScene extends Phaser.Scene {
       // Phase 14：DEBUG_NETWORK 段（离线 null = 不显示）
       online:
         this.online !== null && DEBUG_NETWORK ? this.online.debugInfo() : null,
+    });
+  }
+
+  private onMiniMapRender(scene: Phaser.Scene, camera: Phaser.Cameras.Scene2D.Camera): void {
+    if (scene === this && camera === this.cameras.main) this.refreshMiniMap();
+  }
+
+  private refreshMiniMap(): void {
+    const view = this.cameras.main.worldView;
+    this.miniMap.refresh(this.state.players, this.state.currentPlayerId, {
+      cameraWorldView: { x: view.x, y: view.y, width: view.width, height: view.height },
+      projectiles: this.projectileSystem.activeProjectiles,
     });
   }
 
@@ -1137,6 +1150,10 @@ export class BattleScene extends Phaser.Scene {
           : null;
       },
       get minimap() { return self.miniMap.debugState; },
+      get cameraWorldView() {
+        const v = self.cameras.main.worldView;
+        return { x: v.x, y: v.y, width: v.width, height: v.height };
+      },
       get turnBannerLayout() { return self.turnBanner.layoutState; },
       get legacyFocusButtons(): boolean { return false; },
       get aimIcon() { return self.aimButton.visualState; },
@@ -1187,6 +1204,7 @@ export class BattleScene extends Phaser.Scene {
 
   private onShutdown(): void {
     this.presentationEpoch += 1;
+    this.game.renderer.off(Phaser.Renderer.Events.RENDER, this.onMiniMapRender, this);
     this.viewportService.destroy();
     this.inputRouter.destroy();
     this.cameraController.destroy();

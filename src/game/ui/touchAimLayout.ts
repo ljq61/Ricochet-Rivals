@@ -1,7 +1,7 @@
 import type { ViewportMetrics } from '../platform/viewportMath';
 
 export interface ScreenRect { x: number; y: number; width: number; height: number }
-export const TOUCH_AIM_SIZE = 84;
+export const TOUCH_AIM_SIZE = 64;
 export const TOUCH_AIM_MARGIN = 12;
 
 export function touchAimRect(viewport: ViewportMetrics): ScreenRect {
