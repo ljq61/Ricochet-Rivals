@@ -382,10 +382,8 @@ export class BattleScene extends Phaser.Scene {
     this.projectileSystem.onLaunched((projectile) => {
       this.playerViews[projectile.ownerId].playFireReaction();
       this.logCameraEvent(`launched`);
-      // Phase 17 Juice：发射音 + 飞行口哨各播一次（真机反馈：口哨循环
-      // 在 desync 清场路径下停不掉且听感重复 —— 单次播放，无循环句柄）
+      // 只播放发射音；飞行口哨按本轮试玩反馈移除。
       this.sfx.play(SFX.launch);
-      this.sfx.play(SFX.projectile);
       this.turnManager.notifyProjectileLaunched();
       this.cameraController.followProjectile(() => {
         const projectile = this.projectileSystem.activeProjectiles[0];
@@ -1090,6 +1088,15 @@ export class BattleScene extends Phaser.Scene {
         return self.touchControls
           ? self.touchControls.isMoveButtonsVisible
           : null;
+      },
+      get moveButtons(): { left: { x: number; y: number }; right: { x: number; y: number } } | null {
+        if (!self.touchControls) return null;
+        const scale = self.viewportService.current.uiScale;
+        const centers = self.touchControls.moveButtonCenters;
+        return {
+          left: { x: centers.left.x / scale, y: centers.left.y / scale },
+          right: { x: centers.right.x / scale, y: centers.right.y / scale },
+        };
       },
       /** SG-8：连接恢复状态（IDLE/RECONNECTING/RECOVERED/FAILED；离线 = null） */
       get recoveryState(): string | null {

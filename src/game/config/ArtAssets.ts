@@ -39,7 +39,7 @@ export const ART_FILES = [
   [ART.P1, 'blue-chibi.png'],
   [ART.P2, 'red-chibi.png'],
   [ART.walkP1, 'blue-walk.png'],
-  [ART.walkP2, 'red-walk.png'],
+  [ART.walkP2, 'red-walk-v2.png'],
   [ART.projectile, 'normal-projectile.png'],
   [ART.explosion, 'explosion-impact.png'],
   [ART.baseP1, 'base-blue.png'],
@@ -133,5 +133,5 @@ export const AIM_POSE_BOUNDS: Record<ArtPlayerKey, Record<AimPoseAngle, ArtBound
 /** 4×2 walk sheets: measured planted soles, fixed scale preserves intentional head bob. */
 export const WALK_ART = {
   P1: { key: ART.walkP1, visibleHeight: 420, soles: [436, 435, 435, 436, 431, 431, 430, 431] },
-  P2: { key: ART.walkP2, visibleHeight: 416, soles: [431, 429, 436, 435, 425, 425, 429, 424] },
+  P2: { key: ART.walkP2, visibleHeight: 420, soles: [441, 441, 441, 441, 421, 421, 421, 421] },
 } as const;

@@ -201,6 +201,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-create',
       viewport: this.viewport,
       label: 'CREATE GAME',
+      baseHeight: 56,
       onTap: () => void this.onCreateGame(),
     });
     this.buttons.join = new MenuButton(this, {
@@ -208,6 +209,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-join',
       viewport: this.viewport,
       label: 'JOIN GAME',
+      baseHeight: 56,
       onTap: () => this.onJoinGame(),
     });
     this.buttons.connect = new MenuButton(this, {
@@ -215,6 +217,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-connect',
       viewport: this.viewport,
       label: 'CONNECT',
+      baseHeight: 56,
       onTap: () => void this.onConnect(),
     });
     this.buttons.copy = new MenuButton(this, {
@@ -224,6 +227,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       label: 'COPY CODE',
       accent: 0x56698a,
       baseWidth: SMALL_WIDTH,
+      baseHeight: 56,
       onTap: () => void this.onCopyCode(),
     });
     this.buttons.createResponse = new MenuButton(this, {
@@ -231,6 +235,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-create-response',
       viewport: this.viewport,
       label: 'CREATE RESPONSE',
+      baseHeight: 56,
       onTap: () => void this.onCreateResponse(),
     });
     this.buttons.joinConfirm = new MenuButton(this, {
@@ -238,6 +243,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-join-confirm',
       viewport: this.viewport,
       label: 'JOIN',
+      baseHeight: 56,
       onTap: () => void this.onJoinConfirm(),
     });
     this.buttons.tryAgain = new MenuButton(this, {
@@ -246,6 +252,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       viewport: this.viewport,
       label: 'TRY AGAIN',
       baseWidth: SMALL_WIDTH,
+      baseHeight: 56,
       onTap: () => {
         if (this.useManualFlow()) {
           this.controller.retry();
@@ -262,6 +269,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       id: 'online-enter-battle',
       viewport: this.viewport,
       label: 'ENTER BATTLE',
+      baseHeight: 56,
       onTap: () => this.onEnterBattle(),
     });
     this.buttons.back = new MenuButton(this, {
@@ -281,6 +289,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
       viewport: this.viewport,
       label: 'BACK TO MENU',
       accent: 0x56698a,
+      baseHeight: 56,
       onTap: () => this.leaveToMenu(),
     });
 
@@ -650,11 +659,13 @@ export class OnlineConnectionScene extends Phaser.Scene {
           status += ` [${failure.reason}${failure.code !== undefined ? `:${failure.code}` : ''}]`;
         }
         visibleButtons.length = 0;
-        visibleButtons.push('tryAgain', 'back');
+        visibleButtons.push('back');
         // 非法码：保留输入直接改码重试（SG-5 UX：不强迫重开输入框）
         if (failure?.reason === 'INVALID_ROOM_CODE' && this.joinInputVisible) {
           visibleButtons.push('joinConfirm');
           showTextarea = true;
+        } else {
+          visibleButtons.push('tryAgain');
         }
         break;
       }
@@ -827,6 +838,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     el.spellcheck = false;
     el.autocapitalize = 'off';
     el.autocomplete = 'off';
+    if (!this.useManualFlow()) el.rows = 1;
     document.body.appendChild(el);
     this.textarea = el;
     this.positionTextarea();
@@ -839,21 +851,26 @@ export class OnlineConnectionScene extends Phaser.Scene {
     }
     const { height, safeArea, uiScale } = this.viewport.current;
     const dpr = window.devicePixelRatio || 1;
+    const short = (height - safeArea.top - safeArea.bottom) / uiScale < 380;
+    const roomInput = !this.useManualFlow();
     el.style.position = 'fixed';
-    el.style.left = '10%';
-    el.style.width = '80%';
-    el.style.height = '64px';
+    el.style.left = roomInput ? '50%' : '10%';
+    el.style.transform = roomInput ? 'translateX(-50%)' : '';
+    el.style.width = roomInput ? 'min(320px, 80%)' : '80%';
+    el.style.height = roomInput ? '52px' : '64px';
     // 与 reposition() 的动作行（CONNECT / CREATE RESPONSE / COPY）同源：
     // 输入框底边停在动作行顶沿上方 12 CSS px —— 保证不与按钮、不与顶部
     // 文案区重叠（旧布局 220px 固定抬高在手机上顶进说明文字区）
-    const bottomRowCss = (height - safeArea.bottom - (32 + 32) * uiScale) / dpr;
-    const actionTopCss = bottomRowCss - 40 - 32; // 动作行中心在 bottomRow 上方 40，半高 32
+    const bottomRowCss = (height - safeArea.bottom - (32 + 28) * uiScale) / dpr;
+    const actionTopCss = bottomRowCss - (short ? 0 : 40) - 28;
     const bottomPx = height / dpr - actionTopCss + 12;
     el.style.bottom = `${bottomPx}px`;
     el.style.zIndex = '10';
     el.style.resize = 'none';
     el.style.fontFamily = 'monospace';
-    el.style.fontSize = '13px';
+    el.style.fontSize = roomInput ? '18px' : '13px';
+    el.style.textAlign = roomInput ? 'center' : 'left';
+    el.style.textTransform = roomInput ? 'uppercase' : 'none';
     el.style.background = 'rgba(13, 20, 32, 0.9)';
     el.style.color = '#e8eef7';
     el.style.border = '1px solid #56698a';
@@ -870,37 +887,45 @@ export class OnlineConnectionScene extends Phaser.Scene {
   private reposition(): void {
     this.artwork.layout(this.viewport.current.width, this.viewport.current.height, this.viewport.current.uiScale);
     const { width, height, safeArea, uiScale } = this.viewport.current;
-    // Phase 17 修复轮：左上角返回 icon 让出顶部带 —— 标题 / 文案整体下移
-    // （icon 底沿 88*ui + 间隙 16*ui = 104*ui 起为标题区）
+    const availableCssHeight = (height - safeArea.top - safeArea.bottom) / uiScale;
+    const compact = availableCssHeight < 650;
+    const short = availableCssHeight < 380;
     this.buttons.back?.setPosition(
       safeArea.left + (24 + 32) * uiScale,
       safeArea.top + (24 + 32) * uiScale
     );
-    this.title.setFontSize(TITLE_FONT * uiScale);
-    this.title.setPosition(width / 2, safeArea.top + (104 + TITLE_FONT * 0.5) * uiScale);
+    this.title.setFontSize((short ? 24 : compact ? 28 : TITLE_FONT) * uiScale);
+    this.title.setPosition(width / 2, safeArea.top + (short ? 76 : compact ? 85 : 121) * uiScale);
 
-    // 文案区固定在标题下方（曾按状态挪到中部 —— 与 DOM textarea 相互遮挡）
-    const statusY = safeArea.top + 160 * uiScale;
-    this.statusLine.setFontSize(TEXT_FONT * uiScale);
-    this.promptLine.setFontSize(TEXT_FONT * uiScale);
+    // 横屏短视口把标题、说明和动作区各放独立行，保留 64px 按钮命中区。
+    const statusY = safeArea.top + (short ? 115 : compact ? 132 : 160) * uiScale;
+    this.statusLine.setFontSize((compact ? 14 : TEXT_FONT) * uiScale);
+    this.promptLine.setFontSize((compact ? 13 : TEXT_FONT) * uiScale);
+    const textWidth = width - safeArea.left - safeArea.right - 56 * uiScale;
+    this.statusLine.setWordWrapWidth(textWidth);
+    this.promptLine.setWordWrapWidth(textWidth);
     this.statusLine.setPosition(width / 2, statusY);
-    this.promptLine.setPosition(width / 2, statusY + 34 * uiScale);
+    this.promptLine.setPosition(width / 2, statusY + (short ? 25 : compact ? 28 : 34) * uiScale);
 
-    const buttonH = 64 * uiScale;
+    const buttonH = 56 * uiScale;
     const bottomRow = height - safeArea.bottom - 32 * uiScale - buttonH / 2;
     const centerX = width / 2;
-    const actionRowY = bottomRow - 40 * uiScale;
+    const actionRowY = bottomRow - (short ? 0 : 40) * uiScale;
 
-    this.buttons.create?.setPosition(centerX, height * 0.42);
-    this.buttons.join?.setPosition(centerX, height * 0.42 + (buttonH + 20 * uiScale));
+    const primaryY = compact
+      ? height - safeArea.bottom - (short ? 116 : 168) * uiScale
+      : height * 0.42;
+    this.buttons.create?.setPosition(centerX, primaryY);
+    this.buttons.join?.setPosition(centerX, primaryY + buttonH + 16 * uiScale);
     // 动作行：Host 页 CONNECT 与 COPY 并排；Guest 两个动作各占中央
     this.buttons.connect?.setPosition(centerX - 160 * uiScale, actionRowY);
     this.buttons.createResponse?.setPosition(centerX, actionRowY);
     this.buttons.joinConfirm?.setPosition(centerX, actionRowY);
     this.buttons.copy?.setPosition(centerX + 170 * uiScale, actionRowY);
-    this.buttons.tryAgain?.setPosition(centerX, height * 0.6);
-    this.buttons.enterBattle?.setPosition(centerX, height * 0.58);
-    this.buttons.backToMenu?.setPosition(centerX, height * 0.72);
+    this.buttons.tryAgain?.setPosition(centerX, compact ? primaryY : height * 0.6);
+    const enterY = compact ? primaryY : height * 0.58;
+    this.buttons.enterBattle?.setPosition(centerX, enterY);
+    this.buttons.backToMenu?.setPosition(centerX, enterY + buttonH + 24 * uiScale);
 
     this.positionTextarea();
   }
@@ -937,6 +962,18 @@ export class OnlineConnectionScene extends Phaser.Scene {
       /** SG-7：当前状态行文案（E2E 断言用户可见文本用） */
       get statusText(): string {
         return self.statusLine.text;
+      },
+      get textRects(): Record<'title' | 'status' | 'prompt', { top: number; bottom: number }> {
+        const ui = self.viewport.current.uiScale;
+        const rect = (text: Phaser.GameObjects.Text) => {
+          const bounds = text.getBounds();
+          return { top: bounds.top / ui, bottom: bounds.bottom / ui };
+        };
+        return {
+          title: rect(self.title),
+          status: rect(self.statusLine),
+          prompt: rect(self.promptLine),
+        };
       },
       get flow(): string {
         return self.useManualFlow() ? 'manual' : 'room';

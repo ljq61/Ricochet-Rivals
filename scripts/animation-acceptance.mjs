@@ -130,7 +130,10 @@ async function inspect(browser, mobile) {
   await waitForScene(page,'BattleScene');
   await waitFor(async()=> (await dbg(page)).phase==='ACTION',10000,'ACTION');
   const visuals = async()=> (await dbg(page)).artAnimation;
-  if(mobile) await page.touchscreen.touchStart(64,326); else await page.keyboard.down('d');
+  if(mobile) {
+    const move=(await dbg(page)).moveButtons.right;
+    await page.touchscreen.touchStart(move.x,move.y);
+  } else await page.keyboard.down('d');
   const frames = new Set();
   for(let i=0;i<8;i++) {
     await pause(80);
@@ -158,7 +161,10 @@ async function inspect(browser, mobile) {
   }
   await waitFor(async()=> (await dbg(page)).currentPlayerId==='P2' && (await dbg(page)).phase==='ACTION',10000,'P2 turn');
   await pause(800);
-  if(mobile) await page.touchscreen.touchStart(64,326); else await page.keyboard.down('a');
+  if(mobile) {
+    const move=(await dbg(page)).moveButtons.left;
+    await page.touchscreen.touchStart(move.x,move.y);
+  } else await page.keyboard.down('a');
   const redFrames=new Set();
   for(let i=0;i<6;i++) {
     await pause(80);
@@ -208,8 +214,9 @@ async function inspect(browser, mobile) {
   await page.screenshot({path:`${OUT_DIR}/${prefix}-small-fire.png`});
   await page.evaluate(()=>window.__RR_DEBUG__.setHp('P1',2)); await pause(250);
   const big=(await visuals()).filter(v=>v.key==='art-base-fire');
-  if(big.length!==6 || !big.some(v=>Number(v.frame)>=8) || !big.some(v=>Number(v.frame)<8)) throw new Error('Expected mixed small/large flames at HP2');
-  if(new Set(big.map(v=>v.y)).size<4 || Math.max(...big.map(v=>v.height))<200) throw new Error('Fire distribution/scale regression');
+  if(big.length!==5 || !big.some(v=>Number(v.frame)>=8) || !big.some(v=>Number(v.frame)<8)) throw new Error('Expected mixed small/large flames at HP2');
+  const tallest = Math.max(...big.map(v=>v.height));
+  if(new Set(big.map(v=>v.y)).size<4 || tallest<100 || tallest>170) throw new Error('Fire distribution/scale regression');
   await page.screenshot({path:`${OUT_DIR}/${prefix}-large-fire.png`});
   await page.evaluate(()=>window.__RR_DEBUG__.setHp('P1',10)); await pause(100);
   if((await visuals()).some(v=>v.key==='art-base-fire')) throw new Error('Fire did not clear on state recovery');

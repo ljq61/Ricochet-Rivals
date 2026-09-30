@@ -8,7 +8,6 @@ import { getUserSettings } from '../settings/UserSettings';
  */
 export const SFX = {
   launch: 'sfx-launch',
-  projectile: 'sfx-projectile',
   explosion: 'sfx-explosion',
   hit: 'sfx-hit',
   turn: 'sfx-turn',
@@ -22,7 +21,6 @@ export type SfxKey = (typeof SFX)[keyof typeof SFX];
 
 export const SFX_FILES = [
   [SFX.launch, 'launch.mp3'],
-  [SFX.projectile, 'projectile.mp3'],
   [SFX.explosion, 'explosion.mp3'],
   [SFX.hit, 'hit.mp3'],
   [SFX.turn, 'turn.mp3'],
@@ -34,7 +32,6 @@ export const SFX_FILES = [
 /** 首版音量基线（手感调参随试玩反馈迭代） */
 const SFX_VOLUME: Record<SfxKey, number> = {
   [SFX.launch]: 0.5,
-  [SFX.projectile]: 0.35,
   [SFX.explosion]: 0.6,
   [SFX.hit]: 0.5,
   [SFX.turn]: 0.4,
@@ -48,10 +45,7 @@ const SFX_VOLUME: Record<SfxKey, number> = {
  *
  * - UserSettings.soundEnabled 播放时门禁（主菜单 SOUND 开关即时生效）
  * - 素材缺失静默跳过（加载失败不炸 —— 与美术 Graphics 回退同原则）
- * - 全部音效单次播放：炮弹飞行口哨随发射播一次（真机实测循环版在
- *   desync 恢复清场路径下永不停止 —— clearInFlightSimulations 无
- *   impact 事件可停循环；且 Doppler 循环听感重复。用户拍板单次），
- *   不再维护循环句柄 —— 循环类 bug 连根去除
+ * - 全部音效单次播放；炮弹飞行保持安静，发射与命中各播一次
  * - 联机不双播：发射/爆炸均挂本地模拟事件（双端各播一次自己的），
  *   权威 TURN_RESULT 路径不重复触发音频
  * - 场景 SHUTDOWN：Phaser 随场景销毁声音管理器，无跨场景泄漏

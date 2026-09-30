@@ -73,19 +73,28 @@ export class OctopusTentacle {
       onUpdate: cropAtSea,
       onComplete: () => { sprite.setCrop(); },
     });
-    // Local foam around the root softens its cut edge without an opaque sea strip.
-    const ripple = this.scene.add.graphics().setPosition(cfg.x, cfg.baseY - 12).setDepth(-5);
-    ripple.fillStyle(0x176c94, 0.8).fillEllipse(0, 0, 190, 24);
-    ripple.lineStyle(4, 0x9bdfed, 0.8).strokeEllipse(0, 0, 205, 28);
-    ripple.lineStyle(2, 0xd8f7f7, 0.65).strokeEllipse(0, -2, 158, 16);
-    ripple.setScale(0.55).setAlpha(0);
-    this.scene.tweens.add({ targets: ripple, alpha: 0.85, scaleX: 1.15, scaleY: 1,
-      delay: 180, duration: 1200, ease: 'Sine.easeOut',
-      onComplete: () => {
-        this.scene.tweens.add({ targets: ripple, alpha: 0.5, scaleX: 0.95, scaleY: 0.75,
-          duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-      },
-    });
+    // 入水处用局部前景水面盖住素材的平直截边；泡沫沿不规则波峰，而非椭圆描边。
+    const wakeShadow = this.scene.add.graphics().setPosition(cfg.x, cfg.baseY - 2).setDepth(-7);
+    wakeShadow.fillStyle(0x063d6c, 0.55).fillEllipse(0, 0, 230, 38);
+    const waterFront = this.scene.add.graphics().setPosition(cfg.x, cfg.baseY - 8).setDepth(-5);
+    waterFront.fillStyle(0x125b8d, 0.48).fillEllipse(0, 4, 154, 21);
+    waterFront.fillStyle(0x1b75a6, 0.34)
+      .fillEllipse(-77, 5, 74, 10).fillEllipse(78, 5, 68, 10);
+    // 泡沫由断开的短笔触组成，避免在贴图海面上出现整块几何水色。
+    waterFront.lineStyle(2, 0xbce8ef, 0.72);
+    waterFront.lineBetween(-106, 0, -78, -4).lineBetween(-68, -3, -40, -8)
+      .lineBetween(-30, -7, -7, -12).lineBetween(8, -10, 34, -6)
+      .lineBetween(45, -7, 67, -4).lineBetween(80, -3, 105, 1);
+    waterFront.fillStyle(0xe7f7f2, 0.65)
+      .fillCircle(-82, -13, 3).fillCircle(-52, -18, 2)
+      .fillCircle(61, -17, 3).fillCircle(89, -11, 2);
+    wakeShadow.setAlpha(0);
+    waterFront.setAlpha(0);
+    this.scene.tweens.add({ targets: [wakeShadow, waterFront], alpha: 1,
+      duration: 500, delay: 100, ease: 'Sine.easeOut' });
+    this.scene.tweens.add({ targets: waterFront, scaleX: { from: 0.92, to: 1.04 },
+      scaleY: { from: 0.9, to: 1.05 }, duration: 1800, delay: 600,
+      yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     // 待机：16 帧细微卷曲叠加慢摆，下部主体保持稳定
     // 程序补 —— 底枢 ±1.4° 慢摆（origin(0.5,1) = 底部锚定，顶部 ±~19px）
     this.scene.tweens.add({

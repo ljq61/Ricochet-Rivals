@@ -207,6 +207,21 @@ async function inspect(browser, mobile) {
   await waitForScene(page, 'OnlineConnectionScene');
   await pause(300);
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-online.png` });
+  const onlineButtons = (await dbg(page)).buttons;
+  const enterGap = onlineButtons.backToMenu.y - onlineButtons.enterBattle.y
+    - (onlineButtons.backToMenu.height + onlineButtons.enterBattle.height) / 2;
+  if (enterGap < 16) throw new Error(`Online ENTER/BACK buttons too close: ${enterGap}px`);
+  await (mobile ? tapMenuButton : clickMenuButton)(page, 'join');
+  await pause(150);
+  await page.screenshot({ path: `${OUT_DIR}/${prefix}-online-join.png` });
+  const joinButtons = (await dbg(page)).buttons;
+  const inputRect = await page.evaluate(() => {
+    const rect = document.querySelector('#online-code-input')?.getBoundingClientRect();
+    return rect ? { top: rect.top, bottom: rect.bottom } : null;
+  });
+  if (!inputRect || inputRect.bottom + 10 > joinButtons.joinConfirm.y - joinButtons.joinConfirm.height / 2) {
+    throw new Error('Online room-code input overlaps JOIN action');
+  }
   if (errors.length) throw new Error(errors.join('\n'));
   console.log(`${prefix}: aim enter/cancel/fire/impact/HP/sea miss/result/online passed, no page errors`);
   await page.close();
@@ -216,7 +231,37 @@ async function main() {
   PORT = 4336; URL = `http://127.0.0.1:${PORT}/`;
   await startPreview();
   const browser = await puppeteer.launch({ executablePath: findChrome(), headless: true });
-  try { await inspect(browser, false); await inspect(browser, true); }
+  try {
+    await inspect(browser, false);
+    await inspect(browser, true);
+    for (const [width, height] of [[667, 320], [780, 360], [900, 520]]) {
+      const page = await browser.newPage();
+      await page.setViewport({ width, height, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+      await page.goto(URL, { waitUntil: 'load' });
+      await waitForScene(page, 'MainMenuScene');
+      await tapMenuButton(page, 'online');
+      await waitForScene(page, 'OnlineConnectionScene');
+      const initial = await dbg(page);
+      const createTop = initial.buttons.create.y - initial.buttons.create.height / 2;
+      if (createTop < initial.textRects.status.bottom + 12 ||
+          initial.buttons.join.y + initial.buttons.join.height / 2 > height - 8) {
+        throw new Error(`Online buttons overlap copy or viewport at ${width}x${height}`);
+      }
+      await tapMenuButton(page, 'join');
+      await pause(100);
+      const joined = await dbg(page);
+      const input = await page.evaluate(() => {
+        const r = document.querySelector('#online-code-input')?.getBoundingClientRect();
+        return r ? { top: r.top, bottom: r.bottom } : null;
+      });
+      if (!input || input.top < joined.textRects.prompt.bottom + 8 ||
+          input.bottom + 10 > joined.buttons.joinConfirm.y - joined.buttons.joinConfirm.height / 2) {
+        throw new Error(`Online JOIN layout overlaps at ${width}x${height}`);
+      }
+      await page.screenshot({ path: `${OUT_DIR}/mobile-online-join-${width}x${height}.png` });
+      await page.close();
+    }
+  }
   finally { await browser.close(); server?.kill('SIGTERM'); }
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });

@@ -747,9 +747,10 @@ async function runMobile(browser) {
     `Δ=${(afterCam - beforeCam).toFixed(1)}`
   );
 
-  // 2. 按住 ◀ 移动按钮（大号触控，位于左下）
+  // 2. 按住 ◀ 移动按钮（跟随当前基地；点击画面实际显示位置）
   const xBefore = (await dbg(page)).players.P1;
-  await page.touchscreen.touchStart(64, 326);
+  const moveLeft = (await dbg(page)).moveButtons.left;
+  await page.touchscreen.touchStart(moveLeft.x, moveLeft.y);
   await sleep(500);
   await page.touchscreen.touchEnd();
   await sleep(100);
@@ -997,11 +998,12 @@ async function runMobile(browser) {
   // 双指各按 ◀/▶（synthetic PointerEvent 多指：CDP 单点 API 无法真双指；
   // client 坐标经 InputRouter 归一化到画布空间，与真实触摸同链路）
   const m0 = (await dbg(vp)).players.P1;
-  await vp.evaluate(() => {
+  const twoFingerButtons = (await dbg(vp)).moveButtons;
+  await vp.evaluate(({ left, right }) => {
     const c = document.querySelector('canvas');
-    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 41, pointerType: 'touch', clientX: 64, clientY: 366, bubbles: true }));
-    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 42, pointerType: 'touch', clientX: 164, clientY: 366, bubbles: true }));
-  });
+    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 41, pointerType: 'touch', clientX: left.x, clientY: left.y, bubbles: true }));
+    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 42, pointerType: 'touch', clientX: right.x, clientY: right.y, bubbles: true }));
+  }, twoFingerButtons);
   await sleep(500);
   const m1 = (await dbg(vp)).players.P1;
   check(
