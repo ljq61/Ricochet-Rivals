@@ -414,4 +414,18 @@ describe('SignalingClient', () => {
     h.ws.serverSend(frame({ type: 'PEER_JOINED' }));
     expect(seenMessages).toContain('PEER_JOINED');
   });
+
+  it('15. joinRoom peerToken 透传（reconnect identity 载体）：有则上帧、无则不落键', async () => {
+    const h = makeHarness();
+    await dialed(h);
+    h.client.joinRoom('K7M4Q2', 'my-old-token');
+    const withToken = h.ws.sentFrames()[0] as { peerToken?: unknown };
+    expect(withToken.peerToken).toBe('my-old-token');
+
+    const h2 = makeHarness();
+    await dialed(h2);
+    h2.client.joinRoom('K7M4Q2');
+    const withoutToken = h2.ws.sentFrames()[0] as { peerToken?: unknown };
+    expect('peerToken' in withoutToken).toBe(false);
+  });
 });

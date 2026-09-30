@@ -68,13 +68,17 @@ export function isSignalingErrorCode(code: string): code is SignalingErrorCode {
 /** Client → Server */
 export type SignalingOutboundMessage =
   | { readonly type: 'CREATE_ROOM' }
-  | { readonly type: 'JOIN_ROOM'; readonly roomCode: string }
+  | { readonly type: 'JOIN_ROOM'; readonly roomCode: string; readonly peerToken?: string }
   | { readonly type: 'OFFER'; readonly sdp: string }
   | { readonly type: 'ANSWER'; readonly sdp: string }
   | { readonly type: 'ICE_CANDIDATE'; readonly candidate: SignalingIceCandidate }
   | { readonly type: 'ICE_END' };
 
-/** Server → Client（OFFER/ANSWER/ICE_* 为 Server 向房间内对端的转发） */
+/**
+ * Server → Client（OFFER/ANSWER/ICE_* 为 Server 向房间内对端的转发）。
+ * ROOM_CREATED/ROOM_JOINED 的 peerToken 是本端重连身份锚点（SG-2 reconnect
+ * identity：WS 掉线后持 token 重新 JOIN_ROOM，grace 窗口内原位恢复）。
+ */
 export type SignalingInboundMessage =
   | {
       readonly type: 'ROOM_CREATED';
@@ -108,6 +112,15 @@ const INBOUND_TYPES: ReadonlySet<string> = new Set([
   'ICE_END',
   'PEER_LEFT',
   'ERROR',
+]);
+
+const OUTBOUND_TYPES: ReadonlySet<string> = new Set([
+  'CREATE_ROOM',
+  'JOIN_ROOM',
+  'OFFER',
+  'ANSWER',
+  'ICE_CANDIDATE',
+  'ICE_END',
 ]);
 
 // ---- 运行时守卫（Untrusted Input 防线零件） ---------------------------------
@@ -194,6 +207,55 @@ export function encodeSignalingMessage(message: SignalingOutboundMessage): strin
     case 'CREATE_ROOM':
     case 'JOIN_ROOM':
     case 'ICE_END':
+      break;
+  }
+  if (message.type === 'JOIN_ROOM' && message.peerToken !== undefined && message.peerToken.length === 0) {
+    throw new Error('[SignalingMessage] JOIN_ROOM peerToken must be non-empty when present');
+  }
+  return JSON.stringify({ v: SIGNALING_PROTOCOL_VERSION, ...message });
+}
+
+/**
+ * Server 侧出口（SG-2）：编码 Server → Client 帧（ack / 事件 / 转发）。
+ * 与 encodeSignalingMessage 对称 —— 入参是服务器内部类型化数据，运行期
+ * 形状违反契约即 throw（本层 bug）。
+ */
+export function encodeSignalingInboundMessage(message: SignalingInboundMessage): string {
+  switch (message.type) {
+    case 'ROOM_CREATED':
+    case 'ROOM_JOINED':
+      if (!isValidRoomCode(message.roomCode)) {
+        throw new Error(`[SignalingMessage] ${message.type} roomCode invalid: '${message.roomCode}'`);
+      }
+      if (message.peerToken.length === 0) {
+        throw new Error(`[SignalingMessage] ${message.type} peerToken must be non-empty`);
+      }
+      if (message.iceServers.length === 0) {
+        throw new Error(`[SignalingMessage] ${message.type} iceServers must be non-empty`);
+      }
+      if (!Number.isFinite(message.expiresAt)) {
+        throw new Error(`[SignalingMessage] ${message.type} expiresAt must be finite`);
+      }
+      break;
+    case 'OFFER':
+    case 'ANSWER':
+      if (message.sdp.length === 0) {
+        throw new Error(`[SignalingMessage] ${message.type} sdp must be non-empty`);
+      }
+      break;
+    case 'ICE_CANDIDATE':
+      if (!isSignalingIceCandidate(message.candidate)) {
+        throw new Error('[SignalingMessage] ICE_CANDIDATE candidate malformed');
+      }
+      break;
+    case 'PEER_JOINED':
+    case 'ICE_END':
+    case 'PEER_LEFT':
+      break;
+    case 'ERROR':
+      if (message.code.length === 0) {
+        throw new Error('[SignalingMessage] ERROR code must be non-empty');
+      }
       break;
   }
   return JSON.stringify({ v: SIGNALING_PROTOCOL_VERSION, ...message });
@@ -297,3 +359,71 @@ function decodeRoomAck(
   }
   return { ok: true, message: { type, roomCode, peerToken, iceServers, expiresAt } };
 }
+
+/**
+ * Server 侧入口（SG-2）：解码 Client → Server 帧。
+ * 与 decodeSignalingMessage 对称的 Untrusted Input 防线 —— 客户端发送的
+ * 文本帧是服务器视角的外部输入，全部 Result 双轨，永不 throw。
+ * JOIN_ROOM 的 peerToken 可选（reconnect identity；缺席 = 新入房）。
+ */
+export function decodeSignalingOutboundMessage(raw: string): DecodeSignalingOutboundMessageResult {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return { ok: false, reason: 'EMPTY' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: 'NOT_JSON' };
+  }
+  if (!isRecord(parsed)) {
+    return { ok: false, reason: 'NOT_OBJECT' };
+  }
+  if (parsed.v !== SIGNALING_PROTOCOL_VERSION) {
+    return { ok: false, reason: 'UNSUPPORTED_VERSION' };
+  }
+  const type = parsed.type;
+  if (typeof type !== 'string' || !OUTBOUND_TYPES.has(type)) {
+    return { ok: false, reason: 'UNKNOWN_TYPE' };
+  }
+  switch (type) {
+    case 'CREATE_ROOM':
+      return { ok: true, message: { type: 'CREATE_ROOM' } };
+    case 'JOIN_ROOM': {
+      const roomCode = parsed.roomCode;
+      if (!isNonEmptyString(roomCode)) {
+        return { ok: false, reason: 'INVALID_PAYLOAD', detail: 'JOIN_ROOM' };
+      }
+      const peerToken = parsed.peerToken;
+      if (peerToken !== undefined && !isNonEmptyString(peerToken)) {
+        return { ok: false, reason: 'INVALID_PAYLOAD', detail: 'JOIN_ROOM' };
+      }
+      return peerToken === undefined
+        ? { ok: true, message: { type: 'JOIN_ROOM', roomCode } }
+        : { ok: true, message: { type: 'JOIN_ROOM', roomCode, peerToken } };
+    }
+    case 'OFFER':
+    case 'ANSWER': {
+      const sdp = parsed.sdp;
+      if (!isNonEmptyString(sdp)) {
+        return { ok: false, reason: 'INVALID_PAYLOAD', detail: type };
+      }
+      return { ok: true, message: { type, sdp } };
+    }
+    case 'ICE_CANDIDATE': {
+      const candidate = parsed.candidate;
+      if (!isSignalingIceCandidate(candidate)) {
+        return { ok: false, reason: 'INVALID_PAYLOAD', detail: 'ICE_CANDIDATE' };
+      }
+      return { ok: true, message: { type: 'ICE_CANDIDATE', candidate } };
+    }
+    case 'ICE_END':
+      return { ok: true, message: { type: 'ICE_END' } };
+    default:
+      return { ok: false, reason: 'UNKNOWN_TYPE' };
+  }
+}
+
+export type DecodeSignalingOutboundMessageResult =
+  | { ok: true; message: SignalingOutboundMessage }
+  | { ok: false; reason: SignalingDecodeRejectReason; detail?: string };

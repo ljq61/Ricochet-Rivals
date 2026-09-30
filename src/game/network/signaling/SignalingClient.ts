@@ -254,8 +254,10 @@ export class SignalingClient {
     this.sendFrame({ type: 'CREATE_ROOM' });
   }
 
-  /** Guest：加入房间（输入经 normalize；非法码拒绝于本端，零帧发出） */
-  joinRoom(roomCode: string): void {
+  /** Guest：加入房间（输入经 normalize；非法码拒绝于本端，零帧发出）。
+   *  peerToken（可选）：重连身份 —— 上次会话的 token，Server 在 grace 窗口内
+   *  原位恢复（SG-2 reconnect identity / SG-8 ICE restart 重信令）。 */
+  joinRoom(roomCode: string, peerToken?: string): void {
     this.requireSocketOpen('joinRoom');
     if (this.clientState !== SignalingClientState.CONNECTED) {
       throw new SignalingError(
@@ -270,7 +272,7 @@ export class SignalingClient {
         `[SignalingClient] room code rejected: '${roomCode}' → '${normalized}'`,
       );
     }
-    this.sendFrame({ type: 'JOIN_ROOM', roomCode: normalized });
+    this.sendFrame({ type: 'JOIN_ROOM', roomCode: normalized, peerToken });
   }
 
   // ---- 协商帧转发（Trickle ICE；SG-3 RoomConnectionController 消费） -------

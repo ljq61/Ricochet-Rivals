@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
-> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 Signaling 协议 + SignalingClient ✅（2026-09-30，test 525/525）；SG-2 起待做。详见「Online Connection Migration」章节。**
+> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 Signaling 协议 + SignalingClient ✅ / SG-2 Signaling Server ✅（2026-09-30，server 25/25 + 根 529/529）；SG-3 起待做。详见「Online Connection Migration」章节。**
 > 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；Phase 18 agent 侧 + P3 修复后 `npm run e2e` 全量 **147 passed / 0 failed**（含 932×430@DPR3 移动段 17 项；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
@@ -2303,15 +2303,80 @@ Signaling Server 部署 host 待 SG-2 后定（本地 Node WS server 先行）�
 验证（2026-09-30）：typecheck ✅ / test **525/525** ✅ / build ✅
 （SG-1 纯新增模块未触 UI/Gameplay —— E2E 留待 SG-5 UI 集成时全量回归）
 
+## SG-2 Signaling Server ✅（2026-09-30）
+
+独立 workspace `server/signaling/`（Node 22 + TS + `ws`，与客户端零耦合：协议契约
+直接 import `src/game/network/signaling/SignalingMessage.ts` —— 单一事实源；server
+tsconfig 无 DOM lib 依赖；根 typecheck/test 不含 server，server 自带 `typecheck` /
+`test` 命令）。**WebSocket 只做 Signaling**（房间配对 / SDP / ICE 转发），零 Gameplay
+状态（架构红线）。
+
+共享协议扩展（SG-2a，根工程测试 525 → 529）：
+
+- [x] `decodeSignalingOutboundMessage`（Server 收 Client 帧的 Untrusted Input 防线，
+      与入站 decode 对称的 Result 双轨）
+- [x] `encodeSignalingInboundMessage`（Server 出口：ack/事件/转发帧编码 + 契约校验）
+- [x] `JOIN_ROOM` 可选 `peerToken`（reconnect identity 载体）；`SignalingClient.joinRoom
+      (roomCode, peerToken?)` 透传（SG-8 ICE restart 重信令复用同一入口）
+
+服务端实现（`server/signaling/src/`）：
+
+- [x] `socket.ts` — `SignalingSocket` 最小 surface（ws 适配 / 测试 fake 注入）+ `RoomRole`
+- [x] `serverConfig.ts` — env fail-fast 配置：PORT / SIGNALING_WAITING_TTL_MS（默认
+      10min，规格 5~10min）/ SIGNALING_SLOT_GRACE_MS（30s 重连窗）/
+      SIGNALING_SWEEP_INTERVAL_MS / SIGNALING_ICE_SERVERS（JSON 注入；SG-6 换 coturn
+      动态凭据，secret 永不入仓库）
+- [x] `SignalingRoom.ts` — host/guest 双槽位实体：waiting 截止 / 断开保留期 / 槽位
+      释放 / peerOf 转发寻址 / 删除判定（waiting-expired · host-grace-elapsed）
+- [x] `RoomManager.ts` — 注册表：crypto 随机 6 位码（防枚举；碰撞重试）+
+      randomUUID token；joinRoom 校验矩阵 + token resume；sweep（惰性 + 周期）；
+      now / 码 / token 生成器全注入（FakeClock 直测，无 fake timers）
+- [x] `SignalingRoomServer.ts` — 分发核心：绑定表 / CREATE_ROOM / JOIN_ROOM（成功 →
+      ROOM_JOINED + 对端 PEER_JOINED）/ relay 转发 / PEER_LEFT / ERROR 回执 /
+      runSweep 删房通知；duplicate join（已绑定 socket 再 CREATE/JOIN）→
+      INVALID_MESSAGE
+- [x] `bootstrap.ts` + `index.ts` — ws 接线（二进制帧丢弃）+ 周期 sweep + 优雅退出；
+      port:0 可测（集成测试用）
+
+语义决策（Host = 房间锚点，呼应 Host Authoritative 架构）：
+
+- **角色由动作固化**：CREATE_ROOM = Host = P1 / JOIN_ROOM = Guest = P2，协议无角色
+  声明字段 → 结构性杜绝 Guest 自称 Host；token 不匹配槽位一律按新 join 走占用检查
+- **token resume**：断开后持 token 重入原位恢复（grace 30s）；槽位连接中同 token
+  声明 → ROOM_FULL（双开 / 劫持保护）；guest 槽超窗释放后原 token 失效（新 join 新
+  token）；host 槽在房间存续期不释放（host token 可随时 resume）
+- **Host 断开**：对端即时 PEER_LEFT；grace 内可 resume；超窗房间删除（新 guest join
+  无主房间 → ROOM_EXPIRED 'host disconnected'）
+- **PEER_LEFT 发送时序**：peer 解析必须在 detach 之前（detach 后 socket 已离槽，
+  peerOf 无从定位对端 —— 实测 bug 修复，RoomServer 测试 7/8 守住）
+
+测试（`server/signaling/tests/`，**25/25** ✅）：
+
+- [x] `RoomManager.test.ts`（11）：create（200 次唯一）/ 码碰撞重试 / join + token /
+      INVALID_ROOM_CODE vs ROOM_NOT_FOUND / ROOM_FULL / waiting 过期惰性删 / sweep
+      选择性删除 / 席位保留 + 超窗顶替 / guest·host 双向 resume / token 防劫持
+      （双开 ROOM_FULL）/ host 断开矩阵
+- [x] `SignalingRoomServer.test.ts`（12）：ROOM_CREATED ack 字段 / JOIN 双 ack +
+      PEER_JOINED / malformed 四类 → INVALID_MESSAGE 且连接存活 / duplicate join
+      双向 / relay 四类帧双向不回声 / NOT_IN_ROOM / PEER_LEFT + 静默丢弃 / resume
+      端到端 / 房间隔离 / join 三错码矩阵 / sweep → ERROR ROOM_EXPIRED + 解绑 /
+      EMPTY 帧
+- [x] `Integration.test.ts`（2，真实 node:ws port:0）：create → join → 四类帧
+      relay → PEER_LEFT 全链路 + ROOM_NOT_FOUND 回环
+
+验证（2026-09-30）：server typecheck ✅ / server test **25/25** ✅ / 根 typecheck ✅ /
+根 test **529/529** ✅ / 根 build ✅ / `tsx src/index.ts` 冒烟（监听日志 + 退出）✅
+
 ## 待办（后续 Stage）
 
-- SG-2 Signaling Server（Node + TS + ws）：房间生命周期 / peerToken / TTL 5~10min /
-  房间码生成（共享 RoomCode alphabet）/ 双人上限 / Host=P1 Guest=P2 角色固化 /
-  服务端测试矩阵（create/join/invalid/full/expiry/peer leave/offer-answer-candidate
-  relay/malformed/duplicate join/reconnect identity）
-- SG-3 RoomConnectionController（复用 OnlineConnectionController 的验证/交接语义）
-- SG-4 WebRTCTransport Trickle 改造 + SG-5 Room Connection UI + SG-6 TURN/coturn
-  + SG-7 失败 UX + SG-8 ICE Restart
+- SG-3 RoomConnectionController（自动 SDP 编排：Scene → Controller → SignalingClient +
+  WebRTCTransport；复用 OnlineConnectionController 的 PING/PONG 验证与 OnlineSession
+  交接 / detach 语义）
+- SG-4 WebRTCTransport Trickle 改造（onIceCandidate / addIceCandidate + pending 队列 /
+  不等待 gathering）+ SG-5 Room Connection UI（Room Code 显示 / JOIN 输入 / DEBUG
+  门控 manual SDP fallback）+ SG-6 TURN/coturn 动态凭据 + SG-7 失败分类 UX +
+  SG-8 ICE Restart
+- 部署 host（公网 WSS）与 coturn 落地待 SG-6 阶段定
 
 ---
 

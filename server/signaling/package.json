@@ -1,0 +1,24 @@
+{
+  "name": "ricochet-rivals-signaling",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Ricochet Rivals — WebSocket Signaling Server (room pairing / SDP / ICE relay only; gameplay runs on WebRTC DataChannel)",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,17 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
   decodeSignalingMessage,
+  decodeSignalingOutboundMessage,
+  encodeSignalingInboundMessage,
   encodeSignalingMessage,
   isSignalingErrorCode,
   SIGNALING_ERROR_CODES,
   SIGNALING_PROTOCOL_VERSION,
   type SignalingInboundMessage,
+  type SignalingOutboundMessage,
 } from '../../../src/game/network/signaling/SignalingMessage';
 
 /**
- * SignalingMessage（SG-1）—— 信令协议编解码契约。
+ * SignalingMessage（SG-1/SG-2）—— 信令协议编解码契约。
  * * wire：{ v: 1, type, ...payload } JSON 文本帧。
- * * decode 是 Untrusted Input 防线：全部 Result 双轨，永不 throw。
+ * * 双向 decode 是 Untrusted Input 防线：全部 Result 双轨，永不 throw
+ *   （decodeSignalingMessage = Server→Client 方向；decodeSignalingOutboundMessage
+ *   = Client→Server 方向，SG-2 Signaling Server 消费）。
  * * 结构化 ICE 类型对 DOM 同名类型可赋值（编译期断言，见 4）。
  */
 
@@ -227,5 +232,107 @@ describe('SignalingMessage', () => {
       expect(decoded.reason).toBe('INVALID_PAYLOAD');
       expect(decoded.detail).toBe(detail);
     }
+  });
+
+  it('8. 出站方向 decode（Server 侧）：全类型往返 + peerToken 可选', () => {
+    const cases: Array<{ raw: string; expected: SignalingOutboundMessage }> = [
+      { raw: frame({ type: 'CREATE_ROOM' }), expected: { type: 'CREATE_ROOM' } },
+      {
+        raw: frame({ type: 'JOIN_ROOM', roomCode: 'K7M4Q2' }),
+        expected: { type: 'JOIN_ROOM', roomCode: 'K7M4Q2' },
+      },
+      {
+        raw: frame({ type: 'JOIN_ROOM', roomCode: 'K7M4Q2', peerToken: 'host-token' }),
+        expected: { type: 'JOIN_ROOM', roomCode: 'K7M4Q2', peerToken: 'host-token' },
+      },
+      { raw: frame({ type: 'OFFER', sdp: 'offer-sdp' }), expected: { type: 'OFFER', sdp: 'offer-sdp' } },
+      {
+        raw: frame({ type: 'ANSWER', sdp: 'answer-sdp' }),
+        expected: { type: 'ANSWER', sdp: 'answer-sdp' },
+      },
+      {
+        raw: frame({ type: 'ICE_CANDIDATE', candidate: { candidate: 'candidate:1 1 UDP 1 10.0.0.9 55555 typ relay' } }),
+        expected: {
+          type: 'ICE_CANDIDATE',
+          candidate: { candidate: 'candidate:1 1 UDP 1 10.0.0.9 55555 typ relay' },
+        },
+      },
+      { raw: frame({ type: 'ICE_END' }), expected: { type: 'ICE_END' } },
+    ];
+    for (const { raw, expected } of cases) {
+      const decoded = decodeSignalingOutboundMessage(raw);
+      expect(decoded.ok).toBe(true);
+      if (!decoded.ok) return;
+      expect(decoded.message).toEqual(expected);
+    }
+
+    // encode 侧：peerToken 存在时上帧；undefined 不落帧
+    const withToken = JSON.parse(encodeSignalingMessage({ type: 'JOIN_ROOM', roomCode: 'K7M4Q2', peerToken: 'tok' })) as Record<string, unknown>;
+    expect(withToken.peerToken).toBe('tok');
+    const withoutToken = JSON.parse(encodeSignalingMessage({ type: 'JOIN_ROOM', roomCode: 'K7M4Q2' })) as Record<string, unknown>;
+    expect('peerToken' in withoutToken).toBe(false);
+    expect(() => encodeSignalingMessage({ type: 'JOIN_ROOM', roomCode: 'K7M4Q2', peerToken: '' })).toThrow();
+  });
+
+  it('9. 出站方向 decode（Server 侧）：拒绝矩阵 + 入站类型回环拒绝', () => {
+    const cases: Array<{ raw: string; reason: string }> = [
+      { raw: '', reason: 'EMPTY' },
+      { raw: '  ', reason: 'EMPTY' },
+      { raw: '{bad json', reason: 'NOT_JSON' },
+      { raw: 'null', reason: 'NOT_OBJECT' },
+      { raw: '[]', reason: 'NOT_OBJECT' },
+      { raw: JSON.stringify({ v: 2, type: 'CREATE_ROOM' }), reason: 'UNSUPPORTED_VERSION' },
+      { raw: JSON.stringify({ type: 'CREATE_ROOM' }), reason: 'UNSUPPORTED_VERSION' },
+      { raw: JSON.stringify({ v: 1, type: 'ROOM_CREATED' }), reason: 'UNKNOWN_TYPE' }, // 入站类型不得发向 Server
+      { raw: JSON.stringify({ v: 1, type: 'PEER_JOINED' }), reason: 'UNKNOWN_TYPE' },
+      { raw: JSON.stringify({ v: 1 }), reason: 'UNKNOWN_TYPE' },
+      { raw: frame({ type: 'JOIN_ROOM' }), reason: 'INVALID_PAYLOAD' }, // 缺 roomCode
+      { raw: frame({ type: 'JOIN_ROOM', roomCode: 42 }), reason: 'INVALID_PAYLOAD' },
+      { raw: frame({ type: 'JOIN_ROOM', roomCode: 'K7M4Q2', peerToken: '' }), reason: 'INVALID_PAYLOAD' },
+      { raw: frame({ type: 'JOIN_ROOM', roomCode: 'K7M4Q2', peerToken: 3 }), reason: 'INVALID_PAYLOAD' },
+      { raw: frame({ type: 'OFFER', sdp: '' }), reason: 'INVALID_PAYLOAD' },
+      { raw: frame({ type: 'ICE_CANDIDATE', candidate: 'not-an-object' }), reason: 'INVALID_PAYLOAD' },
+    ];
+    for (const { raw, reason } of cases) {
+      const decoded = decodeSignalingOutboundMessage(raw);
+      expect(decoded.ok).toBe(false);
+      if (decoded.ok) continue;
+      expect(decoded.reason).toBe(reason);
+    }
+  });
+
+  it('10. 入站方向 encode（Server 侧出口）：全类型落帧 + 契约违规 throw', () => {
+    const cases: SignalingInboundMessage[] = [
+      { type: 'ROOM_CREATED', roomCode: 'K7M4Q2', peerToken: 't', iceServers: ICE_SERVERS, expiresAt: 123 },
+      { type: 'ROOM_JOINED', roomCode: 'K7M4Q2', peerToken: 't', iceServers: ICE_SERVERS, expiresAt: 123 },
+      { type: 'PEER_JOINED' },
+      { type: 'OFFER', sdp: 'offer-sdp' },
+      { type: 'ANSWER', sdp: 'answer-sdp' },
+      { type: 'ICE_CANDIDATE', candidate: { candidate: 'candidate:1 1 UDP 1 1.2.3.4 9999 typ host' } },
+      { type: 'ICE_END' },
+      { type: 'PEER_LEFT' },
+      { type: 'ERROR', code: 'ROOM_FULL', message: 'full' },
+    ];
+    for (const message of cases) {
+      const parsed = JSON.parse(encodeSignalingInboundMessage(message)) as Record<string, unknown>;
+      expect(parsed.v).toBe(SIGNALING_PROTOCOL_VERSION);
+      // encode → decode 闭环（出站侧 encode + 入站侧 decode 互为 oracle）
+      const decoded = decodeSignalingMessage(encodeSignalingInboundMessage(message));
+      expect(decoded.ok).toBe(true);
+      if (!decoded.ok) return;
+      expect(decoded.message).toEqual(message);
+    }
+
+    expect(() =>
+      encodeSignalingInboundMessage({ type: 'ROOM_CREATED', roomCode: 'BAD!', peerToken: 't', iceServers: ICE_SERVERS, expiresAt: 1 }),
+    ).toThrow();
+    expect(() =>
+      encodeSignalingInboundMessage({ type: 'ROOM_JOINED', roomCode: 'K7M4Q2', peerToken: '', iceServers: ICE_SERVERS, expiresAt: 1 }),
+    ).toThrow();
+    expect(() =>
+      encodeSignalingInboundMessage({ type: 'ROOM_CREATED', roomCode: 'K7M4Q2', peerToken: 't', iceServers: [], expiresAt: 1 }),
+    ).toThrow();
+    expect(() => encodeSignalingInboundMessage({ type: 'OFFER', sdp: '' })).toThrow();
+    expect(() => encodeSignalingInboundMessage({ type: 'ERROR', code: '' })).toThrow();
   });
 });
