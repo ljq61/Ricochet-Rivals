@@ -926,7 +926,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.connect?.setPosition(centerX - 160 * uiScale, actionRowY);
     this.buttons.createResponse?.setPosition(centerX, actionRowY);
     this.buttons.joinConfirm?.setPosition(centerX, actionRowY);
-    this.buttons.copy?.setPosition(centerX + 170 * uiScale, actionRowY);
+    this.buttons.copy?.setPosition(centerX + (this.useManualFlow() ? 170 : 0) * uiScale, actionRowY);
     this.buttons.tryAgain?.setPosition(centerX, compact ? primaryY : height * 0.6);
     const enterY = compact ? primaryY : height * 0.58;
     this.buttons.enterBattle?.setPosition(centerX, enterY);

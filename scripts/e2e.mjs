@@ -2183,7 +2183,14 @@ async function runOnlineRoom(browser) {
 
     // 手机分享：后台 WS 关闭超过配对后的 grace，回前台仍恢复同一等待房间。
     // 仅变尺寸/DPR，避免 Puppeteer 切换 isMobile 导致整页重载丢失测试房间。
+    await pageHost.bringToFront();
     await pageHost.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
+    const mobileCopy = await waitFor(pageHost, async () => {
+      const rect = (await dbg(pageHost)).buttons.copy;
+      return rect.x - rect.width / 2 >= 0 && rect.x + rect.width / 2 <= 390 ? rect : null;
+    }, 3000, '手机尺寸重排后的 COPY 边界');
+    check('手机竖屏 COPY 完整位于视口内',
+      mobileCopy.x - mobileCopy.width / 2 >= 0 && mobileCopy.x + mobileCopy.width / 2 <= 390);
     const previousSocketCount = await pageHost.evaluate(() => {
       window.__RR_E2E_VISIBILITY__ = 'hidden';
       Object.defineProperty(document, 'visibilityState', {
