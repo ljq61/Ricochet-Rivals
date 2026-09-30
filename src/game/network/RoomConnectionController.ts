@@ -576,9 +576,20 @@ export class RoomConnectionController {
       transport,
       networkManager: manager,
       signaling,
+      recovery:
+        this.roomCode !== null && this.peerToken !== null
+          ? { roomCode: this.roomCode, peerToken: this.peerToken }
+          : undefined,
     };
     // 所有权移交：session（含 signaling）归 SessionManager dispose 链；
-    // 本控制器此后只余 detach 语义，destroyAttempt 不得再触碰已交接资源
+    // 本控制器此后只余 detach 语义，destroyAttempt 不得再触碰已交接资源。
+    // 撤掉控制器自有订阅（signaling 帧 / 失败 / trickle 外发 / 验证 PONG、
+    // 断线）：全部是流程期关注点，交出后为 no-op 语义；不撤则 VERIFIED 后
+    // 对 restart 帧（SG-8 恢复交换）输出误导性 warn，且恢复控制器无法独占
+    // 信令帧处理。manager 生命周期订阅归 coordinator / SessionManager。
+    for (const cancel of this.cancels) {
+      cancel();
+    }
     this.signaling = null;
     this.transport = null;
     this.manager = null;

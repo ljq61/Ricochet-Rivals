@@ -48,6 +48,10 @@ import {
   ONLINE_SESSION_MANAGER_KEY,
   type OnlineSessionManager,
 } from '../network/OnlineSession';
+import { RoomRecoveryController } from '../network/RoomRecoveryController';
+import { SignalingClient } from '../network/signaling/SignalingClient';
+import { resolveSignalingUrl } from '../network/signaling/signalingUrl';
+import { WebRTCTransport } from '../network/WebRTCTransport';
 
 /**
  * 战斗场景（CODELY.md §3）。
@@ -134,6 +138,11 @@ export class BattleScene extends Phaser.Scene {
   private handedToResult = false;
   /** 断线后的返回菜单按钮（懒创建） */
   private disconnectButton: MenuButton | null = null;
+  /**
+   * SG-8：对局期连接恢复（限次 ICE restart）。Room 流 session 才装配；
+   * Manual debug / 离线 = null（沿用即时 OPPONENT DISCONNECTED 旧 UX）。
+   */
+  private roomRecovery: RoomRecoveryController | null = null;
   /** COMMAND_REJECTED 轻量提示防刷屏 */
   private lastRejectedToastMs = 0;
   /** 相机/回合流事件环形日志（E2E 排查 aim/transition 时序用） */
@@ -172,6 +181,7 @@ export class BattleScene extends Phaser.Scene {
     //   bannerTurnKey / bannerGameOverShown —— 横幅去重 / 转场单次守卫状态
     //   disconnectButton / connectionLost / lastRejectedToastMs —— Phase 14
     //   联机专属条件状态（联机局结束后转离线必须清）
+    //   roomRecovery —— SG-8 恢复控制器（旧实例已在 onShutdown dispose）
     this.aiInput = null;
     this.touchControls = null;
     this.bannerTurnKey = null;
@@ -181,6 +191,7 @@ export class BattleScene extends Phaser.Scene {
     this.syncFailed = false;
     this.handedToResult = false;
     this.disconnectButton = null;
+    this.roomRecovery = null;
     this.lastRejectedToastMs = 0;
   }
 
@@ -259,6 +270,8 @@ export class BattleScene extends Phaser.Scene {
         },
       });
       this.online.startKeepAlive();
+      // SG-8：Room 流装配对局期连接恢复（ICE restart；Manual debug = null）
+      this.roomRecovery = this.createRoomRecovery();
     }
     // Phase 7：爆炸结算链（Projectile 不直接改 HP）。
     // 联机 Guest 注入 calculate-only 伤害系统 —— 本地 HP 只经
@@ -765,10 +778,85 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * 通道中断：冻结输入 + 持久横幅 + 返回菜单入口（无重连 ——
-   * 复杂 reconnect 属 Phase 15+；对局结束后的正常关闭已被协调器抑制）。
+   * 通道中断路由（SG-8）：网络断族丢失（connectionState failed 等）且
+   * Room 流可恢复 → 限次 ICE restart；其余（对端主动离场 / Manual debug /
+   * 恢复耗尽）→ 既有终局 UX。对局结束后的正常关闭已被协调器抑制。
    */
   private handleOnlineDisconnected(): void {
+    if (this.connectionLost) {
+      return;
+    }
+    const recovery = this.roomRecovery;
+    if (recovery !== null && recovery.shouldAttempt()) {
+      void this.beginOnlineRecovery(recovery);
+      return;
+    }
+    this.showOpponentLostUi();
+  }
+
+  /**
+   * SG-8 限次恢复：RECONNECTING 横幅 + 输入冻结 + Host ACK 阶梯挂起 →
+   * attemptRecovery()（重信令按需 + restart 交换 + PONG 验证，限 3 轮）。
+   * 成功 ≠ 状态一致 —— 对账一律走 Phase 15 既有链
+   *（requestPostReconnectSync → STATE_SYNC_REQUEST(CONNECTION_RECOVERED)
+   * → 权威快照恢复）；耗尽 → 终局 UX。
+   */
+  private async beginOnlineRecovery(recovery: RoomRecoveryController): Promise<void> {
+    this.controls.setEnabled(false);
+    this.turnBanner.showMessage('RECONNECTING…', 0xffc24d);
+    this.online?.setConnectionRecoveryActive(true);
+    const result = await recovery.attemptRecovery();
+    this.online?.setConnectionRecoveryActive(false);
+    // 终局守卫：恢复期间对局可能已被其他路径接管 —— 对端主动离开
+    //（connectionLost）/ SYNC_FAILED / **gameOver 交接 ResultScene
+    //（handedToResult：SHUTDOWN 已 dispose 恢复器并销毁场景对象，
+    // 续体不得再触碰已 destroy 的 turnBanner/controls —— test-reviewer
+    // 验收修复）**
+    if (this.connectionLost || this.syncFailed || this.handedToResult) {
+      return;
+    }
+    if (result === 'RECOVERED') {
+      this.logCameraEvent(`recovery=RECOVERED`);
+      this.online?.requestPostReconnectSync();
+      this.controls.setEnabled(true);
+      return;
+    }
+    this.showOpponentLostUi();
+  }
+
+  /** Room 流 session 装配恢复控制器（session.recovery 缺失 = 不可恢复） */
+  private createRoomRecovery(): RoomRecoveryController | null {
+    const sessionManager = this.registry.get(ONLINE_SESSION_MANAGER_KEY) as
+      | OnlineSessionManager
+      | undefined;
+    const session = sessionManager?.current ?? null;
+    if (session === null || session.recovery === undefined) {
+      return null; // Manual debug 流 / 离线：不可恢复（即时断线 UX）
+    }
+    if (!(session.transport instanceof WebRTCTransport)) {
+      return null; // 防御：非 WebRTC transport（loopback 测试局不恢复）
+    }
+    const signaling = session.signaling;
+    if (signaling === undefined) {
+      return null;
+    }
+    return new RoomRecoveryController({
+      role: session.role,
+      transport: session.transport,
+      networkManager: session.networkManager,
+      signaling,
+      roomCode: session.recovery.roomCode,
+      peerToken: session.recovery.peerToken,
+      createSignalingClient: () => new SignalingClient({ url: resolveSignalingUrl() }),
+      onStateChange: (state) => this.logCameraEvent(`recovery=${state}`),
+    });
+  }
+
+  /**
+   * 通道终局：冻结输入 + 持久横幅 + 返回菜单入口
+   *（原 handleOnlineDisconnected 主体 —— SG-8 起由恢复耗尽 / 不可恢复路径共用）。
+   */
+  private showOpponentLostUi(): void {
     if (this.connectionLost) {
       return;
     }
@@ -1003,6 +1091,27 @@ export class BattleScene extends Phaser.Scene {
           ? self.touchControls.isMoveButtonsVisible
           : null;
       },
+      /** SG-8：连接恢复状态（IDLE/RECONNECTING/RECOVERED/FAILED；离线 = null） */
+      get recoveryState(): string | null {
+        return self.roomRecovery?.state ?? null;
+      },
+      /** SG-8：已消耗恢复尝试次数 */
+      get recoveryAttemptCount(): number {
+        return self.roomRecovery?.currentAttemptCount ?? 0;
+      },
+      /**
+       * E2E 注入用（仅 DEBUG_GAME）：模拟连接失败事件路径（真实 pc 存活
+       * —— 后续走真实 restartOffer/信令交换全协商；SG-8 恢复链验证口）。
+       */
+      forceConnectionLost(): void {
+        const sessionManager = self.registry.get(ONLINE_SESSION_MANAGER_KEY) as
+          | OnlineSessionManager
+          | undefined;
+        const transport = sessionManager?.current?.transport;
+        if (transport instanceof WebRTCTransport) {
+          transport.debugSimulateConnectionLost('CONNECTION_FAILED');
+        }
+      },
       /** E2E 注入用（仅 DEBUG_GAME）：构造击杀场景，不经过 DamageSystem */
       setHp(playerId: string, hp: number): void {
         const player = self.state.players[playerId as PlayerId];
@@ -1027,6 +1136,9 @@ export class BattleScene extends Phaser.Scene {
     this.projectileSystem.destroy();
     this.disconnectButton?.destroy();
     this.disconnectButton = null;
+    // SG-8：恢复控制器全清理（transport / session 信令归 SessionManager dispose 链）
+    this.roomRecovery?.dispose();
+    this.roomRecovery = null;
     // Phase 14：协调器与联机会话随对局结束彻底清理
     //（coordinator.dispose 尽力而为发 DISCONNECT；SessionManager 关
     // transport —— 对端经 onDisconnect 收到通知，gameOver 后被抑制）

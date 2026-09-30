@@ -23,12 +23,21 @@ import type { SignalingIceCandidate } from './signaling/SignalingMessage';
 
 const DATA_CHANNEL_LABEL = 'game';
 const CONNECT_TIMEOUT_MS = 10_000;
+/** close() 的 SCTP close 刷出窗口（可注入；测试传 0 关闭） */
+const DEFAULT_PC_CLOSE_DELAY_MS = 300;
 
 export interface WebRTCTransportOptions {
   readonly role: PeerRole;
   readonly config?: WebRTCConfig;
   /** 测试注入 fake；缺省用浏览器原生 RTCPeerConnection */
   readonly peerConnectionFactory?: (config: WebRTCConfig) => RTCPeerConnection;
+  /**
+   * close() 时 channel.close() 后延后 pc.close() 的窗口（默认 300ms）：
+   * 立即关 pc 会在 SCTP 流重置握手送达对端前杀死 DTLS/ICE —— 对端收不到
+   * channel close、只见 pc failed（Room 流下误入 60s ICE restart 恢复窗，
+   * 故意离开方对端应即时感知 CHANNEL_CLOSED）。测试注入 0 关闭该行为。
+   */
+  readonly pcCloseDelayMs?: number;
 }
 
 /** SG-6 诊断：selected candidate pair（getStats 解析） */
@@ -74,6 +83,7 @@ function isDeadState(state: TransportState): boolean {
 
 export class WebRTCTransport implements NetworkTransport {
   private readonly pc: RTCPeerConnection;
+  private readonly pcCloseDelayMs: number;
   private dataChannel: RTCDataChannel | null = null;
   private transportState: TransportState = TransportState.IDLE;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -112,6 +122,7 @@ export class WebRTCTransport implements NetworkTransport {
   constructor(options: WebRTCTransportOptions) {
     const config = options.config ?? DEFAULT_WEBRTC_CONFIG;
     const factory = options.peerConnectionFactory ?? defaultPeerConnectionFactory;
+    this.pcCloseDelayMs = options.pcCloseDelayMs ?? DEFAULT_PC_CLOSE_DELAY_MS;
     this.pc = factory(config);
     this.pc.addEventListener('connectionstatechange', this.handleConnectionStateChange);
     this.pc.addEventListener('iceconnectionstatechange', this.handleIceConnectionStateChange);
@@ -165,6 +176,14 @@ export class WebRTCTransport implements NetworkTransport {
 
   private readonly handleConnectionStateChange = (): void => {
     switch (this.pc.connectionState) {
+      case 'connected':
+        // SG-8：ICE restart 恢复完成判定 —— SCTP 跨 restart 存续，DataChannel
+        // 不重发 open 事件；连接重建 + 通道仍 open 即视为通道恢复（对初始
+        // 连接流无影响：初连期 channel 尚未 open，此处天然 no-op）
+        if (this.dataChannel !== null && this.dataChannel.readyState === 'open') {
+          this.handleChannelOpen();
+        }
+        break;
       case 'failed':
         this.handleConnectionLost(TransportState.FAILED, 'CONNECTION_FAILED');
         break;
@@ -348,6 +367,41 @@ export class WebRTCTransport implements NetworkTransport {
       return this.connectPromise; // CONNECTING 中重复调用：复用同一 promise
     }
     this.setState(TransportState.CONNECTING);
+    return this.armConnectWait(timeoutMs);
+  }
+
+  /**
+   * SG-8：恢复等待通道重新可用 —— ICE restart 专用入口（Room 流恢复链）。
+   * * 与 connect() 的「FAILED 后重连需新建 transport」契约不冲突：本入口
+   *   是唯一允许从 FAILED/DISCONNECTED 重新武装等待的路径，由恢复控制器
+   *   独占调用（场景层不得使用）。
+   * * FAILED → CONNECTING 迁移后，恢复期再遇 ICE failed 经 handleConnectionLost
+   *   → failConnect reject 本 promise（恢复控制器按限次重试）。
+   * * ICE restart 不重建 SCTP —— DataChannel 对象跨 restart 存续，open 事件
+   *   不会重发：恢复完成由 connectionState 'connected' + channel open 判定
+   *   （见 handleConnectionStateChange）。
+   */
+  recoverConnect(timeoutMs: number = CONNECT_TIMEOUT_MS): Promise<void> {
+    if (this.transportState === TransportState.CONNECTED) {
+      return Promise.resolve();
+    }
+    if (this.transportState === TransportState.CLOSED) {
+      return Promise.reject(
+        new TransportError(
+          'TRANSPORT_CLOSED',
+          `[WebRTCTransport] recoverConnect rejected: transport is ${this.transportState}`,
+        ),
+      );
+    }
+    if (this.connectPromise !== null) {
+      return this.connectPromise; // 已在等待（恢复武装或初始连接）：复用
+    }
+    this.setState(TransportState.CONNECTING); // FAILED / DISCONNECTED → 恢复武装
+    return this.armConnectWait(timeoutMs);
+  }
+
+  /** connect / recoverConnect 共享：武装 promise + 超时 timer + 通道已 open 的即成路径 */
+  private armConnectWait(timeoutMs: number): Promise<void> {
     const promise = new Promise<void>((resolve, reject) => {
       this.connectResolve = resolve;
       this.connectReject = reject;
@@ -361,7 +415,14 @@ export class WebRTCTransport implements NetworkTransport {
         );
       }, timeoutMs);
     }
-    if (this.dataChannel !== null && this.dataChannel.readyState === 'open') {
+    if (
+      this.dataChannel !== null &&
+      this.dataChannel.readyState === 'open' &&
+      this.pc.connectionState === 'connected'
+    ) {
+      // channel open 必须叠加 ICE connected 才算恢复完成 —— ICE 失败期 SCTP
+      // 通道 readyState 常仍为 'open'（SG-8：否则 recoverConnect 在 restart
+      // 生效前假成功）；初连路径的 open 事件晚于 connected，语义不受影响
       this.handleChannelOpen(); // open 事件先于 connect()：直接完成
     }
     return promise;
@@ -436,9 +497,16 @@ export class WebRTCTransport implements NetworkTransport {
       }
       this.pendingIceRejects.clear();
     }
-    // 3) 关闭底层对象
+    // 3) 关闭底层对象 —— channel.close() 先行，pc.close() 延后一个刷出窗口：
+    // SCTP 流重置握手（close 通知）需 DTLS 存活才能送达对端；立即关 pc 会让
+    // 对端只见 pc failed 而收不到 channel close（SG-8 实测：Room 流误入恢复窗）
     channel?.close();
-    this.pc.close();
+    const peer = this.pc;
+    if (this.pcCloseDelayMs > 0) {
+      setTimeout(() => peer.close(), this.pcCloseDelayMs);
+    } else {
+      peer.close();
+    }
     this.dataChannel = null;
     // 4) 终态 + 清订阅
     this.setState(TransportState.CLOSED);
@@ -498,6 +566,37 @@ export class WebRTCTransport implements NetworkTransport {
     const description = await this.pc.createAnswer();
     await this.pc.setLocalDescription(description);
     return encodeDescription(this.pc.localDescription ?? description);
+  }
+
+  /**
+   * SG-8：ICE restart 发起端（Host 恢复链专用）—— createOffer({iceRestart:true})
+   * + setLocalDescription 即返（Trickle：新 ufrag candidate 随后经
+   * onLocalIceCandidate 流出，由恢复控制器经信令转发）。前置：recoverConnect
+   * 已把 FAILED/DISCONNECTED 迁回 CONNECTING（assertAliveForSignaling 通过）。
+   */
+  async restartOffer(): Promise<string> {
+    this.assertAliveForSignaling('restartOffer');
+    const description = await this.pc.createOffer({ iceRestart: true });
+    await this.pc.setLocalDescription(description);
+    return encodeDescription(this.pc.localDescription ?? description);
+  }
+
+  /**
+   * SG-8：手动重查底层连接状态并走事件同路径（移动端后台恢复时
+   * connectionstatechange 事件可能未派发 —— 恢复控制器在 visibilitychange
+   * visible 时调用，补查 pc 实态）。
+   */
+  recheckConnection(): void {
+    this.handleConnectionStateChange();
+  }
+
+  /**
+   * DEBUG 注入口（E2E / 手动验证恢复链；生产代码零调用 —— coordinator
+   * debugForceDesync 同款先例）：模拟 ICE/连接失败事件路径，不真杀底层
+   * 连接 —— 后续恢复走真实 restartOffer/信令交换全协商。
+   */
+  debugSimulateConnectionLost(reason: 'CONNECTION_FAILED' | 'ICE_FAILED' | 'CHANNEL_ERROR'): void {
+    this.handleConnectionLost(TransportState.FAILED, reason);
   }
 
   /** 本地 ICE candidate 事件（browser contract：null = 本端 gathering 完结 → 对端发 ICE_END） */

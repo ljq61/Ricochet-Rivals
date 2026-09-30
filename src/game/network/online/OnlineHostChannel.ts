@@ -160,6 +160,8 @@ export class OnlineHostChannel {
   private ackRetryStage = 0;
   private ackTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly ackTimeoutMs: number;
+  /** SG-8：连接层恢复（ICE restart）挂起 —— 只 re-arm 计时不进阶阶梯 */
+  private ackLadderSuspended = false;
   private lastSyncReasonValue: string | null = null;
   private localHashValue: string | null = null;
   /** 收到的 Guest ACK hash（诊断；Host 权威 hash 见 localHash） */
@@ -251,24 +253,38 @@ export class OnlineHostChannel {
    * 重试阶梯（上限 3 级，绝不无限循环）：
    * 超时#1 → 重发 TURN_RESULT；超时#2 → 改推主动 STATE_SNAPSHOT
    * （Guest 无请求也接受 —— 推送即恢复）；超时#3 → SYNC_FAILED 终局。
+   * SG-8：连接恢复挂起期只 re-arm 计时不进阶（断线窗口不误杀对局）；
+   * 各级发送包 TransportError 容错（断线期通道不可用，阶梯仍可继续计时）。
    */
   private onAckTimeout(): void {
     this.ackTimer = null;
     if (this.pendingAckTurn === null) {
       return; // ACK 已到（clearAckTimer 竞态兜底）
     }
+    if (this.ackLadderSuspended) {
+      this.startAckTimer();
+      return;
+    }
     this.ackRetryStage += 1;
     if (this.ackRetryStage === 1) {
       this.lastSyncReasonValue = `ACK_TIMEOUT_RETRY(turn:${this.pendingAckTurn})`;
       if (this.lastTurnResult !== null) {
-        this.utils.sendOut(NetworkMessageType.TURN_RESULT, this.lastTurnResult, null);
+        try {
+          this.utils.sendOut(NetworkMessageType.TURN_RESULT, this.lastTurnResult, null);
+        } catch (error) {
+          console.warn('[OnlineHostChannel] TURN_RESULT resend failed (channel down):', error);
+        }
       }
       this.startAckTimer();
       return;
     }
     if (this.ackRetryStage === 2) {
       this.lastSyncReasonValue = `ACK_TIMEOUT_PUSH_SNAPSHOT(turn:${this.pendingAckTurn})`;
-      this.sendStateSnapshot();
+      try {
+        this.sendStateSnapshot();
+      } catch (error) {
+        console.warn('[OnlineHostChannel] snapshot push failed (channel down):', error);
+      }
       this.startAckTimer();
       return;
     }
@@ -276,6 +292,11 @@ export class OnlineHostChannel {
     this.pendingAckTurn = null;
     this.pendingAckHash = null;
     this.utils.setSyncState(OnlineSyncState.SYNC_FAILED, 'HOST_ACK_EXHAUSTED');
+  }
+
+  /** SG-8：连接层恢复进行中 → ACK 超时阶梯挂起（恢复结束后继续自然进阶） */
+  setAckLadderSuspended(suspended: boolean): void {
+    this.ackLadderSuspended = suspended;
   }
 
   private startAckTimer(): void {

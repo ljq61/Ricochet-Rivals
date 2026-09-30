@@ -152,6 +152,22 @@ export class OnlineGuestChannel {
     this.deps.getState().turnId += 1;
   }
 
+  /**
+   * SG-8：连接（ICE restart）恢复后的状态对账 —— 复用 Phase 15 恢复链。
+   * * 恢复已在途（断线前已进入 DESYNC 链）：重发 STATE_SYNC_REQUEST
+   *   （原请求可能随断线丢失；recoveryInFlight 防重入，幂等安全）。
+   * * 空闲：以 CONNECTION_RECOVERED 发起新恢复 episode —— 断线期
+   *   DataChannel 有序可靠也保证不了对端存活的接收窗口，快照对账是
+   *   唯一权威收敛路径（Host 永远权威）。
+   */
+  requestPostReconnectSync(): void {
+    if (this.recoveryInFlight) {
+      this.sendSyncRequest(this.recoveryReason ?? 'CONNECTION_RECOVERED');
+      return;
+    }
+    this.beginRecovery('CONNECTION_RECOVERED', 'post-reconnect');
+  }
+
   /** Guest：本地结算完成（display / Barrier 的本地半条件） */
   notifyLocalResolve(impact: ProjectileImpact | null): void {
     this.pendingLocalResolve = { impact };

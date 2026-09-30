@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
-> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 协议+Client ✅ / SG-2 Server ✅ / SG-3 自动 SDP ✅ / SG-4 Trickle ICE ✅ / SG-5 Room UI + E2E ✅ / SG-6 TURN 凭据 + 诊断 ✅ / SG-7 失败分类 UX ✅（2026-09-30，根 557/557 + server 31/31 + 全量 E2E **182/182**）；SG-8 起待做。详见「Online Connection Migration」章节。**
+> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— 全部 Stage ✅（SG-8 ICE Restart 2026-09-30 收官：限次 restartIce 经活信令 + peerToken 重入、恢复走既有 Phase 15 恢复链；根 575/575 + server 31/31 + 全量 E2E **184/184**）。剩余 = 部署（公网 WSS + coturn → 真机 QA）与 Manual SDP Cleanup。详见「Online Connection Migration」章节。**
 > 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；Phase 18 agent 侧 + P3 修复后 `npm run e2e` 全量 **147 passed / 0 failed**（含 932×430@DPR3 移动段 17 项；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
@@ -2221,7 +2221,7 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 
 # Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）
 
-> 状态：**SG-0 审计 ✅ / SG-1 Signaling 协议 + SignalingClient ✅（2026-09-30）；SG-2 起待做。**
+> 状态：**SG-0 ~ SG-8 全部 ✅（2026-09-30，迁移代码侧完成；根 575/575 + server 31/31 + 全量 E2E 184/184）。剩余 = 部署（公网 WSS + coturn → 真机 QA）与 Manual SDP Cleanup —— 见章节尾「待办」。**
 >
 > **架构红线（本迁移全程有效）**：
 > - WebSocket **只用于 Signaling**（房间配对 / SDP / ICE candidate 交换）；Gameplay
@@ -2631,14 +2631,136 @@ E2E（online-room 段 +2 = **182/182**）—— 失败 UX 全链路（真实服�
 验证（2026-09-30）：根 typecheck ✅ / 根 test **557/557** ✅ / 根 build ✅ /
 server/signaling **31/31** ✅ / **全量 E2E 182 passed / 0 failed**
 
-## 待办（后续 Stage）
+## SG-8 ICE Restart ✅（2026-09-30）
 
-- SG-8 ICE Restart（connectionState failed / persistent disconnect → 限次
-  restartIce：当前协商方 createOffer({iceRestart:true}) 经活信令通道交换；
-  复用 peerToken 重连信令；恢复后走既有 STATE_SYNC_REQUEST/STATE_SNAPSHOT ——
-  不建第二套 recovery；手机后台 grace period）
+规格 Stage SG-8：`connectionState failed` / persistent disconnect → 限次
+restartIce（当前协商方 `createOffer({iceRestart:true})` 经活信令通道交换）；
+复用 peerToken 重连信令；恢复后走既有 STATE_SYNC_REQUEST/STATE_SNAPSHOT
+—— 不建第二套 recovery；手机后台 grace period；限次耗尽 → Connection Lost。
+
+实现（连接层恢复 = RoomRecoveryController；状态对账 = Phase 15 既有链）：
+
+- [x] `WebRTCTransport` 恢复面：`restartOffer()`（iceRestart offer 即返，Trickle
+      candidate 经 onLocalIceCandidate 流出）；`recoverConnect(timeoutMs)`
+      （FAILED/DISCONNECTED 专用武装入口 —— 不改 connect() 的「重连需新建」
+      契约）；**恢复完成判定 = connectionState 'connected' + channel open**
+      （SCTP 跨 restart 存续、open 事件不重发）+ **防假成功门**（ICE 失败期
+      通道 readyState 常仍 'open'，未 connected 不得 resolve —— 单测先行
+      实测发现）；`recheckConnection()`（后台 missed 事件补查）；
+      `debugSimulateConnectionLost()`（E2E 注入口，debugForceDesync 先例）；
+      **`close()` 延后 `pc.close()`（pcCloseDelayMs 默认 300ms）**—— 立即关
+      pc 会在 SCTP 流重置送达对端前杀死 DTLS：对端收不到 channel close、
+      只见 pc failed → Room 流误入 60s 恢复窗（故意离开方对端应即时感知；
+      全量 E2E 实测 2 次复现后单段分诊实锤，非负载 flake）
+- [x] `OnlineSession.recovery?`（roomCode + peerToken，Room 流专属；Manual
+      debug / 离线 undefined → BattleScene 不装恢复，即时断线旧 UX 不变）；
+      `handleVerified` 交接时**逐个撤控制器自有订阅**（signaling 帧/失败 +
+      trickle 外发 + 验证 PONG/断线）—— 修复 VERIFIED 后残留订阅对 restart
+      帧输出误导 warn、恢复控制器无法独占信令帧的问题
+- [x] `RoomRecoveryController`（468 行，连接层零 NetworkEnvelope）：
+      * 限次主循环（默认 3 次 × 20s 窗 ≈ 60s 总预算）：ensureSignalingReady
+        （活信令复用；死则新 client → joinRoom(roomCode, peerToken) token
+        原位重入 + ROOM_JOINED ack 等待）→ recoverConnect 先行武装 →
+        **Host restartOffer 外发（Host = 唯一发起端，角色由动作固化 —— 与
+        初始协商 offerer 一致，双端同发互踩）**；Guest 被动应答 → PONG
+        验证（10s 窗）
+      * `shouldAttempt()` 分类：CONNECTION_FAILED / ICE_FAILED / CHANNEL_ERROR
+        （网络断族）→ 可恢复；CHANNEL_CLOSED / PEER_CLOSED / ICE_CLOSED
+        （对端主动离场）→ 立即终局旧 UX
+      * 手机后台 grace：瞬态 disconnected 不误杀（Phase 12 既有）+ 60s 限次
+        窗口 + visibilitychange visible → recheckConnection 补查 missed 事件
+      * PEER_JOINED 恢复期立即重发 offer（对端信令重入 —— 原 offer 曾被
+        relay 静默丢弃）；信令断（DataChannel 活）不自动恢复 —— 裁决归上层
+      * dispose 打断在途等待（waitOrDisposed）—— Scene shutdown 不留悬挂
+        尝试 / timer；owned 信令实例关闭、session 信令归 SessionManager
+- [x] Phase 15 复用挂钩（规格红线「不建第二套 recovery」的落地）：
+      * `StateSyncReason + 'CONNECTION_RECOVERED'`（wire 枚举前向兼容扩展，
+        payload 守卫 Record 穷举同步）
+      * Guest `requestPostReconnectSync()`：恢复已在途 → 重发
+        STATE_SYNC_REQUEST（原 episode reason 复用）；空闲 →
+        beginRecovery('CONNECTION_RECOVERED') —— 锁输入/清在飞模拟/
+        SYNCHRONIZING 横幅全部复用既有恢复链
+      * Host `setAckLadderSuspended()`：恢复挂起期 ACK 超时阶梯只 re-arm
+        不进阶（断线窗口不因 ACK 超时误杀对局；恢复后阶梯自然继续：
+        stage1 重发 TURN_RESULT → Guest 对账 ACK）；阶梯 stage1/2 sendOut
+        包 TransportError 容错（**修复既有隐患**：断线期 resend 未捕获）
+      * Coordinator 暴露 `requestPostReconnectSync` / `setConnectionRecoveryActive`
+        两 API（Host no-op —— 权威端状态即事实）
+- [x] BattleScene 接线：`session.recovery` + transport instanceof WebRTCTransport
+      → 装配恢复控制器；`handleOnlineDisconnected` 改路由（可恢复 →
+      RECONNECTING… 横幅 + 冻结 + `setConnectionRecoveryActive(true)` →
+      await attemptRecovery → 成功解冻 + requestPostReconnectSync；失败/
+      不可恢复 → `showOpponentLostUi()` 原 UX 主体提取共用）；SHUTDOWN
+      dispose；debug 句柄 recoveryState / recoveryAttemptCount /
+      forceConnectionLost；scene.start 复位清单补 roomRecovery
+- [x] `signalingUrl.ts` 提取共享（E2E 注入 > VITE_SIGNALING_URL > 本地 8787
+      —— 配对与恢复重信令同口径）
+
+测试（+18 = **575/575**；双 fake 全矩阵）：
+
+- [x] RoomRecoveryController（9）：Host/Guest 恢复全流（iceRestart 断言 /
+      OFFER/ANSWER 帧 / trickle / PONG / 状态序列）、限次重试耗尽 FAILED、
+      重信令 token 重入 + candidate 走新信令、重信令 ROOM_NOT_FOUND 失败
+      矩阵、shouldAttempt 分类、PEER_JOINED 重发、visibility 补查、dispose
+      在途收口 + owned/session 信令所有权
+- [x] WebRTCTransport（+6，R1~R6）：restartOffer 选项/即返/CLOSED 拒绝、
+      recoverConnect 三态 + 防假成功门、初连无回归、recheckConnection、
+      debug 注入口、**close() 延后 pc.close()（SCTP 刷出窗口：channel 即关
+      pc 存活至窗口后）**；FakeRTC 双处（本地 + 共享）补 createOfferOptions
+      与 restoreConnection；测试工厂统一注入 pcCloseDelayMs: 0
+- [x] Phase15Sync（+3，⑭~⑯）：空闲态对账全链（CONNECTION_RECOVERED →
+      快照 → parity + recoveryCount）、在途重发（原 reason 复用；第二张
+      快照幂等消费 = 无害双应用）、Host ACK 阶梯挂起不进阶 / 恢复后继续
+
+E2E（online-room 段 +2 = **37**；`driveOnlineBattle` 增 `onMidBattle` 钩子
+插 Turn 2 前 —— Room 段专用，Manual 段不传零影响）：
+
+- [x] Host `forceConnectionLost` → **真实 createOffer({iceRestart:true}) 经
+      真实 Signaling Server 全协商**（debug 注入只模拟失败事件路径，pc 存活
+      —— 协商为真）→ RECOVERED + 对局未终局；恢复后**同一局继续**打完
+      desync / rematch / disconnect（恢复不侵入后续机制的强集成断言）
+- [x] Guest `forceConnectionLost` → RECOVERED → CONNECTION_RECOVERED →
+      真实 STATE_SYNC_REQUEST → Host 权威快照 → 双端 turnId/HP parity
+
+验证（2026-09-30）：根 typecheck ✅ / 根 test **575/575** ✅ / 根 build ✅ /
+server/signaling **31/31** ✅ / **全量 E2E 184 passed / 0 failed**（六段全绿；
+期间实测修复 2 项：close() 与页面销毁竞态的 E2E 顺序固化 + close() 延后
+pc.close() 根因修复——SCTP close 送达后 CHANNEL_CLOSED 即时路径恢复）
+
+语义决策：
+
+- **Host = 唯一 restart 发起端**（与初始协商 offerer 一致；协议无角色声明 ——
+  角色由动作固化的延续）
+- **恢复成功 ≠ 状态一致**：对账一律走 Phase 15 既有链 ——
+  CONNECTION_RECOVERED 只是新 reason，同一条 STATE_SYNC_REQUEST →
+  STATE_SNAPSHOT → ACK 管道（零第二套 recovery）
+- 在途恢复重发 → Host 回两张快照 → handleStateSnapshot 幂等消费（无害双
+  应用，快照即权威）
+- 信令断而 DataChannel 活 → 不自动恢复（WS_CLOSED 裁决归上层；恢复只在
+  transport failed 系触发）
+- Host 重信令超 grace（房间已删）→ ROOM_NOT_FOUND 快速失败 = Host 房间
+  锚点语义的自然延续
+- Offline / Manual debug 流零变化（recovery undefined → 不装配）
+
+已知观测项（test-reviewer 验收 Low 级，不阻塞 —— FUTURE 改进）：
+
+- 恢复尝试轮间不复核丢失原因：恢复期对端**优雅**离场（CHANNEL_CLOSED
+  落在 CONNECTING → failConnect 刷新 lastLossReason）仍会烧满剩余尝试
+  （最多多 ~40s）才 FAILED —— 轮间查 lastLossReason 命中离场族可快速终局
+- Guest 的 restart OFFER 可能先于其 recoverConnect 武装到达（transport
+  仍 FAILED → acceptOffer 拒绝）→ 靠 Host 下一轮重发兜底，最坏浪费一个
+  20s 窗
+- dispose 后 verifyLiveness / waitForRoomAck 内层 timer 有界空触发（≤10s），
+  无功能影响
+
+## 待办（迁移代码侧完成，剩余为部署与验收）
+
 - 部署：公网 WSS host + coturn 落地（env 见 server/signaling/README）→
-  DEBUG_FORCE_RELAY 真机验证 TURN relay + 真机 QA 矩阵（Wi-Fi↔5G / VPN 等）
+  DEBUG_FORCE_RELAY 真机验证 TURN relay + 真机 QA 矩阵（Wi-Fi↔5G / VPN /
+  后台切换 × ICE restart 实网行为）
+- 迁移验收清单（规格 Tests）：真机配对矩阵通过后 Room Code 流转正为
+  官方 Online 模式
+- Manual SDP 流删除（迁移稳定后的独立 Cleanup —— 本阶段不删）
 
 ---
 

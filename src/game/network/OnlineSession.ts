@@ -36,6 +36,15 @@ export interface OnlineSession {
    * 通道（玩家无需重输房间码）；生命周期由 SessionManager dispose 链收口。
    */
   readonly signaling?: SignalingClient;
+  /**
+   * SG-8（Room 流专属；Manual debug 流为 undefined）：对局期连接恢复上下文。
+   * BattleScene 据此组装 RoomRecoveryController（限次 ICE restart + 重信令）；
+   * 缺失 = 不可恢复（Manual 流沿用即时 OPPONENT DISCONNECTED 旧 UX）。
+   */
+  readonly recovery?: {
+    readonly roomCode: string;
+    readonly peerToken: string;
+  };
 }
 
 /**

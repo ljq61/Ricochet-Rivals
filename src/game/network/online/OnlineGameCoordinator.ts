@@ -389,6 +389,23 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
     this.guestChannel?.debugForceDesync();
   }
 
+  /**
+   * SG-8：连接（ICE restart）恢复后的状态对账 —— 复用 Phase 15 恢复链。
+   * Guest：STATE_SYNC_REQUEST(reason=CONNECTION_RECOVERED) → 权威快照；
+   * Host no-op —— 权威端状态即事实，Guest 的请求会经既有快照链收敛。
+   */
+  requestPostReconnectSync(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.guestChannel?.requestPostReconnectSync();
+  }
+
+  /** SG-8：连接层恢复标记（Host ACK 阶梯挂起 / 恢复窗口不误杀） */
+  setConnectionRecoveryActive(active: boolean): void {
+    this.hostChannel?.setAckLadderSuspended(active);
+  }
+
   // ---- 断线 / 生命周期 --------------------------------------------------
 
   private handleDisconnect(reason?: string): void {

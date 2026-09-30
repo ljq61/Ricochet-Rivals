@@ -80,6 +80,8 @@ export class FakeRTCPeerConnection {
   signalingState: RTCSignalingState = 'stable';
   closed = false;
   readonly dataChannels: FakeRTCDataChannel[] = [];
+  /** SG-8：createOffer 收到的 options 逐次记录（iceRestart 断言用） */
+  readonly createOfferOptions: Array<RTCOfferOptions | undefined> = [];
   /** SG-4：经 transport.addIceCandidate 成功落库的对端 candidate（malformed 不入） */
   readonly addedCandidates: RTCIceCandidateInit[] = [];
   /** SG-6：getStats 注入报告（transport 诊断解析 selected pair） */
@@ -117,8 +119,9 @@ export class FakeRTCPeerConnection {
     return channel;
   }
 
-  async createOffer(): Promise<RTCSessionDescriptionInit> {
-    return { type: 'offer', sdp: 'fake:offer-sdp' };
+  async createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit> {
+    this.createOfferOptions.push(options);
+    return { type: 'offer', sdp: options?.iceRestart === true ? 'fake:offer-sdp-restart' : 'fake:offer-sdp' };
   }
 
   async createAnswer(): Promise<RTCSessionDescriptionInit> {
@@ -193,6 +196,12 @@ export class FakeRTCPeerConnection {
     this.connectionState = 'failed';
     this.emit('connectionstatechange');
   }
+
+  /** SG-8：模拟 ICE restart 后连接重建（connectionState → connected） */
+  restoreConnection(): void {
+    this.connectionState = 'connected';
+    this.emit('connectionstatechange');
+  }
 }
 
 interface Bundle {
@@ -206,6 +215,7 @@ function makeTransport(role: PeerRole): Bundle {
   const transport = new WebRTCTransport({
     role,
     peerConnectionFactory: () => pc as unknown as RTCPeerConnection,
+    pcCloseDelayMs: 0, // 单测即时关闭（延迟刷出行为由 R6 专测）
   });
   return { transport, pc, channel: role === 'host' ? pc.dataChannels[0] ?? null : null };
 }
@@ -644,6 +654,7 @@ describe('WebRTCTransport — SG-6（iceTransportPolicy + 诊断）', () => {
         captured.push(config);
         return pc as unknown as RTCPeerConnection;
       },
+      pcCloseDelayMs: 0,
     });
     return { transport, pc, captured };
   }
@@ -707,5 +718,108 @@ describe('WebRTCTransport — SG-6（iceTransportPolicy + 诊断）', () => {
     expect(diag.transportState).toBe(TransportState.CLOSED);
     expect(diag.localCandidateTypes).toEqual([]);
     expect(pc.listenerCount('icecandidateerror')).toBe(0);
+  });
+});
+
+describe('WebRTCTransport — SG-8（ICE restart 恢复面）', () => {
+  it('R1：restartOffer —— iceRestart 选项 + 即返（不等 gathering）+ CLOSED 拒绝', async () => {
+    const b = makeTransport('host');
+    await connectHost(b);
+    b.pc.failConnection();
+    // FAILED → CONNECTING（恢复武装前置）；武装 promise 由 close() 收口，预挂 catch 防未处理拒绝
+    void b.transport.recoverConnect(5_000).catch(() => {});
+
+    const pending = b.transport.restartOffer();
+    let returned = false;
+    void pending.then(() => {
+      returned = true;
+    });
+    await tick();
+    expect(returned).toBe(true); // 即返：fake setLocal 后仍 gathering
+    expect(b.pc.createOfferOptions[0]).toEqual({ iceRestart: true });
+    expect(b.pc.iceGatheringState).toBe('gathering');
+    expect(b.pc.localDescription?.sdp).toBe('fake:offer-sdp-restart');
+
+    b.transport.close();
+    await expectRejection(b.transport.restartOffer()); // CLOSED 拒绝（不复活）
+  });
+
+  it('R2：recoverConnect 三态 + 防假成功门（channel open 但 pc 未 connected 不 resolve）', async () => {
+    // CONNECTED → 即 resolve
+    const a = makeTransport('host');
+    await connectHost(a);
+    await expect(a.transport.recoverConnect()).resolves.toBeUndefined();
+
+    // FAILED → 武装；真实 ICE 失败期 SCTP 通道常仍 open —— 不得在 restart
+    // 生效前假成功（必须等 connectionState connected）
+    a.pc.failConnection();
+    const armed = a.transport.recoverConnect(200);
+    await tick();
+    expect(a.transport.state).toBe(TransportState.CONNECTING);
+    let resolved = false;
+    void armed.then(() => {
+      resolved = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(resolved).toBe(false); // pc failed：channel open 也不 resolve
+
+    a.pc.restoreConnection(); // connected + channel open → 恢复完成
+    await armed;
+    expect(a.transport.connected).toBe(true);
+
+    // CLOSED → 拒绝
+    a.transport.close();
+    await expectRejection(a.transport.recoverConnect());
+  });
+
+  it('R3：防假成功门不伤初连 —— 通道 open 且 pc connected 时 connect() 即成', async () => {
+    const b = makeTransport('host');
+    b.channel?.simulateOpen(); // open 事件先于 connect()
+    b.pc.connectionState = 'connected';
+    await b.transport.connect();
+    expect(b.transport.connected).toBe(true);
+  });
+
+  it('R4：recheckConnection 补查 —— 后台 missed 的 failed 状态经手动重查触发失败链', async () => {
+    const b = makeTransport('host');
+    await connectHost(b);
+    const losses: string[] = [];
+    b.transport.onDisconnect((reason) => losses.push(reason ?? ''));
+    b.pc.connectionState = 'failed'; // 后台期 connectionstatechange 未派发
+    expect(losses.length).toBe(0);
+
+    b.transport.recheckConnection();
+    expect(losses).toEqual(['CONNECTION_FAILED']);
+    expect(b.transport.state).toBe(TransportState.FAILED);
+  });
+
+  it('R5：debugSimulateConnectionLost —— FAILED + lastLossReason，底层不真死（E2E 注入口）', async () => {
+    const b = makeTransport('host');
+    await connectHost(b);
+    b.transport.debugSimulateConnectionLost('CONNECTION_FAILED');
+    expect(b.transport.state).toBe(TransportState.FAILED);
+    expect(b.transport.lastLossReason).toBe('CONNECTION_FAILED');
+    expect(b.channel?.readyState).toBe('open');
+    expect(b.pc.connectionState).not.toBe('failed');
+  });
+
+  it('R6：close() 延后 pc.close()（SCTP close 刷出窗口）—— channel 即关、pc 存活至窗口后', async () => {
+    const pc = new FakeRTCPeerConnection();
+    const transport = new WebRTCTransport({
+      role: 'host',
+      peerConnectionFactory: () => pc as unknown as RTCPeerConnection,
+      pcCloseDelayMs: 15,
+    });
+    const channel = pc.dataChannels[0];
+    expect(channel).toBeDefined();
+    transport.close();
+
+    // 立即：通道已关（SCTP 流重置已发起）、transport 已终态；pc 仍存活等刷出
+    expect(channel?.closed).toBe(true);
+    expect(transport.state).toBe(TransportState.CLOSED);
+    expect(pc.closed).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(pc.closed).toBe(true); // 窗口后 pc 关闭
   });
 });

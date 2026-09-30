@@ -18,6 +18,7 @@ import {
   type RoomConnectionFailureReason,
 } from '../network/RoomConnectionState';
 import { SignalingClient } from '../network/signaling/SignalingClient';
+import { resolveSignalingUrl } from '../network/signaling/signalingUrl';
 import {
   ONLINE_SESSION_MANAGER_KEY,
   OnlineSessionManager,
@@ -43,18 +44,6 @@ const SMALL_WIDTH = 260;
 const USE_MANUAL_FLOW =
   DEBUG_GAME && new URLSearchParams(window.location.search).has('manual-sdp');
 
-/** Signaling 地址解析：E2E 注入覆盖 > 构建期 env > 本地开发默认 */
-function resolveSignalingUrl(): string {
-  const injected = (window as unknown as Record<string, unknown>).__RR_SIGNALING_URL__;
-  if (typeof injected === 'string' && injected.startsWith('ws')) {
-    return injected;
-  }
-  const fromEnv = import.meta.env['VITE_SIGNALING_URL'];
-  if (typeof fromEnv === 'string' && fromEnv.startsWith('ws')) {
-    return fromEnv;
-  }
-  return 'ws://127.0.0.1:8787';
-}
 
 /** SG-7：Room 流失败分类 → 简洁用户文案（技术细节只进 Debug 句柄 / console） */
 const ROOM_FAILURE_TEXT: Record<RoomConnectionFailureReason, string> = {

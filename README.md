@@ -3,7 +3,7 @@
 横版 2D 回合制弹道对战网页游戏。
 Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
-当前进度：**Phase 0～16 完成；Phase 17 美术持续精修；Phase 18 代码侧加固已落地，真实设备 QA 待完成**；并行轨道 **联机信令迁移（SG-0～7 已落地，分支 `dev_signaling_turn`：房间码自动配对 + WebSocket 信令 + Trickle ICE + TURN 兜底，SG-8 ICE 重连待做）**（见 `TASKS.md`）。已包含 WebRTC P2P 对战、Desync 恢复与联机再战；海港场景、二头身角色、炮弹火焰拖尾与爆炸、分档基地火烟、低血量章鱼障碍和音效已接入。
+当前进度：**Phase 0～16 完成；Phase 17 美术持续精修；Phase 18 代码侧加固已落地，真实设备 QA 待完成**；并行轨道 **联机信令迁移（SG-0～8 全部完成，分支 `dev_signaling_turn`：房间码自动配对 + WebSocket 信令 + Trickle ICE + TURN 兜底 + 对局期 ICE Restart 恢复；剩余公网部署与真机 QA）**（见 `TASKS.md`）。已包含 WebRTC P2P 对战、Desync 恢复与联机再战；海港场景、二头身角色、炮弹火焰拖尾与爆炸、分档基地火烟、低血量章鱼障碍和音效已接入。
 
 最新美术调整：蓝红角色各 8 帧走路循环；基地大小火各 8 帧，按血量分层布点；章鱼触角 16 帧卷曲，从海面下方完整升起。见 [动画制作与验证记录](docs/ArtDesign/ANIMATION_REFINEMENT.md)。此前的 [长支架与标题菜单](docs/ArtDesign/DOCK_MENU_REFINEMENT.md) 保持。独立视差层及走路以外的完整角色动作仍为后续精制项，真机验收见 [设备 QA 清单](docs/PHASE18_DEVICE_QA.md)。
 
@@ -11,8 +11,8 @@ Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
 - TypeScript (strict) + Vite
 - Phaser 4.x + Matter Physics
-- Vitest（557 单测，48 文件）+ 独立信令服务器单测（31 项，workspace `server/signaling`）+ puppeteer-core E2E（desktop / mobile / sp / online 手动配对回归 / online 对战 / online-room 房间码真实信令；基线 182 项，复跑记录见 `TASKS.md`）
-- WebRTC RTCDataChannel P2P 联机（HOST AUTHORITATIVE，已落地；含 desync 防护）；自托管 WebSocket 信令房间码配对（SG 迁移已落地，公网部署待做）+ coturn TURN 时限 REST 凭据兜底
+- Vitest（575 单测，49 文件）+ 独立信令服务器单测（31 项，workspace `server/signaling`）+ puppeteer-core E2E（desktop / mobile / sp / online 手动配对回归 / online 对战 / online-room 房间码真实信令 + ICE restart 恢复；基线 184 项，复跑记录见 `TASKS.md`）
+- WebRTC RTCDataChannel P2P 联机（HOST AUTHORITATIVE，已落地；含 desync 防护与对局期 ICE Restart 重连恢复）；自托管 WebSocket 信令房间码配对（SG 迁移已落地，公网部署待做）+ coturn TURN 时限 REST 凭据兜底
 
 ## 开发
 
@@ -21,7 +21,7 @@ npm install --include=dev   # 本机 npm 全局 omit=dev，必须带 --include=d
 
 npm run dev        # 启动开发服务器
 npm run typecheck  # tsc --noEmit（strict）
-npm run test       # vitest run（557 项；不含信令服务器测试）
+npm run test       # vitest run（575 项；不含信令服务器测试）
 npm run build      # 类型检查 + 生产构建
 npm run preview    # 预览构建产物
 npm run e2e        # 全量 E2E（desktop / mobile / sp / online 配对 / online 对战 / online-room 房间码）
@@ -39,7 +39,7 @@ npm run typecheck
 
 - **Single Player**：P1 vs AI（三档难度：easy / normal / hard，seeded RNG，纯函数决策）
 - **Local 2 Player**：热座双人（共用键鼠 / 触屏，回合切换横幅提示）
-- **Online P2P**（房间码自动配对，SG-5 起默认流）：Host 点 CREATE → 展示 6 位房间码（31 字符表，剔除易混 0/O/1/I/L）→ 微信 / 口头发码 → Guest 输码 JOIN → WebSocket 信令服务器自动交换 SDP Offer/Answer 与 Trickle ICE candidate → 双方 VERIFIED 进局，用户全程不接触 SDP。真实 WebRTC DataChannel 直连；**Host = P1 = 权威**，Guest 为意图客户端（本地仅做表现播放，HP / 伤害 / 回合切换一律以 Host 广播为准）。**TURN 兜底（SG-6）**：房间 ack 按需下发 coturn 时限 REST 凭据（HMAC-SHA1；secret 仅存环境变量，永不入库），严格 NAT 走中继；`DEBUG_FORCE_RELAY` 强制 relay 验证，Debug 句柄含候选类型 / selected pair route（DIRECT/RELAY）诊断。**失败分类（SG-7）**：ICE_FAILED / DATA_CHANNEL_FAILED / TURN_UNAVAILABLE → 简洁文案 + TRY AGAIN（输入保留），Debug 构建状态行附 `[REASON:CODE]` 后缀。手动 SDP 配对（Phase 13 流程及其真机复制优化）保留为 Debug 门控回退（`DEBUG_GAME && ?manual-sdp`，E2E 回归入口）。**Desync 防护（Phase 15）**：回合边界 stateHash 比对 → 偏差自动请求权威快照恢复（Host 永远权威）→ 对局继续；Turn Result ACK 同步屏障保证 Host 不超前 Guest；超时有限重试后安全终止。**Online Rematch（Phase 16）**：对局结束双方点 REMATCH → 复用同一 WebRTC 连接重新开局（握手同 Lobby，Host 每局全新 matchId + seed），等待对方期间显示 WAITING / OPPONENT READY；对端 Result 期离开 → OPPONENT LEFT 提示回菜单
+- **Online P2P**（房间码自动配对，SG-5 起默认流）：Host 点 CREATE → 展示 6 位房间码（31 字符表，剔除易混 0/O/1/I/L）→ 微信 / 口头发码 → Guest 输码 JOIN → WebSocket 信令服务器自动交换 SDP Offer/Answer 与 Trickle ICE candidate → 双方 VERIFIED 进局，用户全程不接触 SDP。真实 WebRTC DataChannel 直连；**Host = P1 = 权威**，Guest 为意图客户端（本地仅做表现播放，HP / 伤害 / 回合切换一律以 Host 广播为准）。**TURN 兜底（SG-6）**：房间 ack 按需下发 coturn 时限 REST 凭据（HMAC-SHA1；secret 仅存环境变量，永不入库），严格 NAT 走中继；`DEBUG_FORCE_RELAY` 强制 relay 验证，Debug 句柄含候选类型 / selected pair route（DIRECT/RELAY）诊断。**失败分类（SG-7）**：ICE_FAILED / DATA_CHANNEL_FAILED / TURN_UNAVAILABLE → 简洁文案 + TRY AGAIN（输入保留），Debug 构建状态行附 `[REASON:CODE]` 后缀。**对局期断线恢复（SG-8）**：网络断族失败 → RECONNECTING… → 限次 ICE Restart（3×20s 窗，Host 发起 restart offer 经活信令交换、信令死则持 peerToken 原位重入）→ 恢复后自动走既有 Desync 快照对账继续对局；手机后台短暂切走可恢复；对端主动离场则立即 OPPONENT DISCONNECTED。手动 SDP 配对（Phase 13 流程及其真机复制优化）保留为 Debug 门控回退（`DEBUG_GAME && ?manual-sdp`，E2E 回归入口）。**Desync 防护（Phase 15）**：回合边界 stateHash 比对 → 偏差自动请求权威快照恢复（Host 永远权威）→ 对局继续；Turn Result ACK 同步屏障保证 Host 不超前 Guest；超时有限重试后安全终止。**Online Rematch（Phase 16）**：对局结束双方点 REMATCH → 复用同一 WebRTC 连接重新开局（握手同 Lobby，Host 每局全新 matchId + seed），等待对方期间显示 WAITING / OPPONENT READY；对端 Result 期离开 → OPPONENT LEFT 提示回菜单
 
 ## 玩法要点
 

@@ -448,7 +448,7 @@ GAME_OVER：回合冻结（不切换、输入与命令全拒）
   gameOver / winnerId（Phase 7），本状态机只消费该标志；
 - **GAME_OVER 后续**：Phase 11 菜单 / Phase 16 Rematch 在此接续。
 
-## 6. 联机（Phase 12 Transport / Phase 13 Connection / Phase 14 Gameplay Sync / Phase 15 Desync / Phase 16 Rematch + 房间码信令迁移 SG-0~7 已落地；SG-8 ICE Restart 待做 —— 分支 `dev_signaling_turn`）
+## 6. 联机（Phase 12 Transport / Phase 13 Connection / Phase 14 Gameplay Sync / Phase 15 Desync / Phase 16 Rematch + 房间码信令迁移 SG-0~8 全部已落地 —— 分支 `dev_signaling_turn`）
 
 ### 分层
 
@@ -582,7 +582,7 @@ ResultScene：双方点 REMATCH → 新 OnlineGameCoordinator（共享同一 Onl
   （tap 同步执行无 TOCTOU）→ 直接 OPPONENT LEFT —— 不向死通道发送
   （sendPlayerReady 会抛 TransportError）。
 
-### 房间码信令迁移落地架构（SG-0~7，分支 `dev_signaling_turn`）
+### 房间码信令迁移落地架构（SG-0~8，分支 `dev_signaling_turn`）
 
 把联机连接从「手动复制粘贴 SDP + STUN-only」升级为「6 位房间码 + 自动 WebSocket
 信令 + Trickle ICE + TURN 兜底」；Phase 12~16 gameplay 网络架构零改动
@@ -617,8 +617,19 @@ OnlineConnectionScene（默认 Room 流；?manual-sdp 走 Phase 13 控制器）
 状态行追加 `[REASON:CODE]` 后缀。
 
 SG-8 预留：`OnlineSession.signaling?` 让信令客户端随 session 存续到对局 ——
-ICE restart 免重进房间（复用 peerToken）；恢复走既有 Phase 15
-STATE_SYNC_REQUEST / STATE_SNAPSHOT 链，不建第二套 recovery。
+SG-8 已落地（ICE Restart）：`OnlineSession.signaling? + recovery?{roomCode,peerToken}`
+随 session 存续到对局；BattleScene 组装 **RoomRecoveryController**（限次
+3×20s：信令按需重建 + token 原位重入 → Host `restartOffer({iceRestart:true})`
+经活信令交换 → `recoverConnect` 武装 → PONG 验证；visibilitychange 回前台
+`recheckConnection` 补查后台 missed 事件；dispose 打断在途尝试）。恢复成功后
+对账走既有 Phase 15 链 —— Guest `requestPostReconnectSync()`（空闲 →
+`beginRecovery('CONNECTION_RECOVERED')`，在途 → 重发原 reason；Host no-op
+权威端即事实）；恢复挂起期 Host ACK 超时阶梯只 re-arm 不进阶（断线窗口不
+误杀）。断线路由：网络断族丢失（CONNECTION_FAILED/ICE_FAILED/CHANNEL_ERROR）
+→ RECONNECTING 恢复窗；对端主动离场（CHANNEL_CLOSED/PEER_CLOSED/ICE_CLOSED）
+→ 即时 OPPONENT DISCONNECTED（旧 UX）；耗尽 → 同旧 UX 收口。
+`WebRTCTransport.close()` 延后 `pc.close()`（默认 300ms）保证 SCTP close
+送达对端（立即关 pc 会让对端只见 pc failed、误入恢复窗）。
 
 ### 阶段边界
 
@@ -632,8 +643,8 @@ STATE_SYNC_REQUEST / STATE_SNAPSHOT 链，不建第二套 recovery。
 - **Phase 16**：Online Rematch（同连接重开局：握手复用 / 协调器重置 /
   交接闭环 + 边缘路径防线）。
 - **Online Connection Migration（SG-0~8，分支 `dev_signaling_turn`）**：
-  SG-0~7 已落地（协议+客户端 / 信令服务器 / 自动协商 / Trickle ICE /
-  Room UI + 真实信令 E2E / TURN / 失败分类），SG-8 ICE Restart 待做；
+  SG-0~8 全部已落地（协议+客户端 / 信令服务器 / 自动协商 / Trickle ICE /
+  Room UI + 真实信令 E2E / TURN / 失败分类 / ICE Restart 恢复）；
   逐 Stage 记录见 TASKS.md「Online Connection Migration」章节。
 
 ## 7. 质量门禁

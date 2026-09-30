@@ -1520,7 +1520,7 @@ async function runOnlineBattle(browser) {
  * Phase 14/16 对战驱动（配对后通用，Manual / Room 两段复用）：
  * ENTER BATTLE → 回合循环 → Rematch → Disconnect。
  */
-async function driveOnlineBattle(pageHost, pageGuest) {
+async function driveOnlineBattle(pageHost, pageGuest, hooks = {}) {
   const hostD = () => dbg(pageHost);
   const guestD = () => dbg(pageGuest);
 
@@ -1630,6 +1630,11 @@ async function driveOnlineBattle(pageHost, pageGuest) {
     'Turn 1 权威结算后双端 HP 一致',
     JSON.stringify(hAfterT1.hp) === JSON.stringify(gAfterT1.hp)
   );
+
+  // —— SG-8（可选注入）：Turn 2 前做 ICE restart 恢复场景（Room 段专用）——
+  if (hooks.onMidBattle) {
+    await hooks.onMidBattle(pageHost, pageGuest);
+  }
 
   // —— P2 Turn 2（Guest 回合；guest 前台）——
   await pageGuest.keyboard.down('a');
@@ -1958,13 +1963,17 @@ async function driveOnlineBattle(pageHost, pageGuest) {
   // 进程异常崩溃只到 ICE 'disconnected'（瞬态，Phase 12 防误杀设计），
   // 'failed' 终局需数十秒 —— E2E 走确定性优雅关闭路径。
   await pageGuest.evaluate(() => window.__RR_DEBUG__.closeOnlineChannel());
-  await pageGuest.close();
+  // 先等 Host 感知优雅关闭（SCTP close 送达）再关页面 —— 消除 close 与页面
+  // 销毁的竞态（实测全量负载下浏览器 RST 可能先于 SCTP close 刷出，Host
+  // 只见 transient disconnected → 15s 超时假失败；若 close 真未送达，
+  // waitFor 依旧在此如实超时）
   const hostLost = await waitFor(
     pageHost,
     async () => (await hostD()).connectionLost === true,
-    15000,
+    15_000,
     'Host 感知断线'
   );
+  await pageGuest.close();
   await pageHost.bringToFront();
   const lostBanner = await waitFor(
     pageHost,
@@ -2160,7 +2169,60 @@ async function runOnlineRoom(browser) {
       `route=${diag?.route} types=${JSON.stringify(diag?.localCandidateTypes ?? [])}`,
     );
 
-    await driveOnlineBattle(pageHost, pageGuest);
+    await driveOnlineBattle(pageHost, pageGuest, {
+      /**
+       * SG-8 ICE Restart 恢复场景：debug 注入模拟连接失败（真实 pc 存活）→
+       * 后续是真实 createOffer({iceRestart:true}) 经活信令服务器的全协商。
+       * Host 侧验证 restart 发起/应答链；Guest 侧验证恢复后 Phase 15 对账
+       * （CONNECTION_RECOVERED → 权威快照全链）。
+       */
+      onMidBattle: async (pageHost, pageGuest) => {
+        // Host 侧：模拟失败 → RECONNECTING → 真实 restart offer 交换 → RECOVERED
+        await pageHost.evaluate(() => window.__RR_DEBUG__.forceConnectionLost());
+        const hostRecovered = await waitFor(
+          pageHost,
+          async () => (await dbg(pageHost)).recoveryState === 'RECOVERED',
+          30_000,
+          'Host ICE restart RECOVERED'
+        );
+        const hostAfter = await dbg(pageHost);
+        check(
+          'SG-8 Host 恢复：限次 ICE restart 经活信令完成 + 对局未终局',
+          hostRecovered && hostAfter.recoveryAttemptCount >= 1 && hostAfter.connectionLost === false,
+          `attempts=${hostAfter.recoveryAttemptCount}`
+        );
+
+        // Guest 侧（后台页恢复纯事件循环）：RECOVERED → Phase 15 对账
+        await pageGuest.evaluate(() => window.__RR_DEBUG__.forceConnectionLost());
+        const guestRecovered = await waitFor(
+          pageGuest,
+          async () => (await dbg(pageGuest)).recoveryState === 'RECOVERED',
+          30_000,
+          'Guest ICE restart RECOVERED'
+        );
+        const guestSynced = await waitFor(
+          pageGuest,
+          async () => {
+            const g = await dbg(pageGuest);
+            return g.syncState === 'SYNCED_AFTER_RECOVERY' && (g.recoveryCount ?? 0) >= 1;
+          },
+          15_000,
+          'Guest 恢复后 Phase 15 对账'
+        );
+        const hRec = await dbg(pageHost);
+        const gRec = await dbg(pageGuest);
+        check(
+          'SG-8 恢复后 Phase 15 对账：CONNECTION_RECOVERED → 权威快照 → 双端 parity',
+          guestRecovered &&
+            guestSynced &&
+            (hRec.lastSyncReason ?? '').includes('CONNECTION_RECOVERED') &&
+            hRec.turnId === gRec.turnId &&
+            hRec.hp.P1 === gRec.hp.P1 &&
+            hRec.hp.P2 === gRec.hp.P2,
+          `hostReason=${hRec.lastSyncReason} guestRecoveries=${gRec.recoveryCount} turn=${hRec.turnId}/${gRec.turnId}`
+        );
+      },
+    });
   } finally {
     stopSignaling();
   }

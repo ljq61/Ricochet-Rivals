@@ -110,10 +110,6 @@ export class FakeRTCPeerConnection {
     return channel;
   }
 
-  async createOffer(): Promise<RTCSessionDescriptionInit> {
-    return { type: 'offer', sdp: 'fake:offer-sdp' };
-  }
-
   async createAnswer(): Promise<RTCSessionDescriptionInit> {
     return { type: 'answer', sdp: 'fake:answer-sdp' };
   }
@@ -144,6 +140,20 @@ export class FakeRTCPeerConnection {
   }
 
   // ---- 测试驱动 ----
+
+  /** SG-8：createOffer 收到的 options 逐次记录（iceRestart 断言用） */
+  readonly createOfferOptions: Array<RTCOfferOptions | undefined> = [];
+
+  async createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit> {
+    this.createOfferOptions.push(options);
+    return { type: 'offer', sdp: options?.iceRestart === true ? 'fake:offer-sdp-restart' : 'fake:offer-sdp' };
+  }
+
+  /** SG-8：模拟 ICE restart 后连接重建（connectionState → connected） */
+  restoreConnection(): void {
+    this.connectionState = 'connected';
+    this.emit('connectionstatechange');
+  }
 
   completeIceGathering(): void {
     this.iceGatheringState = 'complete';
@@ -199,6 +209,7 @@ export function makeTransport(role: PeerRole): Bundle {
   const transport = new WebRTCTransport({
     role,
     peerConnectionFactory: () => pc as unknown as RTCPeerConnection,
+    pcCloseDelayMs: 0, // 单测即时关闭（延迟刷出行为由 WebRTCTransport.test R6 专测）
   });
   return { transport, pc, channel: role === 'host' ? pc.dataChannels[0] ?? null : null };
 }

@@ -201,7 +201,9 @@ export type StateSyncReason =
   | 'HASH_MISMATCH'
   | 'MISSING_TURN_RESULT'
   | 'INVALID_LOCAL_STATE'
-  | 'MANUAL_DEBUG';
+  | 'MANUAL_DEBUG'
+  /** SG-8：ICE restart 连接恢复后主动对账（Gameplay 状态可能已落后） */
+  | 'CONNECTION_RECOVERED';
 
 /** STATE_SYNC_REQUEST（Guest → Host）：请求权威快照恢复本地状态 */
 export interface StateSyncRequestPayload {
@@ -418,6 +420,18 @@ export interface OnlineGameCoordinatorApi {
    * TURN_RESULT 边界自动 mismatch 并走完整恢复链。Host 调用为 no-op。
    */
   debugForceDesync(): void;
+
+  /**
+   * SG-8：连接恢复后的状态对账入口（复用 Phase 15 恢复链，不建第二套
+   * recovery）。Guest → STATE_SYNC_REQUEST(reason=CONNECTION_RECOVERED)
+   * → Host 权威快照 → 既有校验/应用/ACK 链；Host no-op（权威端状态即事实）。
+   */
+  requestPostReconnectSync(): void;
+  /**
+   * SG-8：连接层恢复（ICE restart）进行中标记。挂起 Host ACK 超时阶梯
+   *（断线窗口内不进阶 SYNC_FAILED 误杀对局）；恢复成功后阶梯自然继续。
+   */
+  setConnectionRecoveryActive(active: boolean): void;
 
   /** Battle 期保活（2s PING；测试不调用即零定时器） */
   startKeepAlive(): void;

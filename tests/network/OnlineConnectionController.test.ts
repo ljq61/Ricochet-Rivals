@@ -33,6 +33,7 @@ function makeRig(): TestRig {
       return new WebRTCTransport({
         role: r,
         peerConnectionFactory: () => pc as unknown as RTCPeerConnection,
+        pcCloseDelayMs: 0,
       });
     },
   });

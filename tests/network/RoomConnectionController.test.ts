@@ -49,6 +49,7 @@ function makeHarness(
         role: r,
         config,
         peerConnectionFactory: () => pc as unknown as RTCPeerConnection,
+        pcCloseDelayMs: 0,
       }),
     createSignalingClient: () =>
       new SignalingClient({

@@ -308,6 +308,7 @@ const STATE_SYNC_REASON_FLAGS: Readonly<Record<StateSyncReason, true>> = {
   MISSING_TURN_RESULT: true,
   INVALID_LOCAL_STATE: true,
   MANUAL_DEBUG: true,
+  CONNECTION_RECOVERED: true,
 };
 
 export function isStateSyncReason(value: unknown): value is StateSyncReason {
