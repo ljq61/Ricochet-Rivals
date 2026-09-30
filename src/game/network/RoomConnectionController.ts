@@ -302,9 +302,12 @@ export class RoomConnectionController {
         void this.hostHandleAnswer(message.sdp);
         return;
       case 'ICE_CANDIDATE':
+        // Trickle ICE（SG-4）：remoteDescription 未 apply 时 transport 内部排队
+        this.transport?.addIceCandidate(message.candidate);
+        return;
       case 'ICE_END':
-        // SG-4（Trickle ICE）接线点；SG-3 全量 gather SDP 期间忽略对端补发
-        console.debug(`[RoomConnection] ${message.type} ignored (trickle lands at SG-4)`);
+        // 对端 gathering 完结（informational）—— ICE 不依赖显式 end，无需动作
+        console.debug('[RoomConnection] remote ICE_END received');
         return;
       case 'PEER_LEFT':
         // 协商期对端离开 = 连接失败；VERIFIED 后归 Phase 16 断线链（本层不越权）
@@ -371,6 +374,18 @@ export class RoomConnectionController {
           });
         }
       }),
+      // Trickle ICE（SG-4）：本地 candidate 逐个外发；null = 本端 gathering 完结
+      this.transport.onLocalIceCandidate((candidate) => {
+        const signaling = this.signaling;
+        if (signaling === null) {
+          return; // fail / 交接后 transport.close 已清 listener —— 防御余波
+        }
+        if (candidate === null) {
+          signaling.sendIceEnd();
+          return;
+        }
+        signaling.sendIceCandidate(candidate);
+      }),
     );
   }
 
@@ -388,7 +403,7 @@ export class RoomConnectionController {
     return description.sdp;
   }
 
-  // ---- 协商（SG-3：全量 gather SDP；SG-4 改 trickle） -----------------------
+  // ---- 协商（SG-4：Trickle ICE —— beginOffer/beginAnswer 即返，candidate 独立外发） ----
 
   /** Host：PEER_JOINED → createOffer → sendOffer（用户零感知） */
   private async hostSendOffer(): Promise<void> {
@@ -398,7 +413,7 @@ export class RoomConnectionController {
       return;
     }
     try {
-      const encodedOffer = await transport.createOffer(); // 内含 ICE gather 等待（SG-4 移除）
+      const encodedOffer = await transport.beginOffer(); // Trickle：不等 gathering，candidate 随后流出
       if (this.controllerState !== RoomConnectionState.NEGOTIATING || this.signaling === null) {
         return; // 期间已被 fail / PEER_LEFT 接管
       }
@@ -450,7 +465,7 @@ export class RoomConnectionController {
     }
     try {
       await transport.acceptOffer(JSON.stringify({ type: 'offer', sdp }));
-      const encodedAnswer = await transport.createAnswer(); // 内含 ICE gather 等待（SG-4 移除）
+      const encodedAnswer = await transport.beginAnswer(); // Trickle：不等 gathering，candidate 随后流出
       if (this.controllerState !== RoomConnectionState.NEGOTIATING || this.signaling === null) {
         return;
       }

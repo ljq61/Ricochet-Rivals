@@ -72,6 +72,8 @@ export class FakeRTCPeerConnection {
   iceGatheringState: RTCIceGatheringState = 'new';
   closed = false;
   readonly dataChannels: FakeRTCDataChannel[] = [];
+  /** SG-4：经 transport.addIceCandidate 成功落库的对端 candidate（malformed 不入） */
+  readonly addedCandidates: RTCIceCandidateInit[] = [];
   localDescription: { type: RTCSdpType; sdp: string } | null = null;
   remoteDescription: { type: RTCSdpType; sdp: string } | null = null;
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
@@ -143,6 +145,26 @@ export class FakeRTCPeerConnection {
   completeIceGathering(): void {
     this.iceGatheringState = 'complete';
     this.emit('icegatheringstatechange');
+    // browser contract：gathering 完结时 onicecandidate 收到 null candidate
+    this.emit('icecandidate', { candidate: null });
+  }
+
+  /** SG-4：模拟浏览器逐个产出本地 candidate */
+  emitLocalCandidate(candidate: {
+    candidate: string;
+    sdpMid?: string | null;
+    sdpMLineIndex?: number | null;
+  }): void {
+    this.emit('icecandidate', { candidate });
+  }
+
+  /** SG-4：真实浏览器对畸形 candidate 会 reject —— fake 以 'candidate:' 前缀校验模拟 */
+  async addIceCandidate(candidate?: RTCIceCandidateInit | null): Promise<void> {
+    const text = candidate?.candidate;
+    if (typeof text !== 'string' || !text.startsWith('candidate:')) {
+      throw new Error(`FakeRTCPeerConnection.addIceCandidate malformed: ${String(text)}`);
+    }
+    this.addedCandidates.push(candidate ?? {});
   }
 
   failConnection(): void {

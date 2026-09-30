@@ -6,6 +6,7 @@ import { TransportError } from '../../src/game/network/NetworkTransport';
 import { TransportState } from '../../src/game/network/TransportState';
 import { WebRTCTransport } from '../../src/game/network/WebRTCTransport';
 import { serializeEnvelope } from '../../src/game/network/serialization/NetworkSerializer';
+import type { SignalingIceCandidate } from '../../src/game/network/signaling/SignalingMessage';
 import { makeEnvelope } from './envelopeFixture';
 
 /**
@@ -71,12 +72,14 @@ class FakeRTCDataChannel {
   }
 }
 
-class FakeRTCPeerConnection {
+export class FakeRTCPeerConnection {
   connectionState: RTCPeerConnectionState = 'new';
   iceConnectionState: RTCIceConnectionState = 'new';
   iceGatheringState: RTCIceGatheringState = 'new';
   closed = false;
   readonly dataChannels: FakeRTCDataChannel[] = [];
+  /** SG-4：经 transport.addIceCandidate 成功落库的对端 candidate（malformed 不入） */
+  readonly addedCandidates: RTCIceCandidateInit[] = [];
   localDescription: { type: RTCSdpType; sdp: string } | null = null;
   remoteDescription: { type: RTCSdpType; sdp: string } | null = null;
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
@@ -148,6 +151,26 @@ class FakeRTCPeerConnection {
   completeIceGathering(): void {
     this.iceGatheringState = 'complete';
     this.emit('icegatheringstatechange');
+    // browser contract：gathering 完结时 onicecandidate 收到 null candidate
+    this.emit('icecandidate', { candidate: null });
+  }
+
+  /** SG-4：模拟浏览器逐个产出本地 candidate */
+  emitLocalCandidate(candidate: {
+    candidate: string;
+    sdpMid?: string | null;
+    sdpMLineIndex?: number | null;
+  }): void {
+    this.emit('icecandidate', { candidate });
+  }
+
+  /** SG-4：真实浏览器对畸形 candidate 会 reject —— fake 以 'candidate:' 前缀校验模拟 */
+  async addIceCandidate(candidate?: RTCIceCandidateInit | null): Promise<void> {
+    const text = candidate?.candidate;
+    if (typeof text !== 'string' || !text.startsWith('candidate:')) {
+      throw new Error(`FakeRTCPeerConnection.addIceCandidate malformed: ${String(text)}`);
+    }
+    this.addedCandidates.push(candidate ?? {});
   }
 
   failConnection(): void {
@@ -494,5 +517,102 @@ describe('WebRTCTransport', () => {
     await first;
     await second;
     expect(bundle.transport.state).toBe(TransportState.CONNECTED);
+  });
+});
+
+describe('WebRTCTransport — Trickle ICE（SG-4）', () => {
+  const CAND_A: SignalingIceCandidate = { candidate: 'candidate:1 1 UDP 1 10.0.0.1 40000 typ host', sdpMid: '0' };
+  const CAND_B: SignalingIceCandidate = { candidate: 'candidate:2 1 UDP 1 10.0.0.2 40001 typ srflx', sdpMid: '0' };
+
+  it('T4：beginOffer/beginAnswer 即时返回 —— 不等 ICE gathering（对照 createOffer 仍等待）', async () => {
+    const host = makeTransport('host');
+    const hostPending = host.transport.beginOffer();
+    const hostSdp = await hostPending; // 无 completeIceGathering 也 resolve
+    expect(JSON.parse(hostSdp)).toMatchObject({ type: 'offer', sdp: 'fake:offer-sdp' });
+    expect(host.pc.iceGatheringState).toBe('gathering'); // gather 仍在进行
+
+    const guest = makeTransport('guest');
+    await guest.transport.acceptOffer(JSON.stringify({ type: 'offer', sdp: 'fake:offer-sdp' }));
+    const guestSdp = await guest.transport.beginAnswer();
+    expect(JSON.parse(guestSdp)).toMatchObject({ type: 'answer', sdp: 'fake:answer-sdp' });
+  });
+
+  it('T5：本地 candidate 事件映射 + null 完结（browser contract）', async () => {
+    const bundle = makeTransport('host');
+    const received: Array<unknown> = [];
+    bundle.transport.onLocalIceCandidate((candidate) => received.push(candidate));
+
+    bundle.pc.emitLocalCandidate({ candidate: 'candidate:1 1 UDP 1 10.0.0.1 40000 typ host', sdpMid: '0' });
+    bundle.pc.emitLocalCandidate({ candidate: 'candidate:2 1 UDP 1 10.0.0.2 40001 typ srflx', sdpMid: '0' });
+    bundle.pc.completeIceGathering(); // → null candidate 事件
+
+    expect(received.length).toBe(3);
+    const first = received[0] as { candidate?: string; sdpMid?: string };
+    expect(first.candidate).toContain('typ host');
+    expect(first.sdpMid).toBe('0');
+    expect(received[2]).toBeNull(); // end of candidates
+  });
+
+  it('T6：candidate 先于 remoteDescription → 入队；acceptOffer 后按序 flush', async () => {
+    const bundle = makeTransport('guest');
+    bundle.transport.addIceCandidate(CAND_A);
+    bundle.transport.addIceCandidate(CAND_B);
+    expect(bundle.pc.addedCandidates.length).toBe(0); // remoteDescription 未 set → 入队
+
+    await bundle.transport.acceptOffer(JSON.stringify({ type: 'offer', sdp: 'fake:offer-sdp' }));
+    expect(bundle.pc.addedCandidates.length).toBe(2);
+    expect(bundle.pc.addedCandidates[0]?.candidate).toContain('10.0.0.1');
+    expect(bundle.pc.addedCandidates[1]?.candidate).toContain('10.0.0.2'); // flush 顺序保持
+  });
+
+  it('T7：remoteDescription 已 apply → candidate 直通（无队列）', async () => {
+    const bundle = makeTransport('host');
+    await createOfferWithIce(bundle); // host 侧 localDescription 就绪
+    await bundle.transport.acceptAnswer(JSON.stringify({ type: 'answer', sdp: 'fake:answer-sdp' }));
+
+    bundle.transport.addIceCandidate(CAND_A);
+    await tick();
+    expect(bundle.pc.addedCandidates.length).toBe(1); // 直通
+  });
+
+  it('T8：duplicate candidate 丢弃（candidate 文本复合键去重）', async () => {
+    const bundle = makeTransport('host');
+    await bundle.transport.acceptAnswer(JSON.stringify({ type: 'answer', sdp: 'fake:answer-sdp' }));
+
+    bundle.transport.addIceCandidate(CAND_A);
+    bundle.transport.addIceCandidate(CAND_A); // 完全重复
+    bundle.transport.addIceCandidate({ ...CAND_A, sdpMid: '1' }); // 同文本不同 m-line → 不算重复
+    await tick();
+    expect(bundle.pc.addedCandidates.length).toBe(2);
+  });
+
+  it('T9：malformed candidate 拒收不崩 —— 后续合法候选不受影响', async () => {
+    const bundle = makeTransport('host');
+    await bundle.transport.acceptAnswer(JSON.stringify({ type: 'answer', sdp: 'fake:answer-sdp' }));
+
+    expect(() => bundle.transport.addIceCandidate({ candidate: 'garbage-line' })).not.toThrow();
+    await tick();
+    bundle.transport.addIceCandidate(CAND_A);
+    await tick();
+    expect(bundle.pc.addedCandidates.length).toBe(1); // 畸形被拒、合法落库
+  });
+
+  it('T10：close 全清理扩展 —— icecandidate listener 摘除、candidate 订阅清空、pending 队列弃置', async () => {
+    const bundle = makeTransport('guest');
+    let endEvents = 0;
+    bundle.transport.onLocalIceCandidate((candidate) => {
+      if (candidate === null) endEvents += 1;
+    });
+    bundle.transport.addIceCandidate(CAND_A); // 入队
+    bundle.transport.close();
+
+    expect(bundle.pc.listenerCount('icecandidate')).toBe(0);
+    // close 后 fake 事件不再到达 transport（listener 已摘）—— 订阅侧零回调
+    bundle.pc.completeIceGathering();
+    bundle.pc.emitLocalCandidate({ candidate: 'candidate:3 1 UDP 1 10.0.0.3 40002 typ relay' });
+    expect(endEvents).toBe(0);
+
+    // 队列已弃置：重新 open 不可达（transport CLOSED），无泄漏路径
+    expect(bundle.transport.state).toBe(TransportState.CLOSED);
   });
 });

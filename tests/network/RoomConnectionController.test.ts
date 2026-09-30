@@ -102,9 +102,7 @@ async function hostAtNegotiating(h: RoomHarness): Promise<void> {
   expect(h.controller.currentState).toBe(RoomConnectionState.ROOM_WAITING);
 
   h.ws.serverSend(frame({ type: 'PEER_JOINED' }));
-  await tick(); // createOffer → setLocalDescription → fake 进入 gathering
-  h.pc.completeIceGathering();
-  await tick(); // OFFER 帧落盘
+  await tick(); // Trickle（SG-4）：beginOffer 即时外发，不等 gathering
 }
 
 /** Host 全流推进到 CONNECTED（通道已开、PING 已发，等 PONG） */
@@ -135,19 +133,45 @@ function expectAnyRejection(promise: Promise<unknown>): Promise<Error> {
 }
 
 describe('RoomConnectionController', () => {
-  it('1. Host 全流：createRoom → ROOM_WAITING（房间码就绪）→ PEER_JOINED → OFFER 自动外发 → ANSWER 应用 → CONNECTED → PONG → VERIFIED + OnlineSession', async () => {
+  it('1. Host 全流 + Trickle：OFFER 即时外发 → candidate 顺序外发 → ICE_END → 对端 candidate（含畸形）落库不崩 → PONG → VERIFIED', async () => {
     const h = makeHarness();
-    await hostAtConnected(h);
+    await hostAtNegotiating(h);
 
-    // OFFER 已自动外发（用户零感知 SDP）
+    // OFFER 已自动外发（Trickle：不等 gathering —— 用户零感知 SDP）
     const offerFrame = h.ws.sentFrames().find((f) => f['type'] === 'OFFER');
     expect(offerFrame).toMatchObject({ type: 'OFFER', sdp: 'fake:offer-sdp' });
 
-    expect(h.controller.currentState).toBe(RoomConnectionState.CONNECTED);
+    // 本地 candidate 逐个外发（顺序保持）
+    h.pc.emitLocalCandidate({ candidate: 'candidate:1 1 UDP 1 192.168.1.10 40000 typ host', sdpMid: '0' });
+    h.pc.emitLocalCandidate({ candidate: 'candidate:2 1 UDP 1 8.8.8.8 40001 typ srflx', sdpMid: '0' });
+    await tick();
+    const candFrames = h.ws.sentFrames().filter((f) => f['type'] === 'ICE_CANDIDATE');
+    expect(candFrames.length).toBe(2);
+    expect((candFrames[0]?.['candidate'] as { candidate?: string }).candidate).toContain('192.168.1.10');
+    expect((candFrames[1]?.['candidate'] as { candidate?: string }).candidate).toContain('8.8.8.8');
+
+    // gathering 完结（null candidate）→ ICE_END 外发
+    h.pc.completeIceGathering();
+    await tick();
+    expect(h.ws.sentFrames().some((f) => f['type'] === 'ICE_END')).toBe(true);
+
+    // ANSWER 应用 → 对端 candidate 直通落库；畸形 candidate 拒收不崩、后续合法仍可加
+    h.ws.serverSend(frame({ type: 'ANSWER', sdp: 'fake:answer-sdp' }));
+    await tick();
+    h.ws.serverSend(frame({ type: 'ICE_CANDIDATE', candidate: { candidate: 'garbage-line', sdpMid: '0' } }));
+    h.ws.serverSend(frame({ type: 'ICE_CANDIDATE', candidate: { candidate: 'candidate:9 1 UDP 1 172.16.0.9 50000 typ host', sdpMid: '0' } }));
+    await tick();
+    expect(h.pc.addedCandidates.length).toBe(1); // 只落合法那枚
+    expect(h.pc.addedCandidates[0]?.candidate).toContain('172.16.0.9');
+
     const channel = h.pc.dataChannels[0];
     if (channel === undefined) {
       throw new Error('host channel missing');
     }
+    channel.simulateOpen();
+    await tick();
+    expect(h.controller.currentState).toBe(RoomConnectionState.CONNECTED);
+
     // PING 已发（验证流启动）
     expect(channel.sent.some((raw) => raw.includes('"PING"'))).toBe(true);
 
@@ -169,7 +193,7 @@ describe('RoomConnectionController', () => {
     expect(h.failures).toEqual([]);
   });
 
-  it('2. Guest 全流：joinRoom → ROOM_JOINED → NEGOTIATING → OFFER 应用 → ANSWER 自动外发 → CONNECTED → PONG → VERIFIED（P2）', async () => {
+  it('2. Guest 全流 + Trickle：candidate 先于 OFFER 到达（排队）→ OFFER 应用后 flush → ANSWER 自动外发 → candidate/ICE_END → PONG → VERIFIED（P2）', async () => {
     const h = makeHarness();
     const pending = h.controller.joinRoom(ROOM_CODE);
     h.ws.simulateOpen();
@@ -179,13 +203,26 @@ describe('RoomConnectionController', () => {
     await pending;
     expect(h.controller.currentState).toBe(RoomConnectionState.NEGOTIATING);
 
+    // Trickle 常态：Host 的 candidate 与 OFFER 同波先后到达 —— candidate 先入队
     h.ws.serverSend(frame({ type: 'OFFER', sdp: 'fake:offer-sdp' }));
-    await tick(); // acceptOffer → fake 产生 datachannel → createAnswer → gathering
-    h.pc.completeIceGathering();
-    await tick(); // ANSWER 外发 + connect pending
+    h.ws.serverSend(frame({ type: 'ICE_CANDIDATE', candidate: { candidate: 'candidate:7 1 UDP 1 10.0.0.7 41000 typ host', sdpMid: '0' } }));
+    await tick(); // acceptOffer（remoteDescription set → 队列 flush）→ beginAnswer → ANSWER 即时外发
 
     const answerFrame = h.ws.sentFrames().find((f) => f['type'] === 'ANSWER');
     expect(answerFrame).toMatchObject({ type: 'ANSWER', sdp: 'fake:answer-sdp' });
+    // 先到的 candidate 已 flush 落库（candidate-before-remoteDescription 队列路径）
+    expect(h.pc.addedCandidates.length).toBe(1);
+    expect(h.pc.addedCandidates[0]?.candidate).toContain('10.0.0.7');
+
+    // Guest 本地 candidate 外发 + ICE_END
+    h.pc.emitLocalCandidate({ candidate: 'candidate:8 1 UDP 1 10.0.0.8 42000 typ host', sdpMid: '0' });
+    await tick();
+    const candFrames = h.ws.sentFrames().filter((f) => f['type'] === 'ICE_CANDIDATE');
+    expect(candFrames.length).toBe(1);
+    expect((candFrames[0]?.['candidate'] as { candidate?: string }).candidate).toContain('10.0.0.8');
+    h.pc.completeIceGathering(); // null candidate → ICE_END
+    await tick();
+    expect(h.ws.sentFrames().some((f) => f['type'] === 'ICE_END')).toBe(true);
 
     const channel = h.pc.dataChannels[0]; // guest 通道经 datachannel 事件挂载
     if (channel === undefined) {
@@ -240,7 +277,7 @@ describe('RoomConnectionController', () => {
     expect(h.controller.lastFailure?.code).toBe('ROOM_FULL');
   });
 
-  it('6. PEER_LEFT：协商期对端离开 → FAILED(PEER_LEFT)，在飞 offer 静默中止', async () => {
+  it('6. PEER_LEFT：协商期对端离开 → FAILED(PEER_LEFT)，OFFER 已按 Trickle 即时外发、后续 candidate 余波不再外发', async () => {
     const h = makeHarness();
     const pending = h.controller.createRoom();
     h.ws.simulateOpen();
@@ -248,13 +285,17 @@ describe('RoomConnectionController', () => {
     h.ws.serverSend(roomAckFrame('ROOM_CREATED'));
     await pending;
     h.ws.serverSend(frame({ type: 'PEER_JOINED' }));
-    await tick(); // offer 挂起（gathering 中）
+    await tick(); // Trickle：beginOffer 即时外发（不等 gathering —— SG-4 语义）
     h.ws.serverSend(frame({ type: 'PEER_LEFT' }));
     await tick();
     expect(h.controller.currentState).toBe(RoomConnectionState.FAILED);
     expect(h.controller.lastFailure?.reason).toBe('PEER_LEFT');
-    // offer 中止后不再外发（gather 未完成 → 帧面零 OFFER）
-    expect(h.ws.sentFrames().some((f) => f['type'] === 'OFFER')).toBe(false);
+    expect(h.ws.sentFrames().some((f) => f['type'] === 'OFFER')).toBe(true);
+
+    // fail 后 transport 已关：本地 candidate 余波（emit 无人听）不再外发
+    h.pc.emitLocalCandidate({ candidate: 'candidate:1 1 UDP 1 192.168.1.4 54321 typ host', sdpMid: '0' });
+    await tick();
+    expect(h.ws.sentFrames().filter((f) => f['type'] === 'ICE_CANDIDATE').length).toBe(0);
   });
 
   it('7. CONNECT_FAILED：协商窗口超时（PEER_JOINED 后无 ANSWER）→ FAILED', async () => {

@@ -1,7 +1,7 @@
 # Ricochet Rivals — Development Tasks
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
-> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 Signaling 协议 + Client ✅ / SG-2 Signaling Server ✅ / SG-3 RoomConnectionController（自动 SDP）✅（2026-09-30，server 25/25 + 根 542/542）；SG-4 起待做。详见「Online Connection Migration」章节。**
+> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— SG-0 审计 ✅ / SG-1 协议+Client ✅ / SG-2 Server ✅ / SG-3 RoomConnectionController（自动 SDP）✅ / SG-4 Trickle ICE ✅（2026-09-30，server 25/25 + 根 549/549）；SG-5 起待做。详见「Online Connection Migration」章节。**
 > 当前验证：`npm run typecheck` / `npm run test`（500）/ `npm run build` 已通过；Phase 18 agent 侧 + P3 修复后 `npm run e2e` 全量 **147 passed / 0 failed**（含 932×430@DPR3 移动段 17 项；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
@@ -2425,13 +2425,55 @@ tsconfig 无 DOM lib 依赖；根 typecheck/test 不含 server，server 自带 `
 根 build ✅ / server/signaling **25/25** ✅（协议未动回归确认）
 （SG-3 未接 Scene —— E2E 留待 SG-5 UI 集成时全量回归）
 
+## SG-4 Trickle ICE ✅（2026-09-30）
+
+Manual 流（全量 gather SDP）与 Room 流（Trickle）并存：`createOffer/createAnswer`
+行为不变（Manual fallback 零回归，30 个 transport+manual 测试全绿守住）；Room 流
+切换到新 Trickle API —— **不因 candidate 未生成而阻塞 Offer/Answer**（规格核心）。
+
+WebRTCTransport（378 → 479 行）新增：
+
+- [x] `beginOffer()/beginAnswer()`：createOffer/createAnswer 改为其组合 +
+      `waitForIceGatheringComplete`（Manual 语义不变，实现去重）；begin* 即返
+      —— 本地 candidate 随后经事件流出
+- [x] `onLocalIceCandidate(handler)`：browser contract 原样映射
+      （`candidate === null` = 本端 gathering 完结 → 上层发 ICE_END）
+- [x] `addIceCandidate(candidate)`：**remoteDescription 未 apply → 内部
+      pending 队列，apply 后按序 flush**（candidate 先于 Offer/Answer 到达是
+      Trickle 常态）；sdpMid+sdpMLineIndex+文本复合键去重（duplicate 零成本
+      丢弃）；`pc.addIceCandidate` 失败（畸形候选）记录不崩、后续合法候选
+      不受影响（Untrusted Input）；close 全清理扩展（listener 摘除 / 订阅
+      清空 / 队列弃置）
+
+RoomConnectionController 接线：
+
+- [x] hostSendOffer/guestHandleOffer → `beginOffer/beginAnswer`（OFFER/ANSWER
+      即时外发）
+- [x] `onLocalIceCandidate` 订阅 → `sendIceCandidate`/`sendIceEnd` 逐帧外发
+      （null → ICE_END）；fail/交接后余波防御（signaling null 短路）
+- [x] 入站 `ICE_CANDIDATE` → `transport.addIceCandidate`（含 candidate 先于
+      OFFER 到达的排队路径）；`ICE_END` = informational（ICE 不依赖显式 end）
+
+测试（新增 7，总 **549/549**；两套 fake 同步扩展：addIceCandidate
+'candidate:' 前缀校验=malformed 模拟 + addedCandidates 记录 + complete 补发
+null candidate 事件）：
+
+- [x] Transport 级（T4~T10）：begin* 不等 gathering（对照 createOffer 仍等待）/
+      本地 candidate 映射 + null 完结 / candidate before remoteDescription 入队 /
+      apply 后 flush 顺序保持 / 已 apply 直通 / duplicate 复合键去重（同文本
+      不同 m-line 不算重复）/ malformed 不崩且后续合法可加 / close 清理
+- [x] Controller 级：Host 全流补 trickle 断言（candidate 顺序外发 + ICE_END +
+      对端畸形/合法候选落库）；Guest **candidate 先于 OFFER 同波到达** →
+      队列 flush 端到端；PEER_LEFT 测试语义随 Trickle 更新（OFFER 已即时
+      外发为正确行为，断言 fail 后 candidate 余波不再外发）
+
+验证（2026-09-30）：根 typecheck ✅ / 根 test **549/549** ✅ / 根 build ✅ /
+server/signaling **25/25** ✅（未动回归确认）
+
 ## 待办（后续 Stage）
 
-- SG-4 Trickle ICE：WebRTCTransport 改造（onIceCandidate 订阅 / addIceCandidate +
-  remoteDescription 未 set 的 pending 队列 / createOffer·createAnswer 不再等
-  gathering）+ RoomConnectionController 接线（sendIceCandidate/sendIceEnd 外发、
-  入站 ICE_CANDIDATE/ICE_END 消费）
-- SG-5 Room Connection UI（Scene 接线：ONLINE → CREATE/JOIN → 房间码显示 + COPY /
+- SG-5 Room Connection UI（Scene 接线：ONLINE → CREATE/JOIN → 房间码显示 + COPY +
+  WAITING/CONNECTING/CONNECTED/VERIFIED 渲染 / JOIN 输入 / 失败分类文案 / RETRY·BACK；
   DEBUG_GAME 门控切 Manual SDP fallback）+ E2E（真实 Signaling Server 驱动双页）
 - SG-6 TURN/coturn 动态凭据（Signaling 下发 iceServers 含临时凭据）+ SG-7 失败
   分类 UX + SG-8 ICE Restart（复用 session.signaling 活通道 + peerToken）

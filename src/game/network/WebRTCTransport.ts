@@ -5,6 +5,7 @@ import { TransportState } from './TransportState';
 import { DEFAULT_WEBRTC_CONFIG, type WebRTCConfig } from './WebRTCConfig';
 import { deserializeEnvelope, serializeEnvelope } from './serialization/NetworkSerializer';
 import { decodeSignaling, encodeDescription, waitForIceGatheringComplete } from './signaling/SignalingCodec';
+import type { SignalingIceCandidate } from './signaling/SignalingMessage';
 
 /**
  * WebRTC P2P 传输实现（Phase 12 委托②）。
@@ -54,6 +55,13 @@ export class WebRTCTransport implements NetworkTransport {
   private readonly messageHandlers = new Set<(message: NetworkEnvelope) => void>();
   private readonly stateChangeHandlers = new Set<(state: TransportState) => void>();
   private readonly disconnectHandlers = new Set<(reason?: string) => void>();
+  /** SG-4：本地 ICE candidate 订阅者（null = 本端 gathering 完结） */
+  private readonly localIceCandidateHandlers = new Set<(candidate: SignalingIceCandidate | null) => void>();
+  /** SG-4：remoteDescription 未 apply 前到达的对端 candidate（apply 后 flush） */
+  private readonly pendingRemoteCandidates: SignalingIceCandidate[] = [];
+  /** SG-4：candidate 复合键去重（sdpMid + sdpMLineIndex + 文本）——重复投递零成本丢弃 */
+  private readonly seenRemoteCandidates = new Set<string>();
+  private remoteDescriptionApplied = false;
 
   constructor(options: WebRTCTransportOptions) {
     const config = options.config ?? DEFAULT_WEBRTC_CONFIG;
@@ -61,6 +69,7 @@ export class WebRTCTransport implements NetworkTransport {
     this.pc = factory(config);
     this.pc.addEventListener('connectionstatechange', this.handleConnectionStateChange);
     this.pc.addEventListener('iceconnectionstatechange', this.handleIceConnectionStateChange);
+    this.pc.addEventListener('icecandidate', this.handleIceCandidate);
     if (options.role === 'host') {
       this.attachChannel(this.pc.createDataChannel(DATA_CHANNEL_LABEL, { ordered: true }));
     } else {
@@ -138,6 +147,26 @@ export class WebRTCTransport implements NetworkTransport {
         break;
       default:
         break;
+    }
+  };
+
+  /** SG-4：本地 candidate 事件（browser contract：candidate === null = gathering 完结） */
+  private readonly handleIceCandidate = (event: RTCPeerConnectionIceEvent): void => {
+    const candidate = event.candidate;
+    if (candidate === null) {
+      for (const handler of [...this.localIceCandidateHandlers]) {
+        handler(null);
+      }
+      return;
+    }
+    const mapped: SignalingIceCandidate = {
+      candidate: candidate.candidate,
+      sdpMid: candidate.sdpMid,
+      sdpMLineIndex: candidate.sdpMLineIndex,
+      usernameFragment: candidate.usernameFragment,
+    };
+    for (const handler of [...this.localIceCandidateHandlers]) {
+      handler(mapped);
     }
   };
 
@@ -237,6 +266,7 @@ export class WebRTCTransport implements NetworkTransport {
     // 1) 先摘全部 DOM listener —— teardown 自身不触发任何 spurious 回调
     this.pc.removeEventListener('connectionstatechange', this.handleConnectionStateChange);
     this.pc.removeEventListener('iceconnectionstatechange', this.handleIceConnectionStateChange);
+    this.pc.removeEventListener('icecandidate', this.handleIceCandidate);
     this.pc.removeEventListener('datachannel', this.handleDataChannelEvent);
     const channel = this.dataChannel;
     if (channel !== null) {
@@ -266,34 +296,105 @@ export class WebRTCTransport implements NetworkTransport {
     this.messageHandlers.clear();
     this.stateChangeHandlers.clear();
     this.disconnectHandlers.clear();
+    this.localIceCandidateHandlers.clear();
+    this.pendingRemoteCandidates.length = 0;
+    this.seenRemoteCandidates.clear();
   }
 
-  // ---- Offer / Answer（Phase 13 信令搬运；SDP 以 JSON string 编码） ----
+  // ---- Offer / Answer（Phase 13 手动流：全量 gather SDP —— ICE 收齐再返回） ----
 
   async createOffer(): Promise<string> {
-    this.assertAliveForSignaling('createOffer');
-    const description = await this.pc.createOffer();
-    await this.pc.setLocalDescription(description);
+    const encoded = await this.beginOffer();
     await waitForIceGatheringComplete(this.pc, this.pendingIceRejects);
-    return encodeDescription(this.pc.localDescription ?? description);
+    return encoded;
   }
 
   async acceptOffer(encodedOffer: string): Promise<void> {
     this.assertAliveForSignaling('acceptOffer');
     await this.pc.setRemoteDescription(decodeSignaling(encodedOffer, 'offer'));
+    this.remoteDescriptionApplied = true;
+    await this.flushPendingRemoteCandidates();
   }
 
   async createAnswer(): Promise<string> {
-    this.assertAliveForSignaling('createAnswer');
-    const description = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(description);
+    const encoded = await this.beginAnswer();
     await waitForIceGatheringComplete(this.pc, this.pendingIceRejects);
-    return encodeDescription(this.pc.localDescription ?? description);
+    return encoded;
   }
 
   async acceptAnswer(encodedAnswer: string): Promise<void> {
     this.assertAliveForSignaling('acceptAnswer');
     await this.pc.setRemoteDescription(decodeSignaling(encodedAnswer, 'answer'));
+    this.remoteDescriptionApplied = true;
+    await this.flushPendingRemoteCandidates();
+  }
+
+  // ---- Trickle ICE（SG-4，Room 流；Manual 流不使用本段） -------------------
+
+  /** createOffer + setLocalDescription 即返 —— 不等 gathering；本地 candidate 随后经 onLocalIceCandidate 流出 */
+  async beginOffer(): Promise<string> {
+    this.assertAliveForSignaling('beginOffer');
+    const description = await this.pc.createOffer();
+    await this.pc.setLocalDescription(description);
+    return encodeDescription(this.pc.localDescription ?? description);
+  }
+
+  /** createAnswer + setLocalDescription 即返 —— 不等 gathering */
+  async beginAnswer(): Promise<string> {
+    this.assertAliveForSignaling('beginAnswer');
+    const description = await this.pc.createAnswer();
+    await this.pc.setLocalDescription(description);
+    return encodeDescription(this.pc.localDescription ?? description);
+  }
+
+  /** 本地 ICE candidate 事件（browser contract：null = 本端 gathering 完结 → 对端发 ICE_END） */
+  onLocalIceCandidate(handler: (candidate: SignalingIceCandidate | null) => void): () => void {
+    this.localIceCandidateHandlers.add(handler);
+    return () => {
+      this.localIceCandidateHandlers.delete(handler);
+    };
+  }
+
+  /**
+   * 接收对端 candidate（Untrusted Input —— 网络来的东西不致命）：
+   * * remoteDescription 未 apply → 内部队列，apply 后按序 flush
+   *   （candidate 先于 Offer/Answer 到达是 Trickle 常态，不阻塞协商）
+   * * candidate 文本重复 → 丢弃
+   * * addIceCandidate 失败（畸形候选）→ 记录不崩，后续合法候选不受影响
+   */
+  addIceCandidate(candidate: SignalingIceCandidate): void {
+    if (isDeadState(this.transportState)) {
+      console.debug('[WebRTCTransport] addIceCandidate dropped: transport dead');
+      return;
+    }
+    const key = `${candidate.sdpMid ?? ''}|${candidate.sdpMLineIndex ?? ''}|${candidate.candidate}`;
+    if (this.seenRemoteCandidates.has(key)) {
+      console.debug('[WebRTCTransport] duplicate candidate dropped');
+      return;
+    }
+    this.seenRemoteCandidates.add(key);
+    if (!this.remoteDescriptionApplied) {
+      this.pendingRemoteCandidates.push(candidate);
+      return;
+    }
+    void this.applyRemoteCandidate(candidate);
+  }
+
+  private async applyRemoteCandidate(candidate: SignalingIceCandidate): Promise<void> {
+    try {
+      // SignalingIceCandidate 结构兼容 RTCIceCandidateInit（协议测试含编译期断言）
+      await this.pc.addIceCandidate(candidate);
+    } catch (error) {
+      console.warn('[WebRTCTransport] addIceCandidate rejected (dropped):', error);
+    }
+  }
+
+  private async flushPendingRemoteCandidates(): Promise<void> {
+    const queued = [...this.pendingRemoteCandidates];
+    this.pendingRemoteCandidates.length = 0;
+    for (const candidate of queued) {
+      await this.applyRemoteCandidate(candidate);
+    }
   }
 
   // ---- 内部 ----
