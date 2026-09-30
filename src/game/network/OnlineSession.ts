@@ -35,7 +35,7 @@ export interface OnlineSession {
    * 对局期间保持连接 —— 房间存活 + peerToken 即 SG-8 ICE restart 的重信令
    * 通道（玩家无需重输房间码）；生命周期由 SessionManager dispose 链收口。
    */
-  readonly signaling?: SignalingClient;
+  signaling?: SignalingClient;
   /**
    * SG-8（Room 流专属；Manual debug 流为 undefined）：对局期连接恢复上下文。
    * BattleScene 据此组装 RoomRecoveryController（限次 ICE restart + 重信令）；
@@ -67,6 +67,19 @@ export class OnlineSessionManager {
       this.disposeSession();
     }
     this.session = session;
+  }
+
+  /** 接管重建信令；旧 Scene / 已退出的会话不能复活连接。 */
+  replaceSignaling(session: OnlineSession, signaling: SignalingClient): boolean {
+    if (this.session !== session) {
+      return false;
+    }
+    const previous = session.signaling;
+    session.signaling = signaling;
+    if (previous !== signaling) {
+      previous?.close();
+    }
+    return true;
   }
 
   /** 彻底销毁：manager 退订 + transport close + signaling close；幂等 */

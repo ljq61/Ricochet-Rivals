@@ -86,6 +86,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
   /** onSyncFailure 终局去重（每场恰一次） */
   private syncFailureNotified = false;
   private readonly hostAckTimeoutMs: number;
+  private readonly hostMovementNow: (() => number) | undefined;
 
   private inputBusValue: CommandBus | null = null;
   private damageSystemValue: DamageSystem | null = null;
@@ -95,6 +96,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
     this.nm = options.session.networkManager;
     this.createMatchIdentity = options.createMatchIdentity;
     this.hostAckTimeoutMs = options.hostAckTimeoutMs ?? 8_000;
+    this.hostMovementNow = options.hostMovementNow;
     // 通道中断订阅与生命周期同寿（Lobby / Battle 各自回调槽转发）
     this.cancels.push(this.nm.onDisconnect((reason) => this.handleDisconnect(reason)));
   }
@@ -258,7 +260,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
           gameLogic: deps.gameLogic,
           resumeNextTurn: deps.resumeNextTurn,
         },
-        { ackTimeoutMs: this.hostAckTimeoutMs },
+        { ackTimeoutMs: this.hostAckTimeoutMs, movementNow: this.hostMovementNow },
       );
       this.cancels.push(this.hostChannel.attach());
       return;

@@ -2750,8 +2750,18 @@ pc.close() 根因修复——SCTP close 送达后 CHANNEL_CLOSED 即时路径恢
 - Guest 的 restart OFFER 可能先于其 recoverConnect 武装到达（transport
   仍 FAILED → acceptOffer 拒绝）→ 靠 Host 下一轮重发兜底，最坏浪费一个
   20s 窗
-- dispose 后 verifyLiveness / waitForRoomAck 内层 timer 有界空触发（≤10s），
-  无功能影响
+- dispose 后 verifyLiveness 内层 timer 有界空触发（≤10s），无功能影响；
+  waitForRoomAck 的 timer 已在本轮 P2 修复中随 dispose 清理
+
+## 联机审查修复 ✅（2026-09-30）
+
+- [x] P1 F1/F2：恢复快照补驱回合/相机，持续锁定移动、瞄准及发射，旧场景回调失效。
+- [x] P2 F3：加入方移动改有符号增量，Host 限速并验证预算/边界；移动后立即发射从权威炮塔校正。27 帧实际计时下双方在 0/100/200ms RTT 均移动 125.333333px。
+- [x] P2 F4/F7/F8：信令心跳释放半开连接，有效 token 接管旧槽且迟到关闭不伤新槽，TTL/grace 生效，房间删除统一通知与解绑。
+- [x] P2 F5/F6：重建信令由 Session 跨结算/重赛持有，失败连接关闭，旧恢复器异步应答与迟到拒绝收口。
+- [x] 最终客户端测试 611/611、服务端 41/41、类型检查与构建、完整浏览器 E2E 188/188；独立复核无剩余阻塞。浏览器新增 WS 重建→Result 超过测试 grace→Rematch→再次重建与对账。
+
+详细根因、测试范围和部署限制见 [联机审查记录](docs/review/review-2026-09-30-dev_signaling_turn-network.md)。手机尺寸测试为 Chrome 模拟；真实 Safari、跨网切换与 TURN relay 仍按下列部署待办执行。
 
 ## 待办（迁移代码侧完成，剩余为部署与验收）
 

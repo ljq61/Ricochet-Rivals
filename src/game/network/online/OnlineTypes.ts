@@ -103,10 +103,11 @@ export interface AuthoritativeGameSnapshot {
 // MOVE 同步
 // ---------------------------------------------------------------------------
 
-/** Guest → Host：移动意图（只有 Intent，无任何结果字段） */
+/** Guest → Host：有符号帧增量；targetX 保留供旧客户端使用。 */
 export interface MoveRequestPayload {
   readonly playerId: PlayerId;
-  readonly targetX: number;
+  readonly deltaX?: number;
+  readonly targetX?: number;
 }
 
 /** Host → 双方语义（Host 本地已有，Guest 应用）：权威移动结果 */
@@ -125,6 +126,7 @@ export interface MovePayload {
 export interface FireRequestPayload {
   readonly playerId: PlayerId;
   readonly weaponId: WeaponId;
+  /** 起点意图可匹配当前回合最近2秒已接受移动；Host 始终从当前权威炮塔发射。 */
   readonly startX: number;
   readonly startY: number;
   readonly velocityX: number;
@@ -323,6 +325,8 @@ export interface OnlineCoordinatorOptions {
   readonly createMatchIdentity: () => { matchId: string; seed: number };
   /** Phase 15：Host TURN_RESULT → ACK 等待超时（默认 8s；测试注入短值） */
   readonly hostAckTimeoutMs?: number;
+  /** Host 移动限速的单调时钟；默认 performance.now，测试可注入。 */
+  readonly hostMovementNow?: () => number;
 }
 
 /** DEBUG_NETWORK overlay + E2E 观测快照 */

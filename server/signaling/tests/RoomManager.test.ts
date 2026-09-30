@@ -208,7 +208,7 @@ describe('RoomManager', () => {
     expect(hostResume.notifyPeer).toBe(guestBack);
   });
 
-  it('10. token 防劫持：槽位连接中 → 同 token 声明得 ROOM_FULL（双开保护）', () => {
+  it('10. 有效 token 可接管半开原槽；无效 token 不能挤占已配对房间', () => {
     const clock = new FakeClock();
     const manager = makeManager(clock);
     const host = new FakeSignalingSocket('host');
@@ -217,16 +217,24 @@ describe('RoomManager', () => {
     const joined = manager.joinRoom(room.roomCode, undefined, guest);
     if (!joined.ok) throw new Error('setup join failed');
 
-    // 双端均连接中：任何 token 重复声明 → ROOM_FULL
-    const hostClaim = manager.joinRoom(room.roomCode, hostToken, new FakeSignalingSocket('h2'));
-    expect(hostClaim.ok).toBe(false);
-    if (hostClaim.ok) return;
-    expect(hostClaim.code).toBe('ROOM_FULL');
+    const attacker = manager.joinRoom(room.roomCode, 'wrong-token', new FakeSignalingSocket('a'));
+    expect(attacker).toMatchObject({ ok: false, code: 'ROOM_FULL' });
 
-    const guestClaim = manager.joinRoom(room.roomCode, joined.peerToken, new FakeSignalingSocket('g2'));
-    expect(guestClaim.ok).toBe(false);
-    if (guestClaim.ok) return;
-    expect(guestClaim.code).toBe('ROOM_FULL');
+    const hostBack = new FakeSignalingSocket('h2');
+    const hostClaim = manager.joinRoom(room.roomCode, hostToken, hostBack);
+    expect(hostClaim).toMatchObject({ ok: true, kind: 'resumed', role: 'host', peerToken: hostToken });
+    if (!hostClaim.ok) return;
+    expect(hostClaim.replacedSocket).toBe(host);
+    expect(room.roleOf(host)).toBeNull();
+    expect(room.roleOf(hostBack)).toBe('host');
+
+    const guestBack = new FakeSignalingSocket('g2');
+    const guestClaim = manager.joinRoom(room.roomCode, joined.peerToken, guestBack);
+    expect(guestClaim).toMatchObject({ ok: true, kind: 'resumed', role: 'guest', peerToken: joined.peerToken });
+    if (!guestClaim.ok) return;
+    expect(guestClaim.replacedSocket).toBe(guest);
+    expect(room.roleOf(guest)).toBeNull();
+    expect(room.roleOf(guestBack)).toBe('guest');
   });
 
   it('11. host 断开：grace 内新 guest join → ROOM_EXPIRED（无主房间）；host 超窗未归 → sweep 删房', () => {

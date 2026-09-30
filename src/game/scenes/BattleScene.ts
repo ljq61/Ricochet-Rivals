@@ -894,6 +894,7 @@ export class BattleScene extends Phaser.Scene {
       roomCode: session.recovery.roomCode,
       peerToken: session.recovery.peerToken,
       createSignalingClient: () => new SignalingClient({ url: resolveSignalingUrl() }),
+      adoptSignaling: (client) => sessionManager?.replaceSignaling(session, client) ?? false,
       onStateChange: (state) => this.logCameraEvent(`recovery=${state}`),
     });
   }

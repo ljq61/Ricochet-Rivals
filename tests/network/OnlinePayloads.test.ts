@@ -175,6 +175,14 @@ describe('OnlinePayloads 守卫（Phase 14）', () => {
       expect(isMoveRequestPayload(corrupt({ playerId: 'P2', targetX: 500 }, (r) => { r.targetX = '500'; }))).toBe(false);
     });
 
+    it('帧增量 finite 必须合法；缺失/畸形增量不能借旧 targetX 绕过', () => {
+      expect(isMoveRequestPayload({ playerId: 'P2', deltaX: -5 })).toBe(true);
+      expect(isMoveRequestPayload({ playerId: 'P2', deltaX: 0 })).toBe(true);
+      expect(isMoveRequestPayload({ playerId: 'P2' })).toBe(false);
+      expect(isMoveRequestPayload({ playerId: 'P2', deltaX: Infinity })).toBe(false);
+      expect(isMoveRequestPayload({ playerId: 'P2', deltaX: NaN, targetX: 500 })).toBe(false);
+    });
+
     it('② MOVE 合法通过；x / moveRemaining 腐蚀拒绝', () => {
       expect(isMovePayload({ playerId: 'P2', x: 500, moveRemaining: 100 })).toBe(true);
       expect(isMovePayload(corrupt({ playerId: 'P2', x: 500, moveRemaining: 100 }, (r) => { r.moveRemaining = Number.POSITIVE_INFINITY; }))).toBe(false);

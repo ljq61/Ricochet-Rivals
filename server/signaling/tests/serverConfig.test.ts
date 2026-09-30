@@ -21,6 +21,8 @@ describe('serverConfig (SG-6)', () => {
     expect(config.turnSharedSecret).toBeNull();
     expect(config.turnCredentialTtlMs).toBe(30 * 60_000);
     expect(config.port).toBe(8787);
+    expect(config.heartbeatIntervalMs).toBe(5_000);
+    expect(config.heartbeatTimeoutMs).toBe(10_000);
   });
 
   it('2. 互斥 fail-fast：TURN urls 无 secret → throw；secret 无 urls → throw', () => {
@@ -74,5 +76,19 @@ describe('serverConfig (SG-6)', () => {
     expect(turnEntry?.credential).toMatch(/^[A-Za-z0-9+/]{27}=$/);
     // 再次调用 → 新凭据（每 ack 现生成）
     expect(withTurn()[1]?.username).toMatch(/^\d{10,}$/);
+  });
+
+  it('heartbeat 配置：正数毫秒可覆盖；零/负数/超出 Node timer 范围启动即拒绝', () => {
+    const config = loadServerConfig({
+      SIGNALING_HEARTBEAT_INTERVAL_MS: '1000',
+      SIGNALING_HEARTBEAT_TIMEOUT_MS: '2500',
+    });
+    expect(config.heartbeatIntervalMs).toBe(1000);
+    expect(config.heartbeatTimeoutMs).toBe(2500);
+    for (const name of ['SIGNALING_HEARTBEAT_INTERVAL_MS', 'SIGNALING_HEARTBEAT_TIMEOUT_MS']) {
+      for (const value of ['0', '-1', '1.5', '2147483648']) {
+        expect(() => loadServerConfig({ [name]: value })).toThrow();
+      }
+    }
   });
 });

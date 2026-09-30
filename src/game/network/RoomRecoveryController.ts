@@ -57,6 +57,8 @@ export interface RoomRecoveryControllerOptions {
   readonly peerToken: string;
   /** 信令断后重建工厂（Scene 注入部署 URL；测试注入 fake WS 工厂） */
   readonly createSignalingClient: () => SignalingClient;
+  /** 成功重入后移交会话生命周期；返回 false 表示会话已经退出。 */
+  readonly adoptSignaling?: (client: SignalingClient) => boolean;
   /** 单次尝试窗口：restart 交换 + 通道恢复 + PONG 验证（默认 20s） */
   readonly attemptWindowMs?: number;
   /** 尝试上限（默认 3 —— 总预算 ≈ 60s） */
@@ -89,8 +91,8 @@ export class RoomRecoveryController {
   private readonly disposeWaiters = new Set<(error: Error) => void>();
   /** 当前可用信令（初始 = session.signaling；死后由重建实例替换） */
   private activeSignaling: SignalingClient;
-  /** 本控制器新建的信令实例（dispose 时收口；session 原实例归 SessionManager） */
-  private readonly ownedSignaling: SignalingClient[] = [];
+  /** 尚未移交 SessionManager 的实例；失败 / dispose 时关闭。 */
+  private readonly ownedSignaling = new Set<SignalingClient>();
   private readonly cancels: Array<() => void> = [];
   private readonly visibilityHandler = (): void => {
     // 移动端后台恢复：connectionstatechange 事件可能未派发 —— visible 时补查
@@ -184,7 +186,7 @@ export class RoomRecoveryController {
     for (const client of this.ownedSignaling) {
       client.close();
     }
-    this.ownedSignaling.length = 0;
+    this.ownedSignaling.clear();
   }
 
   // ---- 恢复主循环 ---------------------------------------------------------
@@ -240,8 +242,10 @@ export class RoomRecoveryController {
     // recoverConnect 先行武装：FAILED → CONNECTING，后续 ICE failed 经
     // failConnect reject 本 promise（限次语义收口在本类）
     const connectPromise = this.transport.recoverConnect(this.attemptWindowMs);
+    // OFFER 失败 / dispose 可能先退出；武装的连接等待仍须观察迟到 rejection。
+    void connectPromise.catch(() => {});
     if (this.options.role === 'host') {
-      await this.sendRestartOffer(signaling);
+      await this.waitOrDisposed(this.sendRestartOffer(signaling));
     }
     // Guest 无本地动作：等对端 OFFER → handleRestartOffer 应答 → 通道恢复
     await this.waitOrDisposed(connectPromise);
@@ -249,7 +253,13 @@ export class RoomRecoveryController {
 
   /** Host：ICE restart offer 外发（trickle —— 新 candidate 随后经信令转发） */
   private async sendRestartOffer(signaling: SignalingClient): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
     const encoded = await this.transport.restartOffer();
+    if (this.disposed) {
+      return;
+    }
     const sdp = decodeSignaling(encoded, 'offer').sdp;
     if (sdp === undefined) {
       throw new Error('restart offer SDP missing');
@@ -263,13 +273,28 @@ export class RoomRecoveryController {
       return this.activeSignaling;
     }
     const client = this.options.createSignalingClient();
-    this.ownedSignaling.push(client);
+    this.ownedSignaling.add(client);
     this.wireSignaling(client);
-    await client.connect();
-    client.joinRoom(this.options.roomCode, this.options.peerToken);
-    await this.waitForRoomAck(client);
-    this.activeSignaling = client;
-    return client;
+    try {
+      await this.waitOrDisposed(client.connect());
+      client.joinRoom(this.options.roomCode, this.options.peerToken);
+      await this.waitForRoomAck(client);
+      if (this.disposed) {
+        throw new Error('[RoomRecovery] disposed before signaling adoption');
+      }
+      if (this.options.adoptSignaling !== undefined) {
+        if (!this.options.adoptSignaling(client)) {
+          throw new Error('[RoomRecovery] session no longer active');
+        }
+        this.ownedSignaling.delete(client);
+      }
+      this.activeSignaling = client;
+      return client;
+    } catch (error) {
+      client.close();
+      this.ownedSignaling.delete(client);
+      throw error;
+    }
   }
 
   /** battle 期可用态 = 房内（协商后常驻 NEGOTIATING；PEER_FOUND = 重入后） */
@@ -310,7 +335,10 @@ export class RoomRecoveryController {
       const cancel = (): void => {
         cancelMessage();
         cancelFailure();
+        this.disposeWaiters.delete(onDispose);
       };
+      const onDispose = (): void => settle(new Error('[RoomRecovery] disposed during rejoin'));
+      this.disposeWaiters.add(onDispose);
       const timer = setTimeout(() => {
         settle(new Error('signaling rejoin timeout: ROOM_JOINED not received'));
       }, this.signalingJoinTimeoutMs);
@@ -370,6 +398,9 @@ export class RoomRecoveryController {
   }
 
   private handleSignalingMessage(message: SignalingInboundMessage, client: SignalingClient): void {
+    if (this.disposed) {
+      return;
+    }
     try {
       switch (message.type) {
         case 'OFFER':
@@ -414,12 +445,18 @@ export class RoomRecoveryController {
 
   /** Guest：应答 restart offer（acceptOffer → beginAnswer → sendAnswer） */
   private async handleRestartOffer(sdp: string, client: SignalingClient): Promise<void> {
-    if (this.transport.state === TransportState.CLOSED) {
+    if (this.disposed || this.transport.state === TransportState.CLOSED) {
       return;
     }
     try {
       await this.transport.acceptOffer(JSON.stringify({ type: 'offer', sdp }));
+      if (this.disposed) {
+        return;
+      }
       const encodedAnswer = await this.transport.beginAnswer();
+      if (this.disposed) {
+        return;
+      }
       const answerSdp = decodeSignaling(encodedAnswer, 'answer').sdp;
       if (answerSdp === undefined) {
         throw new Error('restart answer SDP missing');
@@ -432,6 +469,9 @@ export class RoomRecoveryController {
 
   /** Host：应用 restart answer（acceptAnswer 后 ICE restart 生效，通道恢复由 recoverConnect 判定） */
   private async handleRestartAnswer(sdp: string): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
     try {
       await this.transport.acceptAnswer(JSON.stringify({ type: 'answer', sdp }));
     } catch (error) {
@@ -441,6 +481,9 @@ export class RoomRecoveryController {
 
   /** Trickle：本地 candidate 经当前可用信令外发；信令不可用则丢弃（下轮 restartOffer 重新 gather） */
   private forwardLocalCandidate(candidate: SignalingIceCandidate | null): void {
+    if (this.disposed) {
+      return;
+    }
     const signaling = this.activeSignaling;
     if (!this.isSignalingUsable(signaling)) {
       return;

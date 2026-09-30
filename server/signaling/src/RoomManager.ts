@@ -15,9 +15,9 @@ import type { RoomRole, SignalingSocket } from './socket';
  *
  * joinRoom 语义（返回 notifyPeer 的 socket 由上层发 PEER_JOINED）：
  * * 新 Guest join：guest 槽空闲且 Host 在线 → 绑定 + 新 token。
- * * token resume：JOIN_ROOM 携带 peerToken 匹配槽位 token 且槽位断开
- *   → 原位恢复（kind:'resumed'，token 不变）。
- * * 槽位被占用（连接中）→ ROOM_FULL —— 含 token 重复声明（双开保护）。
+ * * token resume：JOIN_ROOM 携带 peerToken 匹配槽位 token → 原位恢复，
+ *   旧 socket 尚未关闭也可接管（网络黑洞不会及时发 close）；上层终止旧 socket。
+ * * 槽位被占用（连接中）→ 无有效 token 的加入得到 ROOM_FULL。
  * * Guest 席位保留期内（断开 < slotGrace）→ 新 join 拒 ROOM_FULL（防挤占）。
  * * Host 断开（槽位空置）→ 新 Guest join 拒 ROOM_EXPIRED（无主房间）；
  *   resume 不受影响。
@@ -33,10 +33,18 @@ export type JoinOutcome =
       role: RoomRole;
       room: SignalingRoom;
       peerToken: string;
+      /** 有效 token 接管尚未释放的旧连接；上层先解绑并终止该 socket。 */
+      replacedSocket?: SignalingSocket;
       /** 配对 / 恢复事件的通知对象（对端当前连接 socket；无则 null） */
       notifyPeer: SignalingSocket | null;
     }
-  | { ok: false; code: JoinErrorCode; message?: string };
+  | {
+      ok: false;
+      code: JoinErrorCode;
+      message?: string;
+      /** 惰性删除与 sweep 共用上层通知/解绑收口。 */
+      deletedRoom?: DeletedRoom;
+    };
 
 export interface DeletedRoom {
   readonly room: SignalingRoom;
@@ -118,37 +126,34 @@ export class RoomManager {
         ok: false,
         code: 'ROOM_EXPIRED',
         message: dead === 'waiting-expired' ? 'room expired' : 'host left',
+        deletedRoom: { room, reason: dead },
       };
     }
 
     // Host resume：token 匹配 host 槽
     if (peerToken !== undefined && peerToken === room.hostToken) {
-      if (room.hostConnected) {
-        return { ok: false, code: 'ROOM_FULL', message: 'host slot occupied' };
-      }
-      room.attachHost(socket);
+      const replacedSocket = room.attachHost(socket);
       return {
         ok: true,
         kind: 'resumed',
         role: 'host',
         room,
         peerToken,
+        replacedSocket: replacedSocket ?? undefined,
         notifyPeer: room.peerOf(socket),
       };
     }
 
     // Guest resume：token 匹配 guest 槽
     if (peerToken !== undefined && peerToken === room.guestToken) {
-      if (room.guestConnected) {
-        return { ok: false, code: 'ROOM_FULL', message: 'guest slot occupied' };
-      }
-      room.reattachGuest(socket);
+      const replacedSocket = room.reattachGuest(socket);
       return {
         ok: true,
         kind: 'resumed',
         role: 'guest',
         room,
         peerToken,
+        replacedSocket: replacedSocket ?? undefined,
         notifyPeer: room.peerOf(socket),
       };
     }

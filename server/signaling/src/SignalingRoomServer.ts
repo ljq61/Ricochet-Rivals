@@ -5,7 +5,7 @@ import {
   type SignalingInboundMessage,
   type SignalingOutboundMessage,
 } from '../../../src/game/network/signaling/SignalingMessage';
-import type { RoomManager } from './RoomManager';
+import type { DeletedRoom, RoomManager } from './RoomManager';
 import type { SignalingRoom } from './SignalingRoom';
 import type { RoomRole, SignalingSocket } from './socket';
 
@@ -104,8 +104,14 @@ export class SignalingRoomServer {
         }
         const outcome = this.manager.joinRoom(message.roomCode, message.peerToken, socket);
         if (!outcome.ok) {
+          if (outcome.deletedRoom !== undefined) this.handleRoomDeleted(outcome.deletedRoom);
           this.sendError(socket, outcome.code, outcome.message);
           return;
+        }
+        if (outcome.replacedSocket !== undefined) {
+          // 新槽已由 token 接管；旧 close/error 迟到不能触及新 binding。
+          this.bindings.delete(outcome.replacedSocket);
+          outcome.replacedSocket.close();
         }
         this.bindings.set(socket, { room: outcome.room, role: outcome.role });
         this.sendRoomAck(socket, 'ROOM_JOINED', outcome.room, outcome.peerToken);
@@ -136,19 +142,21 @@ export class SignalingRoomServer {
 
   /** 周期清扫（bootstrap 定时驱动；测试手动调用）：删房 + 解绑 + 通知 */
   runSweep(): void {
-    for (const { room, reason } of this.manager.sweep()) {
-      for (const socket of room.boundSockets()) {
-        this.bindings.delete(socket);
-        this.sendError(
-          socket,
-          'ROOM_EXPIRED',
-          reason === 'waiting-expired' ? 'room expired' : 'host left',
-        );
-      }
-    }
+    for (const deleted of this.manager.sweep()) this.handleRoomDeleted(deleted);
   }
 
   // ---- 内部 ----
+
+  private handleRoomDeleted({ room, reason }: DeletedRoom): void {
+    for (const socket of room.boundSockets()) {
+      this.bindings.delete(socket);
+      this.sendError(
+        socket,
+        'ROOM_EXPIRED',
+        reason === 'waiting-expired' ? 'room expired' : 'host left',
+      );
+    }
+  }
 
   private sendRoomAck(
     socket: SignalingSocket,

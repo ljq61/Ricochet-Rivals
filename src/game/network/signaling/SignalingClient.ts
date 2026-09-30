@@ -476,9 +476,11 @@ export class SignalingClient {
     this.clearConnectTimer();
     const reject = this.connectReject;
     this.clearConnectPending();
+    const ws = this.ws;
     this.detachSocket();
     this.ws = null;
     this.socketOpen = false;
+    ws?.close();
     this.failure = failure;
     this.setState(SignalingClientState.FAILED);
     for (const handler of [...this.failureHandlers]) {

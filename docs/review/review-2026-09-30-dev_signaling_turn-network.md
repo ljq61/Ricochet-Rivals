@@ -4,7 +4,7 @@
 
 - 分支：`dev_signaling_turn`；审查提交：`10644347f532c0fc6d7592cf76127e3697bf32b5`。
 - 审查当前实现，不限于最近美术提交的 diff。覆盖房间创建/加入、WebRTC、信令服务、命令权限、回合结算、状态快照、断线恢复与重赛的调用链。
-- 初次审查时正常本机房间配对和对局通过，异常恢复存在明显问题；后续已按用户授权修复 F1/F2，验证见文末。F3–F8 仍待处理。
+- 初次审查时正常本机房间配对和对局通过，异常恢复存在明显问题；后续已按用户授权修复 F1/F2，验证见文末。F3–F8 的后续修复与验证见文末。
 - 初次审查未修改产品代码；后续 P1 修复包含场景、输入、快照接线和回归测试。
 
 ## Findings
@@ -28,7 +28,7 @@
 - 修复：将连接恢复状态纳入持续输入门禁；开始恢复时取消已有移动/瞄准手势，对账完成后统一解锁。
 - 回归：保持恢复 pending 多帧，同时尝试移动、瞄准、发射；双方状态、预算和出站动作帧均不得改变。
 
-### F3 [P2] 加入方移动速度随 RTT 明显下降
+### F3 [P2，已修复] 加入方移动速度随 RTT 明显下降
 
 - 位置：`src/game/input/MoveInputCore.ts:96`；`src/game/network/online/GuestIntentBus.ts:63`；`OnlineHostChannel.ts:416`。
 - 触发：Guest 持续按住方向键/移动按钮，存在正常网络往返延迟。
@@ -37,7 +37,7 @@
 - 修复：设计由 Host 积分的方向/持续时间输入，或可校正的预测目标；保留回合、速度、预算和去重约束，不能直接接受客户端任意位移。
 - 回归：0/100/200ms RTT 下双方相同持续输入的有效位移应接近，松手后停止且预算正确。
 
-### F4 [P2] 静默断网旧 socket 未释放，原 token 重入被拒绝
+### F4 [P2，已修复] 静默断网旧 socket 未释放，原 token 重入被拒绝
 
 - 位置：`server/signaling/src/bootstrap.ts:39`；`RoomManager.ts:124`、`:140`。
 - 触发：断网未向服务端送达 close/FIN，旧信令 socket 被保留，客户端用原 token 新建连接尝试恢复。
@@ -46,7 +46,7 @@
 - 修复：加入服务端心跳与超时清理；明确 token 重入与旧连接替换策略，避免新旧 socket 竞争释放同一槽。
 - 回归：旧连接不发送 close 的故障注入，存活预算后可以用原 token 重入；重复/迟到旧连接关闭不破坏新连接。
 
-### F5 [P2] 恢复时新建的信令不能跨结算/重赛保留
+### F5 [P2，已修复] 恢复时新建的信令不能跨结算/重赛保留
 
 - 位置：`src/game/network/RoomRecoveryController.ts:265`、`:184`；`OnlineSession.ts:38`；`src/game/scenes/BattleScene.ts:1147`。
 - 触发：Host 曾在恢复中重建信令，随后正常进入 Result，停留超过服务端 grace，再重赛并需要网络恢复。
@@ -56,7 +56,7 @@
 - 修复：活信令归 Session 生命周期所有，重建时更新该引用；转 Result/Rematch 保留，真正退出会话时关闭。
 - 回归：WS 重建成功 → Result 停留超过 grace → Rematch → 再次恢复，应仍能重入并完成对账。
 
-### F6 [P2] 信令失败丢弃引用，却未关闭底层 socket
+### F6 [P2，已修复] 信令失败丢弃引用，却未关闭底层 socket
 
 - 位置：`src/game/network/signaling/SignalingClient.ts:472`。
 - 触发：服务器发 ERROR，或客户端连接等待超时。
@@ -66,7 +66,7 @@
 - 修复：失败清理时保留局部引用、摘监听后关闭底层 socket，同时保证 reject/通知幂等。
 - 回归：ERROR、连接超时及 Back/Retry 后，旧 socket 已关闭且不能迟到复活。
 
-### F7 [P2] 房间 TTL 与重连 grace 环境配置未生效
+### F7 [P2，已修复] 房间 TTL 与重连 grace 环境配置未生效
 
 - 位置：`server/signaling/src/bootstrap.ts:32`。
 - 根因：构造 RoomManager 只传 now，漏传 config.waitingTtlMs/config.slotGraceMs。
@@ -74,7 +74,7 @@
 - 修复：将已加载配置传入 RoomManager，保留测试注入 manager 的优先级。
 - 回归：经 bootstrap 启动服务，验证自定义 TTL/grace 实际决定房间和槽释放时间。
 
-### F8 [P2] JOIN 惰性删除过期房间，遗漏 Host 通知和解绑
+### F8 [P2，已修复] JOIN 惰性删除过期房间，遗漏 Host 通知和解绑
 
 - 位置：`server/signaling/src/RoomManager.ts:114`；`SignalingRoomServer.ts:105`、`:138`。
 - 触发：房间 TTL 已过，下一次 sweep 尚未执行时，有 Guest JOIN。
@@ -145,3 +145,31 @@ F1/F2 已完成修复并通过独立复核，未发现本次修复新增的 P0/P
 | 独立审查与差异检查 | 通过；审查提出的恢复横幅 P2 已一并修正 |
 
 临时日志：`/tmp/rr-p1-unit-final.log`、`rr-p1-build-final.log`、`rr-p1-e2e-final.log`、`rr-p1-mobile-recovery.log`。本次没有修改信令服务、移动同步协议或 TURN 部署；此前 F3–F8 和真实手机跨网/切网验证仍未完成。
+
+
+## Re-review 2026-09-30 — P2 修复
+
+本轮处理 F3–F8，并修正复核发现的恢复异步回调清理问题。
+
+- F3：Guest 发送有符号移动增量，Host 在权威位置上累加，再由现有移动系统处理阶段、边界和路径预算。Host 使用单调时钟限制速度，允许 100ms 调度突发；去重与回合归属仍由既有消息链校验。移动回包未到时，发射起点只允许匹配当前回合最近 2 秒、最多 128 条已接受的移动位置，最终一律从当前权威炮塔发射。
+- F4：有效 token 可以立即接管原槽，服务端解绑并终止旧 socket；旧 socket 的迟到消息和关闭不影响新槽。增加 ping/pong 检测，默认 5 秒发 ping、10 秒超时释放半开连接；无需等到心跳清槽才能重入。
+- F5：重建信令在成功 JOIN 后交给 OnlineSessionManager；Battle → Result → Rematch 保留，真正退出关闭。未完成或失败实例由恢复器及时关闭；退出后的旧恢复器不能继续发送异步 OFFER/ANSWER，连接等待的迟到拒绝也被收口。
+- F6：失败路径摘除监听后关闭底层 socket；ERROR、拨号超时和主动退出后不能靠迟到事件恢复实例。
+- F7：bootstrap 透传 waitingTtlMs / slotGraceMs，注入 RoomManager 仍优先。
+- F8：JOIN 惰性删除与 sweep 共用通知、解绑收口；Host 超宽限和房间等待过期均释放绑定，不再留在失效房间。
+
+验证结果：
+
+| 检查 | 结果与范围 |
+| --- | --- |
+| 全量客户端单元测试 | 611/611，通过；新增 16 项移动延迟/权限/发射回归、5 项恢复生命周期回归、1 项增量 payload 校验 |
+| 信令服务测试与类型检查 | 41/41，通过；新增 10 项配置、半开连接、接管、删房与 shutdown 回归 |
+| 前端类型检查与构建 | 通过；保留已知大包警告 |
+| 完整浏览器 E2E | 188/188，通过；桌面、手机尺寸、单人、手动联机、房间联机及重赛；最终构建另复跑 Room 41/41，通过 |
+| 实际计时移动探针 | 27 帧短按，Host / Guest 在 RTT 0/100/200ms 均为 125.333333px，剩余预算均为 124.666667px；未靠耗尽预算掩盖差异 |
+| WS 重建 → Result → Rematch → 再恢复 | 真实 WS 关闭重建；Result 等待 2100ms，超过测试 grace=1500ms + sweep=200ms；新信令仍 OPEN，重赛再次重建并完成 Guest 快照对账 |
+| 独立审查 | F3–F8 全部通过，无剩余 P0/P1/P2 阻塞；复核中的旧异步应答与迟到 rejection 已修正 |
+
+新 Guest 同时携带 deltaX / targetX，旧 Host 可继续读取 targetX，新 Host 优先增量；混旧版本仍保留旧版移动迟滞，修复完整生效需双方使用新构建。
+
+临时证据：`/tmp/rr-p2-unit-final.log`、`rr-p2-build-final.log`、`rr-p2-e2e.log`、`rr-p2-room-final.log`、`rr-p2-recovery.log`、`ricochet-network-movement-short-audit.ts` / `.mjs`。服务端黑洞测试使用真实 WS 暂停接收且不发送 FIN；浏览器 RTC failure 仍通过 debug 注入，底层 RTC 保留存活。本轮未进行公网 TURN relay、Safari 真机或 Wi-Fi↔移动网络切换验收。

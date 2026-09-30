@@ -111,23 +111,25 @@ describe('MOVE 同步（Host 权威 + Guest 意图）', () => {
 
   it('⑤ Guest MOVE：MOVE_REQUEST → Host 系统执行 → 广播 → 双端一致', async () => {
     advanceToP2Turn(h);
-    h.guestCoord.inputBus.dispatch({ type: 'MOVE', playerId: 'P2', turnId: 1, targetX: 4700 });
+    h.guestCoord.inputBus.dispatch({ type: 'MOVE', playerId: 'P2', turnId: 1, targetX: 4570 });
     await h.flush();
 
-    expect(h.hostState.players.P2.x).toBe(4700);
-    expect(h.hostState.players.P2.moveRemaining).toBe(100);
-    expect(h.guestState.players.P2.x).toBe(4700);
-    expect(h.guestState.players.P2.moveRemaining).toBe(100);
+    expect(h.hostState.players.P2.x).toBe(4570);
+    expect(h.hostState.players.P2.moveRemaining).toBe(230);
+    expect(h.guestState.players.P2.x).toBe(4570);
+    expect(h.guestState.players.P2.moveRemaining).toBe(230);
   });
 
   it('⑥ 越界 targetX：Host clamp + 预算截断 → 广播的是最终权威值', async () => {
     advanceToP2Turn(h);
+    h.hostState.players.P2.x = h.guestState.players.P2.x = 4880;
+    h.hostState.players.P2.moveRemaining = h.guestState.players.P2.moveRemaining = 10;
     h.guestCoord.inputBus.dispatch({ type: 'MOVE', playerId: 'P2', turnId: 1, targetX: 6000 });
     await h.flush();
 
-    // clamp 到 4900 后按预算 250 截断：4550 + 250 = 4800
-    expect(h.hostState.players.P2.x).toBe(4800);
-    expect(h.guestState.players.P2.x).toBe(4800);
+    // 先限速32px，再 clamp 到4900，最后按剩余预算10px截断。
+    expect(h.hostState.players.P2.x).toBe(4890);
+    expect(h.guestState.players.P2.x).toBe(4890);
     expect(h.guestState.players.P2.moveRemaining).toBe(0);
   });
 
@@ -188,17 +190,17 @@ describe('MOVE 同步（Host 权威 + Guest 意图）', () => {
       senderId: 'P2',
       sequence: 42,
       timestamp: Date.now(),
-      payload: { playerId: 'P2', targetX: 4700 },
+      payload: { playerId: 'P2', deltaX: 20 },
     });
     h.guestTransport.send(envelope);
     await h.flush();
-    expect(h.hostState.players.P2.x).toBe(4700);
-    expect(h.hostState.players.P2.moveRemaining).toBe(100);
+    expect(h.hostState.players.P2.x).toBe(4570);
+    expect(h.hostState.players.P2.moveRemaining).toBe(230);
 
     h.guestTransport.send(envelope); // 同 sequence 重放
     await h.flush();
-    expect(h.hostState.players.P2.x).toBe(4700);
-    expect(h.hostState.players.P2.moveRemaining).toBe(100);
+    expect(h.hostState.players.P2.x).toBe(4570);
+    expect(h.hostState.players.P2.moveRemaining).toBe(230);
   });
 });
 

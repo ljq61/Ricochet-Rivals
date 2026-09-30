@@ -66,7 +66,13 @@ export class GuestIntentBus implements CommandBus {
         state.phase === TurnPhase.ACTION &&
         Number.isFinite(command.targetX)
       ) {
-        this.deps.sendMoveRequest({ playerId: command.playerId, targetX: command.targetX });
+        // 本地 State 等待权威回包，因此传递本帧意图增量；Host 用其
+        // 当前权威位置累加，不能把尚未回包的旧位置当作新目标。
+        this.deps.sendMoveRequest({
+          playerId: command.playerId,
+          deltaX: command.targetX - state.players[command.playerId].x,
+          targetX: command.targetX, // 旧Host继续读取absolute意图，新Host优先deltaX。
+        });
       }
       return;
     }

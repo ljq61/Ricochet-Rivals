@@ -77,6 +77,8 @@ export interface OnlineHarnessOptions {
   readonly attach?: boolean;
   /** Phase 15：Host ACK 超时（缺省 8s；测试注入短值走重试阶梯） */
   readonly hostAckTimeoutMs?: number;
+  readonly latencyMs?: number;
+  readonly hostMovementNow?: () => number;
 }
 
 /** loopback 投递为 setTimeout(0) macrotask：每轮冲洗一跳链 */
@@ -94,7 +96,7 @@ export async function createOnlineHarness(
   const attach = options.attach ?? true;
 
   // 1. 双端通道 + NetworkManager（同 pairing matchId）
-  const { a, b } = createLoopbackPair();
+  const { a, b } = createLoopbackPair({ latencyMs: options.latencyMs });
   const hostNm = new NetworkManager({ transport: a, matchId: 'm', localPlayerId: 'P1' });
   const guestNm = new NetworkManager({ transport: b, matchId: 'm', localPlayerId: 'P2' });
 
@@ -118,6 +120,7 @@ export async function createOnlineHarness(
     session: hostSession,
     createMatchIdentity,
     ...(options.hostAckTimeoutMs !== undefined ? { hostAckTimeoutMs: options.hostAckTimeoutMs } : {}),
+    hostMovementNow: options.hostMovementNow,
   });
   const guestCoord = new OnlineGameCoordinator({ session: guestSession, createMatchIdentity });
 
@@ -142,6 +145,9 @@ export async function createOnlineHarness(
   await guestNm.connect();
   hostCoord.sendPlayerReady();
   guestCoord.sendPlayerReady();
+  if (options.latencyMs) {
+    await new Promise<void>((resolve) => setTimeout(resolve, options.latencyMs! * 2 + 10));
+  }
   await flushLoopback();
 
   const hostBoot = hostBoots[0];

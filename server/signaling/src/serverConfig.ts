@@ -23,6 +23,10 @@ export interface SignalingServerConfig {
   readonly slotGraceMs: number;
   /** 过期清扫周期 */
   readonly sweepIntervalMs: number;
+  /** 服务端 ping 周期；浏览器协议层自动回应 pong */
+  readonly heartbeatIntervalMs: number;
+  /** ping 发出后等待 pong 的窗口；超时 terminate，释放半开连接槽位 */
+  readonly heartbeatTimeoutMs: number;
   /** ROOM ack 携带的 STUN 列表 */
   readonly stunUrls: string[];
   /** ROOM ack 携带的 TURN 列表（空 = 未部署 TURN，本地开发常态） */
@@ -36,6 +40,8 @@ export interface SignalingServerConfig {
 const DEFAULT_WAITING_TTL_MS = 600_000;
 const DEFAULT_SLOT_GRACE_MS = 30_000;
 const DEFAULT_SWEEP_INTERVAL_MS = 15_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
+const DEFAULT_HEARTBEAT_TIMEOUT_MS = 10_000;
 const DEFAULT_PORT = 8787;
 const DEFAULT_STUN_URLS = ['stun:stun.l.google.com:19302'];
 const DEFAULT_TURN_CREDENTIAL_TTL_MS = 30 * 60_000;
@@ -73,6 +79,14 @@ function parseUrlList(env: ServerConfigEnv, name: string): string[] | null {
   return list;
 }
 
+function parseTimerInterval(env: ServerConfigEnv, name: string, fallback: number): number {
+  const value = parsePositiveInt(env, name, fallback);
+  if (value === 0 || value > 2_147_483_647) {
+    throw new Error(`[serverConfig] ${name} must be between 1 and 2147483647 milliseconds`);
+  }
+  return value;
+}
+
 export function loadServerConfig(env: ServerConfigEnv = process.env): SignalingServerConfig {
   const stunUrls = parseUrlList(env, 'SIGNALING_STUN_URLS') ?? DEFAULT_STUN_URLS;
   const turnUrls = parseUrlList(env, 'SIGNALING_TURN_URLS') ?? [];
@@ -92,6 +106,8 @@ export function loadServerConfig(env: ServerConfigEnv = process.env): SignalingS
     waitingTtlMs: parsePositiveInt(env, 'SIGNALING_WAITING_TTL_MS', DEFAULT_WAITING_TTL_MS),
     slotGraceMs: parsePositiveInt(env, 'SIGNALING_SLOT_GRACE_MS', DEFAULT_SLOT_GRACE_MS),
     sweepIntervalMs: parsePositiveInt(env, 'SIGNALING_SWEEP_INTERVAL_MS', DEFAULT_SWEEP_INTERVAL_MS),
+    heartbeatIntervalMs: parseTimerInterval(env, 'SIGNALING_HEARTBEAT_INTERVAL_MS', DEFAULT_HEARTBEAT_INTERVAL_MS),
+    heartbeatTimeoutMs: parseTimerInterval(env, 'SIGNALING_HEARTBEAT_TIMEOUT_MS', DEFAULT_HEARTBEAT_TIMEOUT_MS),
     stunUrls,
     turnUrls,
     turnSharedSecret: secret,

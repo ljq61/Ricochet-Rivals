@@ -243,4 +243,65 @@ describe('SignalingRoomServer', () => {
     server.handleMessage(socket, '   ');
     expect(socket.lastFrame()).toMatchObject({ type: 'ERROR', code: 'INVALID_MESSAGE', message: 'EMPTY' });
   });
+
+  it('JOIN 惰性删除 waiting 房间：Host 同样收到过期、解绑，sweep 不重复通知', () => {
+    const clock = new FakeClock();
+    const { server, host, roomCode } = makeServerAndHost(clock);
+    const lateGuest = new FakeSignalingSocket('late');
+    clock.advance(WAITING_TTL_MS + 1);
+    server.handleMessage(lateGuest, clientFrame({ type: 'JOIN_ROOM', roomCode }));
+    expect(lateGuest.lastFrame()).toMatchObject({ type: 'ERROR', code: 'ROOM_EXPIRED', message: 'room expired' });
+    expect(host.lastFrame()).toMatchObject({ type: 'ERROR', code: 'ROOM_EXPIRED', message: 'room expired' });
+    expect(server.boundSocketCount).toBe(0);
+
+    host.clear();
+    server.runSweep();
+    expect(host.sent).toHaveLength(0);
+    server.handleMessage(host, clientFrame({ type: 'CREATE_ROOM' }));
+    expect(host.lastType()).toBe('ROOM_CREATED');
+    server.handleMessage(lateGuest, clientFrame({ type: 'JOIN_ROOM', roomCode }));
+    expect(lateGuest.lastFrame()).toMatchObject({ type: 'ERROR', code: 'ROOM_NOT_FOUND' });
+  });
+
+  it('JOIN 惰性删除 Host 超 grace 房间：Guest 收 host left 并释放 binding', () => {
+    const clock = new FakeClock();
+    const { server, host, guest, roomCode, hostToken } = makePairedRoom(clock);
+    server.handleDisconnect(host);
+    guest.clear();
+    clock.advance(SLOT_GRACE_MS + 1);
+    const hostBack = new FakeSignalingSocket('host-back');
+    server.handleMessage(hostBack, clientFrame({ type: 'JOIN_ROOM', roomCode, peerToken: hostToken }));
+    expect(hostBack.lastFrame()).toMatchObject({ type: 'ERROR', code: 'ROOM_EXPIRED', message: 'host left' });
+    expect(guest.lastFrame()).toMatchObject({ type: 'ERROR', code: 'ROOM_EXPIRED', message: 'host left' });
+    expect(server.boundSocketCount).toBe(0);
+  });
+
+  it.each(['host', 'guest'] as const)('token 接管 %s：终止旧 socket，旧帧/迟到 close 不干扰新槽', (role) => {
+    const clock = new FakeClock();
+    const { server, host, guest, roomCode, hostToken, guestToken } = makePairedRoom(clock);
+    const old = role === 'host' ? host : guest;
+    const peer = role === 'host' ? guest : host;
+    let closeCalls = 0;
+    // 延迟传输层 close，验证期间旧 socket 仍有排队帧。
+    old.close = () => { closeCalls += 1; };
+    const replacement = new FakeSignalingSocket('replacement');
+    server.handleMessage(replacement, clientFrame({
+      type: 'JOIN_ROOM', roomCode, peerToken: role === 'host' ? hostToken : guestToken,
+    }));
+    expect(closeCalls).toBe(1);
+    expect(replacement.lastType()).toBe('ROOM_JOINED');
+    expect(peer.frames()).toMatchObject([{ type: 'PEER_JOINED' }]);
+    expect(server.boundSocketCount).toBe(2);
+    peer.clear();
+
+    server.handleMessage(old, clientFrame({ type: 'OFFER', sdp: 'stale-offer' }));
+    expect(old.lastFrame()).toMatchObject({ type: 'ERROR', code: 'NOT_IN_ROOM' });
+    expect(peer.sent).toHaveLength(0);
+    server.handleDisconnect(old);
+    server.handleDisconnect(old);
+    expect(server.boundSocketCount).toBe(2);
+    expect(peer.sent).toHaveLength(0);
+    server.handleMessage(replacement, clientFrame({ type: 'OFFER', sdp: 'live-offer' }));
+    expect(peer.lastFrame()).toMatchObject({ type: 'OFFER', sdp: 'live-offer' });
+  });
 });

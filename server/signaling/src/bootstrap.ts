@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { WebSocketServer, type WebSocket } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import { RoomManager } from './RoomManager';
 import { SignalingRoomServer } from './SignalingRoomServer';
 import {
@@ -29,7 +29,11 @@ export function startSignalingServer(
   config: SignalingServerConfig = loadServerConfig(),
   options: { manager?: RoomManager } = {},
 ): RunningSignalingServer {
-  const manager = options.manager ?? new RoomManager({ now: Date.now });
+  const manager = options.manager ?? new RoomManager({
+    now: Date.now,
+    waitingTtlMs: config.waitingTtlMs,
+    slotGraceMs: config.slotGraceMs,
+  });
   const roomServer = new SignalingRoomServer({
     manager,
     provideIceServers: createIceServersProvider(config),
@@ -37,22 +41,49 @@ export function startSignalingServer(
   });
 
   const wss = new WebSocketServer({ port: config.port });
+  const pendingPings = new Map<WebSocket, ReturnType<typeof setTimeout>>();
+  const clearPendingPing = (ws: WebSocket): void => {
+    const timer = pendingPings.get(ws);
+    if (timer !== undefined) clearTimeout(timer);
+    pendingPings.delete(ws);
+  };
   wss.on('connection', (ws: WebSocket) => {
     const socket = wrapSocket(ws);
     roomServer.handleConnect(socket);
     ws.on('message', (data, isBinary) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
       if (isBinary) {
         console.debug('[SignalingServer] dropped binary frame');
         return;
       }
       roomServer.handleMessage(socket, data.toString());
     });
-    // close/error 只经 disconnect 收口（error 后必随 close；socket 半开由 ws 兜底）
-    ws.on('close', () => roomServer.handleDisconnect(socket));
+    ws.on('pong', () => clearPendingPing(ws));
+    // terminate/close 都按旧 socket 身份解绑；迟到 close 不影响恢复后的新槽位。
+    ws.on('close', () => {
+      clearPendingPing(ws);
+      roomServer.handleDisconnect(socket);
+    });
     ws.on('error', () => {
       /* close 事件随后到达 —— 无需重复处理 */
     });
   });
+
+  // TCP 黑洞不会发 close，ws 也不会自行探活。协议 ping/pong 无需客户端 JS
+  // 定时器；默认最坏 15s 清槽，给 20s 的单次 ICE recovery 留出重入时间。
+  const heartbeatTimer = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (ws.readyState !== WebSocket.OPEN || pendingPings.has(ws)) continue;
+      const timeout = setTimeout(() => {
+        pendingPings.delete(ws);
+        ws.terminate();
+      }, config.heartbeatTimeoutMs);
+      timeout.unref();
+      pendingPings.set(ws, timeout);
+      ws.ping();
+    }
+  }, config.heartbeatIntervalMs);
+  heartbeatTimer.unref();
 
   const sweepTimer = setInterval(() => {
     roomServer.runSweep();
@@ -65,16 +96,21 @@ export function startSignalingServer(
     roomServer,
     manager,
     port: readPort(wss, config.port),
-    close: () =>
-      new Promise<void>((resolve) => {
-        clearInterval(sweepTimer);
-        for (const client of wss.clients) {
-          client.close();
-        }
-        wss.close(() => {
-          resolve();
-        });
-      }),
+    close: async () => {
+      clearInterval(sweepTimer);
+      clearInterval(heartbeatTimer);
+      for (const timer of pendingPings.values()) clearTimeout(timer);
+      pendingPings.clear();
+      const closedClients = [...wss.clients].map((client) =>
+        new Promise<void>((resolve) => {
+          client.once('close', () => resolve());
+          client.terminate();
+        }),
+      );
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      // TCP server 的 close 回调可能先于 WS close；待槽位清理后才完成 shutdown。
+      await Promise.all(closedClients);
+    },
   };
 }
 
@@ -85,7 +121,7 @@ function wrapSocket(ws: WebSocket): SignalingSocket {
       ws.send(data);
     },
     close: () => {
-      ws.close();
+      ws.terminate();
     },
   };
 }

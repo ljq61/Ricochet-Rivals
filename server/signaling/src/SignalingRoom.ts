@@ -88,8 +88,10 @@ export class SignalingRoom {
   }
 
   /** Host resume：重绑 socket（token 不变） */
-  attachHost(socket: SignalingSocket): void {
+  attachHost(socket: SignalingSocket): SignalingSocket | null {
+    const previous = this.hostSlot.socket;
     this.hostSlot = { token: this.hostSlot.token, socket, disconnectedAt: null };
+    return previous;
   }
 
   /** 新 Guest 绑定（token 由 RoomManager 生成） */
@@ -98,12 +100,13 @@ export class SignalingRoom {
   }
 
   /** Guest resume：重绑 socket（沿用原 token） */
-  reattachGuest(socket: SignalingSocket): void {
+  reattachGuest(socket: SignalingSocket): SignalingSocket | null {
     const slot = this.guestSlotValue;
     if (slot === null) {
       throw new Error(`[SignalingRoom] reattachGuest without guest slot: ${this.roomCode}`);
     }
     this.guestSlotValue = { token: slot.token, socket, disconnectedAt: null };
+    return slot.socket;
   }
 
   /**

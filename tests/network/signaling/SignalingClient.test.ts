@@ -105,6 +105,7 @@ describe('SignalingClient', () => {
     expect(h.client.state).toBe(SignalingClientState.FAILED);
     expect(h.failures.length).toBe(1);
     expect(h.failures[0]?.reason).toBe('CONNECT_FAILED');
+    expect(h.ws.readyState).toBe(3);
   });
 
   it('3. connect 超时：CONNECT_TIMEOUT → FAILED（fake timers）', async () => {
@@ -117,6 +118,13 @@ describe('SignalingClient', () => {
       expect(error.reason).toBe('CONNECT_FAILED');
       expect(h.client.lastFailure?.reason).toBe('CONNECT_TIMEOUT');
       expect(h.client.state).toBe(SignalingClientState.FAILED);
+      expect(h.ws.readyState).toBe(3);
+      expect(h.ws.listenerCount('open')).toBe(0);
+      h.ws.simulateOpen(); // 迟到 open 已解绑，不能恢复客户端
+      expect(h.client.state).toBe(SignalingClientState.FAILED);
+      expect(h.failures).toHaveLength(1);
+      h.client.close();
+      expect(h.client.state).toBe(SignalingClientState.DISCONNECTED);
     } finally {
       vi.useRealTimers();
     }
@@ -253,6 +261,11 @@ describe('SignalingClient', () => {
     expect(h.client.lastFailure?.detail).toBe('no such room');
     expect(h.failures.length).toBe(1);
     expect(h.messages).toEqual([]); // ERROR 由 onFailure 承载，不重复投递
+    expect(h.ws.readyState).toBe(3);
+    expect(h.ws.listenerCount('message')).toBe(0);
+    h.ws.serverSend(frame({ type: 'ERROR', code: 'ROOM_FULL', message: 'late' }));
+    h.client.close();
+    expect(h.failures).toHaveLength(1);
   });
 
   it('10. PEER_LEFT：状态不变，事件照常投递（controller 裁决生死）', async () => {

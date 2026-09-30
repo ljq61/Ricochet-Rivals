@@ -138,7 +138,13 @@ export interface OnlineHostChannelDeps {
 export interface OnlineHostChannelOptions {
   /** TURN_RESULT → ACK 等待超时（默认 8s；测试注入短值） */
   readonly ackTimeoutMs?: number;
+  readonly movementNow?: () => number;
 }
+
+/** 允许100ms调度突发，不能靠高频/超大请求突破Host每秒速度额度。 */
+const MOVE_BURST_MS = 100;
+const MOVE_ORIGIN_WINDOW_MS = 2_000;
+const MAX_RECENT_MOVE_ORIGINS = 128;
 
 export class OnlineHostChannel {
   private readonly nm: NetworkManager;
@@ -160,6 +166,11 @@ export class OnlineHostChannel {
   private ackRetryStage = 0;
   private ackTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly ackTimeoutMs: number;
+  private readonly movementNow: () => number;
+  private remoteMoveTurn: number | null = null;
+  private remoteMoveAt = 0;
+  private remoteMoveCredit = 0;
+  private recentRemoteMoveOrigins: Array<{ x: number; at: number }> = [];
   /** SG-8：连接层恢复（ICE restart）挂起 —— 只 re-arm 计时不进阶阶梯 */
   private ackLadderSuspended = false;
   private lastSyncReasonValue: string | null = null;
@@ -179,6 +190,7 @@ export class OnlineHostChannel {
     this.utils = utils;
     this.deps = deps;
     this.ackTimeoutMs = options.ackTimeoutMs ?? 8_000;
+    this.movementNow = options.movementNow ?? (() => performance.now());
   }
 
   /** Phase 15 同步诊断（Host 恢复计数恒 0 —— 权威端无需恢复） */
@@ -297,6 +309,11 @@ export class OnlineHostChannel {
   /** SG-8：连接层恢复进行中 → ACK 超时阶梯挂起（恢复结束后继续自然进阶） */
   setAckLadderSuspended(suspended: boolean): void {
     this.ackLadderSuspended = suspended;
+    if (suspended) {
+      this.recentRemoteMoveOrigins = [];
+      this.remoteMoveCredit = 0;
+    }
+    this.remoteMoveAt = this.movementNow();
   }
 
   private startAckTimer(): void {
@@ -358,6 +375,7 @@ export class OnlineHostChannel {
       return;
     }
     this.lastSyncReasonValue = `SYNC_REQUEST:${envelope.payload.reason}(turn:${envelope.payload.expectedTurnId})`;
+    this.recentRemoteMoveOrigins = [];
     this.sendStateSnapshot();
   }
 
@@ -431,14 +449,44 @@ export class OnlineHostChannel {
       return;
     }
     const state = this.deps.getState();
+    if (this.ackLadderSuspended) return;
+    const player = state.players[envelope.payload.playerId];
+    const now = this.movementNow();
+    const burstDistance = GAME_CONFIG.player.movement.maxSpeed * MOVE_BURST_MS / 1_000;
+    if (this.remoteMoveTurn !== state.turnId) {
+      this.remoteMoveTurn = state.turnId;
+      this.remoteMoveAt = now;
+      this.remoteMoveCredit = burstDistance;
+      this.recentRemoteMoveOrigins = [];
+    }
+    this.remoteMoveCredit = Math.min(
+      burstDistance,
+      this.remoteMoveCredit + Math.max(0, now - this.remoteMoveAt) * GAME_CONFIG.player.movement.maxSpeed / 1_000,
+    );
+    this.remoteMoveAt = now;
+    const requestedDelta = envelope.payload.deltaX ?? (envelope.payload.targetX! - player.x);
+    const delta = Math.sign(requestedDelta) * Math.min(Math.abs(requestedDelta), this.remoteMoveCredit);
+    if (delta === 0) return; // 没有速度额度时静默，后续帧继续提交当前输入。
+    const previousX = player.x;
     // 语义校验（phase / 预算 / hasFired / clamp）在 dispatch 路径内由系统层完成
     const command: MoveCommand = {
       type: 'MOVE',
       playerId: envelope.payload.playerId,
       turnId: state.turnId,
-      targetX: envelope.payload.targetX,
+      targetX: player.x + delta,
     };
     this.dispatchIncoming(command);
+    const distance = Math.abs(player.x - previousX);
+    this.remoteMoveCredit = Math.max(0, this.remoteMoveCredit - distance);
+    if (distance > 0) {
+      this.recentRemoteMoveOrigins = this.recentRemoteMoveOrigins
+        .filter((entry) => now - entry.at <= MOVE_ORIGIN_WINDOW_MS);
+      if (this.recentRemoteMoveOrigins.at(-1)?.x !== previousX) {
+        this.recentRemoteMoveOrigins.push({ x: previousX, at: now });
+      }
+      this.recentRemoteMoveOrigins.push({ x: player.x, at: now });
+      this.recentRemoteMoveOrigins = this.recentRemoteMoveOrigins.slice(-MAX_RECENT_MOVE_ORIGINS);
+    }
   }
 
   private handleFireRequest(envelope: NetworkEnvelope<unknown>): void {
@@ -447,7 +495,20 @@ export class OnlineHostChannel {
     ) {
       return;
     }
-    const verdict = validateFireRequest(this.deps.getState(), envelope, envelope.payload);
+    if (this.ackLadderSuspended) return;
+    const state = this.deps.getState();
+    const origin = getLaunchOrigin(state.players[envelope.payload.playerId]);
+    const now = this.movementNow();
+    this.recentRemoteMoveOrigins = this.remoteMoveTurn === state.turnId
+      ? this.recentRemoteMoveOrigins.filter((entry) => now - entry.at <= MOVE_ORIGIN_WINDOW_MS)
+      : [];
+    const matchesRecentOrigin =
+      Math.abs(envelope.payload.startY - origin.y) <= 5 &&
+      this.recentRemoteMoveOrigins.some((entry) => Math.abs(entry.x - envelope.payload.startX) <= 5);
+    const payload = matchesRecentOrigin
+      ? { ...envelope.payload, startX: origin.x, startY: origin.y }
+      : envelope.payload;
+    const verdict = validateFireRequest(state, envelope, payload);
     if (verdict.kind === 'drop') {
       console.warn(
         `[OnlineHostChannel] dropped future FIRE_REQUEST (turn ${envelope.turnId})`,
@@ -458,14 +519,13 @@ export class OnlineHostChannel {
       this.utils.reject('FIRE', verdict.reason);
       return;
     }
-    const state = this.deps.getState();
     const command: FireCommand = {
       type: 'FIRE',
       playerId: envelope.payload.playerId,
       turnId: state.turnId,
       weaponId: envelope.payload.weaponId,
-      startX: envelope.payload.startX,
-      startY: envelope.payload.startY,
+      startX: origin.x,
+      startY: origin.y,
       velocityX: envelope.payload.velocityX,
       velocityY: envelope.payload.velocityY,
       seed: envelope.payload.seed,

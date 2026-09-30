@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NetworkManager } from '../../src/game/network/NetworkManager';
+import { OnlineSessionManager, type OnlineSession } from '../../src/game/network/OnlineSession';
 import { NetworkMessageType } from '../../src/game/network/NetworkMessageType';
 import {
   RoomRecoveryController,
@@ -42,7 +43,7 @@ interface RecoveryHarness {
 
 function makeHarness(
   role: 'host' | 'guest',
-  options?: Partial<Pick<RoomRecoveryControllerOptions, 'attemptWindowMs' | 'maxAttempts' | 'verifyTimeoutMs' | 'signalingJoinTimeoutMs'>>,
+  options?: Partial<Pick<RoomRecoveryControllerOptions, 'attemptWindowMs' | 'maxAttempts' | 'verifyTimeoutMs' | 'signalingJoinTimeoutMs' | 'adoptSignaling'>>,
 ): RecoveryHarness {
   const sessionWs = new FakeWebSocket();
   const sessionClient = new SignalingClient({
@@ -321,6 +322,7 @@ describe('RoomRecoveryController（SG-8 限次 ICE restart）', () => {
     }
     await expect(pending).resolves.toBe('FAILED');
     expect(h.rebuildWss.length).toBe(2);
+    expect(h.rebuildWss.every((ws) => ws.readyState === 3)).toBe(true);
   });
 
   it('6. shouldAttempt 分类：网络断族可恢复；对端主动离场（CHANNEL_CLOSED/PEER_CLOSED/ICE_CLOSED）不进入恢复', async () => {
@@ -430,5 +432,133 @@ describe('RoomRecoveryController（SG-8 限次 ICE restart）', () => {
     // dispose 后的信令帧静默处理（不抛不推进）
     ws2.serverSend(frame({ type: 'OFFER', sdp: 'whatever' }));
     await tick();
+  });
+
+  it('10. 重建信令跨结算保留，重赛再次恢复复用；退出会话关闭当前信令', async () => {
+    const manager = new OnlineSessionManager();
+    let session: OnlineSession;
+    const h = makeHarness('host', {
+      adoptSignaling: (client) => manager.replaceSignaling(session, client),
+    });
+    session = {
+      role: 'host', localPlayerId: 'P1', remotePlayerId: 'P2',
+      transport: h.transport, networkManager: h.nm, signaling: h.sessionClient,
+      recovery: { roomCode: ROOM_CODE, peerToken: 'host-token' },
+    };
+    manager.store(session);
+    await establishBattle(h, 'host');
+    h.sessionWs.serverClose();
+    h.pc.failConnection();
+    const first = h.controller.attemptRecovery();
+    await tick();
+    const rebuiltWs = h.rebuildWss[0]!;
+    rebuiltWs.simulateOpen();
+    await tick();
+    rebuiltWs.serverSend(roomAckFrame('ROOM_JOINED'));
+    await tick();
+    h.pc.restoreConnection();
+    await tick();
+    deliverPong(h, 'P2');
+    await expect(first).resolves.toBe('RECOVERED');
+    expect(manager.current?.signaling).not.toBe(h.sessionClient);
+    h.controller.dispose(); // Battle → Result
+    expect(rebuiltWs.readyState).toBe(1);
+
+    const factory = vi.fn(() => { throw new Error('live session must be reused'); });
+    const rematch = new RoomRecoveryController({
+      role: 'host', transport: h.transport, networkManager: h.nm,
+      signaling: manager.current!.signaling!, roomCode: ROOM_CODE, peerToken: 'host-token',
+      createSignalingClient: factory,
+      adoptSignaling: (client) => manager.replaceSignaling(session, client),
+    });
+    h.pc.failConnection();
+    const second = rematch.attemptRecovery();
+    await tick();
+    expect(factory).not.toHaveBeenCalled();
+    expect(rebuiltWs.sentFrames().filter((f) => f['type'] === 'OFFER')).toHaveLength(2);
+    h.pc.restoreConnection();
+    await tick();
+    deliverPong(h, 'P2');
+    await expect(second).resolves.toBe('RECOVERED');
+    rematch.dispose();
+    manager.disposeSession();
+    expect(rebuiltWs.readyState).toBe(3);
+    const staleClient = new SignalingClient({ url: 'ws://stale' });
+    expect(manager.replaceSignaling(session, staleClient)).toBe(false);
+    expect(manager.current).toBeNull();
+    staleClient.close();
+  });
+
+  it('11. dispose 在 JOIN ack 等待时关闭未移交连接并立即结束恢复', async () => {
+    const adopt = vi.fn(() => true);
+    const h = makeHarness('host', { adoptSignaling: adopt });
+    await establishBattle(h, 'host');
+    h.sessionWs.serverClose();
+    h.pc.failConnection();
+    const pending = h.controller.attemptRecovery();
+    await tick();
+    const ws = h.rebuildWss[0]!;
+    ws.simulateOpen();
+    await tick();
+    h.controller.dispose();
+    await expect(pending).resolves.toBe('FAILED');
+    expect(ws.readyState).toBe(3);
+    ws.serverSend(roomAckFrame('ROOM_JOINED'));
+    expect(adopt).not.toHaveBeenCalled();
+  });
+
+  it('12. 结算交接后，旧 Guest 异步 OFFER 不得继续生成或发送 ANSWER', async () => {
+    const h = makeHarness('guest');
+    await establishBattle(h, 'guest');
+    let finish!: () => void;
+    vi.spyOn(h.transport, 'acceptOffer').mockImplementation(() => new Promise<void>((resolve) => {
+      finish = resolve;
+    }));
+    const answer = vi.spyOn(h.transport, 'beginAnswer');
+    h.sessionWs.serverSend(frame({ type: 'OFFER', sdp: 'fake:restart-delayed' }));
+    h.controller.dispose();
+    finish();
+    await tick();
+    expect(h.sessionWs.readyState).toBe(1);
+    expect(answer).not.toHaveBeenCalled();
+    expect(sentTypes(h.sessionWs)).not.toContain('ANSWER');
+    h.sessionClient.close();
+    h.nm.dispose();
+  });
+
+  it('13. OFFER 提前失败后，迟到连接拒绝被收口，不产生未处理 rejection', async () => {
+    const h = makeHarness('host', { maxAttempts: 1 });
+    await establishBattle(h, 'host');
+    let rejectConnect!: (error: Error) => void;
+    vi.spyOn(h.transport, 'recoverConnect').mockImplementation(() => new Promise<void>((_resolve, reject) => {
+      rejectConnect = reject;
+    }));
+    vi.spyOn(h.transport, 'restartOffer').mockRejectedValue(new Error('offer failed'));
+    h.pc.failConnection();
+    await expect(h.controller.attemptRecovery()).resolves.toBe('FAILED');
+    rejectConnect(new Error('late recovery timeout'));
+    await tick(); // Vitest 会把未处理 rejection 作为测试错误
+    h.controller.dispose();
+    h.sessionClient.close();
+    h.nm.dispose();
+  });
+
+  it('14. restartOffer 等待中 dispose 立即结束恢复，迟到 offer 不再发送', async () => {
+    const h = makeHarness('host');
+    await establishBattle(h, 'host');
+    let finish!: (sdp: string) => void;
+    vi.spyOn(h.transport, 'restartOffer').mockImplementation(() => new Promise<string>((resolve) => {
+      finish = resolve;
+    }));
+    h.pc.failConnection();
+    const pending = h.controller.attemptRecovery();
+    await tick();
+    h.controller.dispose();
+    await expect(pending).resolves.toBe('FAILED');
+    finish(JSON.stringify({ type: 'offer', sdp: 'fake:delayed' }));
+    await tick();
+    expect(sentTypes(h.sessionWs)).not.toContain('OFFER');
+    h.sessionClient.close();
+    h.nm.dispose();
   });
 });

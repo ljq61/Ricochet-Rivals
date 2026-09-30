@@ -1911,6 +1911,7 @@ async function driveOnlineBattle(pageHost, pageGuest, hooks = {}) {
   );
 
   // 双方点 REMATCH → 新 GAME_START → 新对局（HP 重置 / 新 matchId）
+  if (hooks.onResult) await hooks.onResult(pageHost, pageGuest);
   await pageHost.bringToFront();
   const hostRematchBtn = (await dbg(pageHost)).buttons.rematch;
   await pageHost.mouse.click(
@@ -1961,6 +1962,7 @@ async function driveOnlineBattle(pageHost, pageGuest, hooks = {}) {
     'Phase 16 Rematch：同一 WebRTC 连接复用 → 双方全新对局（HP 10/10、Turn 1）',
     hostInNewBattle && guestInNewBattle
   );
+  if (hooks.onRematch) await hooks.onRematch(pageHost, pageGuest);
 
   // —— Disconnect：Guest 优雅关闭通道（真实关标签页路径）→ Host 感知 ——
   // 进程异常崩溃只到 ICE 'disconnected'（瞬态，Phase 12 防误杀设计），
@@ -2014,13 +2016,13 @@ async function driveOnlineBattle(pageHost, pageGuest, hooks = {}) {
  * Signaling 地址经 evaluateOnNewDocument 注入 window.__RR_SIGNALING_URL__
  * （构建产物无 env 重Build依赖），端口 8791 避开默认 8787（防与本机开发服冲突）。
  */
-async function startSignalingServer(port) {
+async function startSignalingServer(port, config = {}) {
   const child = spawn(
     'npx',
     // cwd 指向 server/signaling：tsx 只装在该 workspace（根目录 npx 会走
     // registry 下载 → 探测超时，实测坑）；服务器内部 import 相对文件路径解析
     ['tsx', 'src/index.ts'],
-    { shell: true, stdio: ['ignore', 'pipe', 'pipe'], cwd: 'server/signaling', env: { ...process.env, PORT: String(port) } },
+    { shell: true, stdio: ['ignore', 'pipe', 'pipe'], cwd: 'server/signaling', env: { ...process.env, ...config, PORT: String(port) } },
   );
   child.stdout?.on('data', (d) => console.log('[SIGNALING]', String(d).trim()));
   child.stderr?.on('data', (d) => console.log('[SIGNALING-ERR]', String(d).trim()));
@@ -2101,7 +2103,25 @@ async function verifyRecoveryInputLock(page) {
 
 async function runOnlineRoom(browser) {
   section('Online Room — Room Code pairing（真实 Signaling Server + WebRTC 双页对战）');
-  const stopSignaling = await startSignalingServer(8791);
+  const stopSignaling = await startSignalingServer(8791, {
+    SIGNALING_SLOT_GRACE_MS: '1500', SIGNALING_SWEEP_INTERVAL_MS: '200',
+  });
+
+  const rebuildHostSignaling = async (page) => {
+    const previousCount = await page.evaluate(() => {
+      const sockets = window.__RR_E2E_SIGNALING__;
+      sockets.at(-1).close();
+      return sockets.length;
+    });
+    await sleep(100); // close 事件送达客户端及服务端，再注入 RTC failure
+    await page.evaluate(() => window.__RR_DEBUG__.forceConnectionLost());
+    await waitFor(page, async () => {
+      const status = await dbg(page);
+      return status.recoveryState === 'RECOVERED' &&
+        await page.evaluate((count) => window.__RR_E2E_SIGNALING__.length > count &&
+          window.__RR_E2E_SIGNALING__.at(-1).readyState === WebSocket.OPEN, previousCount);
+    }, 15000, 'Host 重建信令并恢复连接');
+  };
 
   const newRoomPage = async (label) => {
     const page = await browser.newPage();
@@ -2109,6 +2129,14 @@ async function runOnlineRoom(browser) {
     page.on('console', (m) => console.log(`[${label} console.${m.type()}]`, m.text().slice(0, 200)));
     await page.evaluateOnNewDocument((u) => {
       window.__RR_SIGNALING_URL__ = u;
+      window.__RR_E2E_SIGNALING__ = [];
+      const NativeWebSocket = window.WebSocket;
+      window.WebSocket = class extends NativeWebSocket {
+        constructor(url, protocols) {
+          super(url, protocols);
+          if (String(url) === u) window.__RR_E2E_SIGNALING__.push(this);
+        }
+      };
       const NativePeerConnection = window.RTCPeerConnection;
       window.RTCPeerConnection = class extends NativePeerConnection {
         constructor(config) {
@@ -2254,7 +2282,7 @@ async function runOnlineRoom(browser) {
           recoveredTurn.phase === 'ACTION' && recoveredTurn.cameraMode === 'FREE_VIEW' && recoveredTurn.turnId === 2);
         await verifyRecoveryInputLock(pageGuest);
         // Host 侧：模拟失败 → RECONNECTING → 真实 restart offer 交换 → RECOVERED
-        await pageHost.evaluate(() => window.__RR_DEBUG__.forceConnectionLost());
+        await rebuildHostSignaling(pageHost);
         const hostRecovered = await waitFor(
           pageHost,
           async () => (await dbg(pageHost)).recoveryState === 'RECOVERED',
@@ -2297,6 +2325,23 @@ async function runOnlineRoom(browser) {
             hRec.hp.P2 === gRec.hp.P2,
           `hostReason=${hRec.lastSyncReason} guestRecoveries=${gRec.recoveryCount} turn=${hRec.turnId}/${gRec.turnId}`
         );
+      },
+      onResult: async (pageHost) => {
+        await sleep(2100); // 超过测试服务端 grace + sweep；新信令应跨 Result 保留
+        check('重建信令跨结算保留超过 grace', await pageHost.evaluate(() =>
+          window.__RR_E2E_SIGNALING__.length >= 2 &&
+          window.__RR_E2E_SIGNALING__.at(-1).readyState === WebSocket.OPEN));
+      },
+      onRematch: async (pageHost, pageGuest) => {
+        await rebuildHostSignaling(pageHost);
+        await pageGuest.evaluate(() => window.__RR_DEBUG__.forceConnectionLost());
+        await waitFor(pageGuest, async () => {
+          const status = await dbg(pageGuest);
+          return status.recoveryState === 'RECOVERED' && status.syncState === 'SYNCED_AFTER_RECOVERY';
+        }, 15000, '重赛 Guest 恢复对账');
+        const h = await dbg(pageHost), g = await dbg(pageGuest);
+        check('重赛后再次重建信令并完成对账', !h.connectionLost && !g.connectionLost &&
+          h.turnId === g.turnId && h.hp.P1 === g.hp.P1 && h.hp.P2 === g.hp.P2);
       },
     });
   } finally {
