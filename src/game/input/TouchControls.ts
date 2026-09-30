@@ -1,7 +1,10 @@
 import Phaser from 'phaser';
 import { CameraMode } from '../camera/CameraMode';
 import { PALETTE, playerColor } from '../config/Palette';
+import { ART } from '../config/ArtAssets';
+import { GAME_CONFIG } from '../config/GameConfig';
 import { baseDockGeometry } from '../systems/WorldBuilder';
+import { dockMoveButtonLayout } from '../ui/touchControlLayout';
 import type { CommandBus } from '../commands/CommandBus';
 import type { GameState } from '../state/GameState';
 import { TurnPhase } from '../state/TurnPhase';
@@ -42,7 +45,6 @@ const FOCUS_BUTTON_SIZE = 24;
 const FOCUS_HIT_MIN = 48;
 const FOCUS_FONT = 10;
 const EDGE_MARGIN = 20;
-const GAP = 10;
 /** 48px 命中区不互相重叠所需的最小中心距（视觉 24 + 间 24 = 48） */
 const FOCUS_GAP = 24;
 
@@ -63,6 +65,7 @@ interface TouchButton {
   direction: 'left' | 'right' | null;
   /** 移动按钮箭头 / 聚焦按钮文本（缩放重绘用） */
   arrow: Phaser.GameObjects.Graphics | null;
+  image: Phaser.GameObjects.Image | null;
   text: Phaser.GameObjects.Text | null;
   /** 移动按钮当前按下视觉状态 */
   pressed: boolean;
@@ -152,6 +155,11 @@ export class TouchControls implements InputSource {
     };
   }
 
+  /** 视觉和触控尺寸分开观测，避免图片缩小后丢失最小触控面积。 */
+  get moveButtonSizes(): { visual: number; hit: number } {
+    return { visual: this.leftButton.width, hit: this.leftButton.hitWidth };
+  }
+
   setEnabled(enabled: boolean): void {
     this.core.setEnabled(enabled);
   }
@@ -226,6 +234,11 @@ export class TouchControls implements InputSource {
     // 到按钮区域，按住按钮移动时绝不能被误判为开始瞄准）；
     // 语义产出是 MOVEMENT 命令，走 MoveInputCore → CommandBus。
     const button = this.createButton(id, 'UI', MOVE_BUTTON_SIZE, direction);
+    if (this.scene.textures.exists(ART.moveArrow)) {
+      button.image = this.scene.add.image(0, 0, ART.moveArrow, 'button')
+        .setFlipX(direction === 'left');
+      button.container.add(button.image);
+    }
     button.arrow = this.scene.add.graphics();
     button.container.add(button.arrow);
     this.drawArrow(button);
@@ -282,6 +295,7 @@ export class TouchControls implements InputSource {
       hitHeight: baseSize,
       direction,
       arrow: null,
+      image: null,
       text: null,
       pressed: false,
       enabled: true,
@@ -310,6 +324,14 @@ export class TouchControls implements InputSource {
     const { width, pressed } = button;
     const ui = this.deps.viewport.current.uiScale;
     const accent = playerColor(this.deps.getState().currentPlayerId);
+    if (button.image) {
+      button.bg.clear();
+      button.arrow?.setVisible(false);
+      const size = width * (pressed ? 0.94 : 1);
+      button.image.setDisplaySize(size, size).setTint(pressed ? 0xffffff : 0xe6e6e6);
+      button.container.setAlpha(1);
+      return;
+    }
     // 实体金属控制盘：背景不透，队伍色外环；按压亮起内圈。
     const r = width / 2;
     button.bg.clear();
@@ -393,28 +415,34 @@ export class TouchControls implements InputSource {
     );
   }
 
-  /** 当前回合基地正下方的双方向盘；相机平移时跟随其投影，离屏时贴边保留可操作性。 */
+  /** 当前基地甲板两端的方向按钮，跟随相机投影并避开固定 HUD。 */
   private repositionMoveButtons(): void {
-    const { width, height, safeArea, uiScale, zoom } = this.deps.viewport.current;
+    const { width, height, zoom } = this.deps.viewport.current;
     const camera = this.scene.cameras.main;
     const playerId = this.deps.getState().currentPlayerId;
     const { center, dockWidth } = baseDockGeometry(playerId);
-    const controlWorldX = center + (playerId === 'P1' ? -0.26 : 0.26) * dockWidth;
-    const baseScreenX = width / 2 + (controlWorldX - camera.scrollX - width / 2) * zoom;
-    const halfPair = (MOVE_BUTTON_SIZE + GAP / 2) * uiScale;
-    const margin = EDGE_MARGIN * uiScale;
-    const focusReserve = (FOCUS_HIT_MIN + 8) * uiScale;
-    const pairMin = playerId === 'P1'
-      ? safeArea.left + margin + halfPair
-      : Math.max(safeArea.left + margin + halfPair, width / 2 + halfPair + focusReserve);
-    const pairMax = playerId === 'P1'
-      ? Math.min(width - safeArea.right - margin - halfPair, width / 2 - halfPair - focusReserve)
-      : width - safeArea.right - margin - halfPair;
-    const pairX = Phaser.Math.Clamp(baseScreenX, pairMin, pairMax);
-    const y = height - safeArea.bottom - 4 * uiScale - this.leftButton.height / 2;
-    const buttonOffset = (MOVE_BUTTON_SIZE + GAP) * uiScale / 2;
-    this.placeOnScreen(this.leftButton, pairX - buttonOffset, y);
-    this.placeOnScreen(this.rightButton, pairX + buttonOffset, y);
+    const projectX = (x: number) => width / 2 + (x - camera.scrollX - width / 2) * zoom;
+    const deckY = height / 2 + (GAME_CONFIG.world.groundTopY - camera.scrollY - height / 2) * zoom;
+    const layout = dockMoveButtonLayout(
+      this.deps.viewport.current,
+      projectX(center - dockWidth / 2),
+      projectX(center + dockWidth / 2),
+      deckY,
+      GAME_CONFIG.player.collision.height * zoom,
+    );
+    for (const [button, position] of [
+      [this.leftButton, layout.left], [this.rightButton, layout.right],
+    ] as const) {
+      button.hitWidth = layout.hitSize;
+      button.hitHeight = layout.hitSize;
+      if (button.width !== layout.visualSize) {
+        button.width = layout.visualSize;
+        button.height = layout.visualSize;
+        this.drawArrow(button);
+        this.drawHoldButton(button);
+      }
+      this.placeOnScreen(button, position.x, position.y);
+    }
   }
 
   /** setScrollFactor(0) 仍受世界相机 zoom 影响；逆变换保证画面与命中区重合。 */

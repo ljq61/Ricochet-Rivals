@@ -84,7 +84,7 @@ export class PlayerHud {
     container.add(portraitFill);
     const key = right ? ART.avatarP2 : ART.avatarP1;
     const avatar = this.scene.textures.exists(key)
-      ? this.scene.add.image(portraitX, -2, key).setDisplaySize(50, 50).setFlipX(right) : null;
+      ? this.scene.add.image(portraitX, -2, key).setDisplaySize(50, 50) : null;
     if (avatar) container.add(avatar);
     if (this.scene.textures.exists(ART.portraitFrame)) {
       container.add(this.scene.add.image(portraitX, 0, ART.portraitFrame).setDisplaySize(78, 78));

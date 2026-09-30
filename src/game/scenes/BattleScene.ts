@@ -1139,6 +1139,12 @@ export class BattleScene extends Phaser.Scene {
           ? self.touchControls.isMoveButtonsVisible
           : null;
       },
+      get aimButtonBounds(): { x: number; y: number; width: number; height: number } {
+        return self.aimButton.screenBounds;
+      },
+      get moveButtonSizes(): { visual: number; hit: number } | null {
+        return self.touchControls?.moveButtonSizes ?? null;
+      },
       get moveButtons(): { left: { x: number; y: number }; right: { x: number; y: number } } | null {
         if (!self.touchControls) return null;
         const scale = self.viewportService.current.uiScale;

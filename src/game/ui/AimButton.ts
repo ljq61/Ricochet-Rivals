@@ -1,13 +1,11 @@
 import Phaser from 'phaser';
 import { CameraMode } from '../camera/CameraMode';
 import { ART } from '../config/ArtAssets';
+import { touchAimRect } from './touchControlLayout';
 import type { ViewportService } from '../platform/ViewportService';
 import type { InputRouter } from '../input/InputRouter';
 
-const DESKTOP_SIZE = { width: 300, height: 56 };
-/** Phase 9 反馈 ②：触屏档位 = 画面右侧垂直居中的圆形准星 icon */
-const TOUCH_ICON_SIZE = 64;
-const TOUCH_RIGHT_MARGIN = 20;
+const DESKTOP_SIZE = { width: 360, height: 84 };
 const DESKTOP_BOTTOM_MARGIN = 76;
 
 export interface AimButtonDeps {
@@ -24,9 +22,8 @@ export interface AimButtonDeps {
  * - 命中走 InputRouter zone（UI 最高优先级），不再用 Phaser
  *   setInteractive —— 一次手势生命周期只有一个 Owner
  * - AIMING 时点击 = 取消瞄准（触屏没有 Esc / 右键，按钮即取消入口）
- * - 真机反馈轮（Phase 17）：两态金属皮肤 —— READY 金（可瞄准）/
- *   AIMING 红（瞄准中）；触屏用生成图标（art-aim-controls 金准星 /
- *   红色回转箭头 —— 激活态加呼吸脉冲，
+ * - 两态生成图片：READY 金（可瞄准）/ AIMING 红（瞄准中），
+ *   角色举枪与手指向下划动箭头示意实际操作；激活态加呼吸脉冲，
  *   素材缺失回退程序绘制）
  * - 跟随 ViewportService 变化重定位（resize / 旋转 / DPR 变化）
  *
@@ -52,6 +49,11 @@ export class AimButton {
   private interactable = true;
   private readonly unsubscribeViewport: () => void;
 
+  /** 游戏像素命中矩形，供浏览器验证使用真实按钮位置。 */
+  get screenBounds(): { x: number; y: number; width: number; height: number } {
+    return { x: this.screenX, y: this.screenY, width: this.width, height: this.height };
+  }
+
   constructor(
     private readonly scene: Phaser.Scene,
     deps: AimButtonDeps
@@ -69,8 +71,8 @@ export class AimButton {
 
     // 两态生成图标（桌面与触屏共用；BootScene 预加载，缺失回退 Graphics）
     this.icon =
-      scene.textures.exists(ART.aimControls)
-        ? scene.add.image(0, 0, ART.aimControls, 'ready')
+      scene.textures.exists(ART.aimReady)
+        ? scene.add.image(0, 0, ART.aimReady, 'button')
         : null;
 
     this.container = scene.add
@@ -137,9 +139,9 @@ export class AimButton {
       aiming ? '取消瞄准 · Esc / 右键' : '回到炮手 / 瞄准 [Space]'
     );
     this.label.setColor(aiming ? '#fff4db' : '#151c22');
-    this.label.setX(20 * ui);
-    this.icon?.setTexture(ART.aimControls, aiming ? 'cancel' : 'ready')
-      .setPosition(-width / 2 + 30 * ui, 0).setDisplaySize(46 * ui, 46 * ui);
+    this.label.setX(this.icon ? 34 * ui : 0);
+    this.updateIcon(aiming);
+    this.icon?.setPosition(-width / 2 + 44 * ui, 0).setDisplaySize(72 * ui, 72 * ui);
     this.label.setFontStyle('bold');
 
     const radius = 4 * ui;
@@ -180,8 +182,8 @@ export class AimButton {
 
   /**
    * 触屏态：生成图标两态（真机反馈轮）——
-   * READY = 金色准星金属盘（点击发起瞄准）；
-   * AIMING = 红色取消箭头 + 呼吸脉冲（点击取消）。
+   * READY = 金色滑动操作示意图（点击发起瞄准）；
+   * AIMING = 红色操作示意图 + 呼吸脉冲（点击取消）。
    * 图标缺失时回退程序绘制（金属盘 + 准星，无斜杠禁止语义）。
    */
   private drawTouchIcon(aiming: boolean, inFlow: boolean): void {
@@ -192,7 +194,7 @@ export class AimButton {
         .setPosition(0, this.height / 2 + 10 * this.deps.viewport.current.uiScale)
         .setStroke('#151c22', 3 * this.deps.viewport.current.uiScale);
       this.bg.clear();
-      this.icon.setTexture(ART.aimControls, aiming ? 'cancel' : 'ready');
+      this.updateIcon(aiming);
       this.container.setAlpha(alpha);
       if (aiming) {
         this.startPulse();
@@ -202,6 +204,12 @@ export class AimButton {
       return;
     }
     this.drawTouchFallback(aiming, inFlow, alpha);
+  }
+
+  private updateIcon(aiming: boolean): void {
+    if (!this.icon) return;
+    const key = aiming && this.scene.textures.exists(ART.aimActive) ? ART.aimActive : ART.aimReady;
+    this.icon.setTexture(key, 'button');
   }
 
   /** 激活态呼吸脉冲：图标 alpha 1 ↔ 0.7（600ms 往复）—— 远处一眼可辨 */
@@ -293,20 +301,20 @@ export class AimButton {
   private reposition(): void {
     const { uiScale, width, height, safeArea } = this.deps.viewport.current;
 
-    // 触屏：右侧垂直居中的准星 icon（Phase 9 反馈 ②）
+    // 触屏：右侧垂直居中的操作示意图。
     if (this.deps.isTouchProfile) {
-      this.width = TOUCH_ICON_SIZE * uiScale;
-      this.height = TOUCH_ICON_SIZE * uiScale;
+      const rect = touchAimRect(this.deps.viewport.current);
+      this.width = rect.width;
+      this.height = rect.height;
       this.icon?.setDisplaySize(this.width, this.height);
-      const margin = TOUCH_RIGHT_MARGIN * uiScale + safeArea.right;
-      this.placeOnScreen(width - margin - this.width / 2, height / 2);
+      this.placeOnScreen(rect.x, rect.y);
       return;
     }
 
     this.width = DESKTOP_SIZE.width * uiScale;
     this.height = DESKTOP_SIZE.height * uiScale;
 
-    this.label.setFontSize(16 * uiScale);
+    this.label.setFontSize(15 * uiScale);
 
     const bottomMargin = DESKTOP_BOTTOM_MARGIN * uiScale + safeArea.bottom;
     this.placeOnScreen(width / 2, height - bottomMargin - this.height / 2);

@@ -99,14 +99,14 @@ describe('attach 前置守卫', () => {
 });
 
 describe('MOVE 同步（Host 权威 + Guest 意图）', () => {
-  it('④ Host 本地 MOVE：经 outcome 广播，Guest 应用权威位置与预算', async () => {
+  it('④ Host 本地 MOVE：经 outcome 广播，Guest 应用权威位置与有限兼容字段', async () => {
     h.hostCoord.inputBus.dispatch({ type: 'MOVE', playerId: 'P1', turnId: 1, targetX: 600 });
     await h.flush();
 
     expect(h.hostState.players.P1.x).toBe(600);
-    expect(h.hostState.players.P1.moveRemaining).toBe(100);
+    expect(h.hostState.players.P1.moveRemaining).toBe(0);
     expect(h.guestState.players.P1.x).toBe(600);
-    expect(h.guestState.players.P1.moveRemaining).toBe(100);
+    expect(h.guestState.players.P1.moveRemaining).toBe(0);
   });
 
   it('⑤ Guest MOVE：MOVE_REQUEST → Host 系统执行 → 广播 → 双端一致', async () => {
@@ -115,37 +115,35 @@ describe('MOVE 同步（Host 权威 + Guest 意图）', () => {
     await h.flush();
 
     expect(h.hostState.players.P2.x).toBe(4570);
-    expect(h.hostState.players.P2.moveRemaining).toBe(230);
+    expect(h.hostState.players.P2.moveRemaining).toBe(0);
     expect(h.guestState.players.P2.x).toBe(4570);
-    expect(h.guestState.players.P2.moveRemaining).toBe(230);
-  });
-
-  it('⑥ 越界 targetX：Host clamp + 预算截断 → 广播的是最终权威值', async () => {
-    advanceToP2Turn(h);
-    h.hostState.players.P2.x = h.guestState.players.P2.x = 4880;
-    h.hostState.players.P2.moveRemaining = h.guestState.players.P2.moveRemaining = 10;
-    h.guestCoord.inputBus.dispatch({ type: 'MOVE', playerId: 'P2', turnId: 1, targetX: 6000 });
-    await h.flush();
-
-    // 先限速32px，再 clamp 到4900，最后按剩余预算10px截断。
-    expect(h.hostState.players.P2.x).toBe(4890);
-    expect(h.guestState.players.P2.x).toBe(4890);
     expect(h.guestState.players.P2.moveRemaining).toBe(0);
   });
 
-  it('⑦ 预算耗尽 → COMMAND_REJECTED(MOVE_BUDGET_EXCEEDED)，Guest 状态不变', async () => {
+  it('⑥ 越界 targetX：Host 限速与基地边界 clamp → 广播最终权威值', async () => {
+    advanceToP2Turn(h);
+    h.hostState.players.P2.x = h.guestState.players.P2.x = 4880;
+    h.guestCoord.inputBus.dispatch({ type: 'MOVE', playerId: 'P2', turnId: 1, targetX: 6000 });
+    await h.flush();
+
+    // 单次突发限速32px，再 clamp 到基地上界4900。
+    expect(h.hostState.players.P2.x).toBe(4900);
+    expect(h.guestState.players.P2.x).toBe(4900);
+    expect(h.guestState.players.P2.moveRemaining).toBe(0);
+  });
+
+  it('⑦ moveRemaining=0 是兼容字段，Guest 仍可在基地内移动', async () => {
     advanceToP2Turn(h);
     h.hostState.players.P2.moveRemaining = 0;
     h.guestState.players.P2.moveRemaining = 0;
-    h.guestCoord.inputBus.dispatch({ type: 'MOVE', playerId: 'P2', turnId: 1, targetX: 4700 });
+    h.guestCoord.inputBus.dispatch({ type: 'MOVE', playerId: 'P2', turnId: 1, targetX: 4570 });
     await h.flush();
 
-    expect(h.guestRejected).toHaveBeenCalledTimes(1);
-    expect(h.guestRejected.mock.calls[0]?.[0]).toEqual({
-      commandType: 'MOVE',
-      reason: 'MOVE_BUDGET_EXCEEDED',
-    });
-    expect(h.guestState.players.P2.x).toBe(4550);
+    expect(h.guestRejected).not.toHaveBeenCalled();
+    expect(h.hostState.players.P2.x).toBe(4570);
+    expect(h.guestState.players.P2.x).toBe(4570);
+    expect(h.hostState.players.P2.moveRemaining).toBe(0);
+    expect(h.guestState.players.P2.moveRemaining).toBe(0);
   });
 
   it('⑧ 伪造 playerId（payload 与 sender 不符）→ INVALID_PLAYER，Host 零执行', async () => {
@@ -180,7 +178,7 @@ describe('MOVE 同步（Host 权威 + Guest 意图）', () => {
     expect(h.hostState.players.P2.x).toBe(4550);
   });
 
-  it('⑩ 重复 sequence 重放：Host 只执行一次（无二次预算消耗）', async () => {
+  it('⑩ 重复 sequence 重放：Host 只执行一次（无二次位移）', async () => {
     advanceToP2Turn(h);
     const envelope = validateEnvelope({
       version: 1,
@@ -195,12 +193,12 @@ describe('MOVE 同步（Host 权威 + Guest 意图）', () => {
     h.guestTransport.send(envelope);
     await h.flush();
     expect(h.hostState.players.P2.x).toBe(4570);
-    expect(h.hostState.players.P2.moveRemaining).toBe(230);
+    expect(h.hostState.players.P2.moveRemaining).toBe(0);
 
     h.guestTransport.send(envelope); // 同 sequence 重放
     await h.flush();
     expect(h.hostState.players.P2.x).toBe(4570);
-    expect(h.hostState.players.P2.moveRemaining).toBe(230);
+    expect(h.hostState.players.P2.moveRemaining).toBe(0);
   });
 });
 
@@ -426,7 +424,7 @@ describe('Turn Barrier（Host 控制回合切换）', () => {
     await h.flush();
     expect(h.guestState.currentPlayerId).toBe('P2');
     expect(h.guestState.turnId).toBe(2);
-    expect(h.guestState.players.P2.moveRemaining).toBe(250);
+    expect(h.guestState.players.P2.moveRemaining).toBe(0);
     expect(h.guestResume).toHaveBeenCalledTimes(1);
   });
 

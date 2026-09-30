@@ -16,7 +16,7 @@ import { type PlayerId } from '../state/ids';
  *
  * 职责与边界：
  * - 纯逻辑，直接驱动 GameState（phase / turnId / currentPlayerId /
- *   新回合的 moveRemaining + hasFired 重置）
+ *   新回合的 hasFired + 旧快照兼容占位重置）
  * - 不处理 Phaser input / Camera —— 场景在相机事件点上回调本状态机
  *   （相机模式 ↔ TurnPhase 由 BattleScene 每帧对账同步）
  * - 死亡判定不在本层：DamageSystem.apply 已写入 gameOver / winnerId，
@@ -38,13 +38,13 @@ export class TurnManager {
     return this.state.turnId;
   }
 
-  /** 比赛开始：START → 首位玩家 ACTION（重置其预算 / hasFired） */
+  /** 比赛开始：START → 首位玩家 ACTION（重置其兼容占位 / hasFired） */
   startMatch(): void {
     this.state.phase = TurnPhase.START;
     this.beginTurn(this.state.currentPlayerId);
   }
 
-  /** 开始某玩家的行动阶段（复位预算 + 发射标记） */
+  /** 开始某玩家的行动阶段（复位兼容占位 + 发射标记） */
   beginTurn(playerId: PlayerId): void {
     this.state.currentPlayerId = playerId;
     this.resetForTurn(playerId);
@@ -113,7 +113,7 @@ export class TurnManager {
 
   /**
    * 结束回合（爆炸停留结束后由场景调用）：
-   * turnId++、切换玩家、重置新玩家预算 / hasFired，phase = END
+   * turnId++、切换玩家、重置新玩家兼容占位 / hasFired，phase = END
    * （等待相机 TURN_TRANSITION 到位后再进入下一回合 ACTION）。
    * 游戏已结束时不切换（phase 停留 GAME_OVER）。
    */

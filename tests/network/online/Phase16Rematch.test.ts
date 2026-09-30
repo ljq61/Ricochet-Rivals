@@ -4,6 +4,8 @@ import { TurnPhase } from '../../../src/game/state/TurnPhase';
 import { NetworkManager } from '../../../src/game/network/NetworkManager';
 import { createLoopbackPair } from '../../../src/game/network/LocalLoopbackTransport';
 import { OnlineGameCoordinator } from '../../../src/game/network/online/OnlineGameCoordinator';
+import { computeStateHash, stateFromSnapshot } from '../../../src/game/network/online/AuthoritativeState';
+import { isAuthoritativeGameSnapshot } from '../../../src/game/network/online/OnlinePayloads';
 import { flushLoopback } from '../onlineHarness';
 import type { OnlineBattleBootstrap } from '../../../src/game/network/online/OnlineTypes';
 import type { OnlineSession } from '../../../src/game/network/OnlineSession';
@@ -124,6 +126,16 @@ describe('Phase 16 — Online Rematch', () => {
     expect(init?.players.P1.hp).toBe(10);
     expect(init?.players.P2.hp).toBe(10);
     expect(init?.phase).toBe(TurnPhase.START);
+    expect(guestBoots[0]?.gameStart).toEqual(hostBoots[0]?.gameStart);
+    if (init === undefined) throw new Error('rematch did not provide initialState');
+    const serialized: unknown = JSON.parse(JSON.stringify(init));
+    expect(isAuthoritativeGameSnapshot(serialized)).toBe(true);
+    if (!isAuthoritativeGameSnapshot(serialized)) throw new Error('invalid rematch snapshot');
+    for (const player of Object.values(serialized.players)) {
+      expect(player.moveRemaining).toBe(0);
+      expect(Number.isFinite(player.moveRemaining)).toBe(true);
+    }
+    expect(computeStateHash(stateFromSnapshot(serialized))).toBe(computeStateHash(stateFromSnapshot(init)));
 
     hostCancel();
     guestCancel();
@@ -212,7 +224,8 @@ describe('Phase 16 — Online Rematch', () => {
     expect(fresh.players.P2.hp).toBe(10);
     expect(fresh.players.P1.hasFired).toBe(false);
     expect(fresh.players.P2.hasFired).toBe(false);
-    expect(fresh.players.P1.moveRemaining).toBe(250);
+    expect(fresh.players.P1.moveRemaining).toBe(0);
+    expect(fresh.players.P2.moveRemaining).toBe(0);
     expect(fresh.currentPlayerId).toBe('P1');
     expect(fresh.phase).toBe(TurnPhase.START);
     expect(fresh.gameOver).toBe(false);

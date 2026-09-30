@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { MainMenuScene } from './MainMenuScene';
-import { ART, ART_FILES, AIM_POSE_FILES, SHEET_GRID, DOCK_ART_FRAME } from '../config/ArtAssets';
+import { ART, ART_FILES, AIM_POSE_FILES, SHEET_GRID, DOCK_ART_FRAME, CONTROL_ART_FRAMES } from '../config/ArtAssets';
 import { SFX_FILES } from '../audio/SfxBus';
 
 /**
@@ -35,10 +35,10 @@ export class BootScene extends Phaser.Scene {
 
   create(): void {
     // Runtime frames preserve the generated originals and remove transparent padding.
-    const controls = this.textures.get(ART.aimControls);
-    if (this.textures.exists(ART.aimControls)) {
-      controls.add('ready', 0, 44, 44, 790, 790);
-      controls.add('cancel', 0, 940, 44, 790, 790);
+    for (const [key, frame] of Object.entries(CONTROL_ART_FRAMES)) {
+      if (this.textures.exists(key)) {
+        this.textures.get(key).add('button', 0, frame.x, frame.y, frame.width, frame.height);
+      }
     }
     if (this.textures.exists(ART.platform)) {
       const frame = DOCK_ART_FRAME;

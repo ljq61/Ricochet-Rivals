@@ -31,6 +31,7 @@ export function createPlayerState(id: PlayerId): PlayerState {
     y: GAME_CONFIG.world.groundTopY,
     hp: GAME_CONFIG.player.maxHp,
     maxHp: GAME_CONFIG.player.maxHp,
+    // 保留有限数值以兼容既有联机快照，不代表移动预算。
     moveRemaining: GAME_CONFIG.player.maxMovePerTurn,
     hasFired: false,
     isAlive: true,

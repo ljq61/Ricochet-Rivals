@@ -53,7 +53,7 @@ const PLAYER_SNAPSHOT_P1 = {
   hp: 10,
   maxHp: 10,
   isAlive: true,
-  moveRemaining: 250,
+  moveRemaining: 0,
   hasFired: false,
   weaponId: 'normal',
 };
@@ -86,8 +86,8 @@ const GAME_START = {
 };
 
 const TURN_RESULT_PLAYERS = {
-  P1: { x: 450, y: 960, hp: 10, hpBefore: 10, isAlive: true, moveRemaining: 250, hasFired: true },
-  P2: { x: 4550, y: 960, hp: 8, hpBefore: 10, isAlive: true, moveRemaining: 250, hasFired: false },
+  P1: { x: 450, y: 960, hp: 10, hpBefore: 10, isAlive: true, moveRemaining: 0, hasFired: true },
+  P2: { x: 4550, y: 960, hp: 8, hpBefore: 10, isAlive: true, moveRemaining: 0, hasFired: false },
 };
 
 const TURN_RESULT = {
@@ -184,6 +184,7 @@ describe('OnlinePayloads 守卫（Phase 14）', () => {
     });
 
     it('② MOVE 合法通过；x / moveRemaining 腐蚀拒绝', () => {
+      expect(isMovePayload({ playerId: 'P2', x: 500, moveRemaining: 0 })).toBe(true);
       expect(isMovePayload({ playerId: 'P2', x: 500, moveRemaining: 100 })).toBe(true);
       expect(isMovePayload(corrupt({ playerId: 'P2', x: 500, moveRemaining: 100 }, (r) => { r.moveRemaining = Number.POSITIVE_INFINITY; }))).toBe(false);
       expect(isMovePayload(corrupt({ playerId: 'P2', x: 500, moveRemaining: 100 }, (r) => { delete r.x; }))).toBe(false);

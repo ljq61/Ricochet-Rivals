@@ -146,10 +146,44 @@ async function inspect(browser, mobile) {
   await waitFor(async () => (await dbg(page)).phase === 'ACTION', 10000, 'ACTION');
   await pause(400);
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-battle.png` });
+  if (mobile) {
+    const initial = await dbg(page);
+    const sizes = initial.moveButtonSizes;
+    if (sizes.hit / initial.uiScale < 48 ||
+        Math.abs(sizes.visual - 180 * initial.cameraZoom * 0.82) > 1) {
+      throw new Error('Movement art must be slightly smaller than the character with a 48px touch target');
+    }
+    if (Math.abs(initial.moveButtons.left.y - initial.moveButtons.right.y) > 1) {
+      throw new Error('Blue-base movement buttons must stay aligned with the deck at this viewport');
+    }
+    const hold = async (direction, ms) => {
+      const button = (await dbg(page)).moveButtons[direction];
+      await page.touchscreen.touchStart(button.x, button.y);
+      await pause(ms);
+      await page.touchscreen.touchEnd();
+      await pause(100);
+    };
+    await hold('right', 2100);
+    const rightX = (await dbg(page)).players.P1;
+    if (rightX - initial.players.P1 <= 250 || rightX > 850) {
+      throw new Error(`Unlimited movement did not reach the right base boundary: ${rightX}`);
+    }
+    await hold('left', 3000);
+    const leftX = (await dbg(page)).players.P1;
+    if (rightX - leftX <= 700 || leftX < 100) {
+      throw new Error(`Unlimited reversal stopped early or left the base: ${leftX}`);
+    }
+    await pause(200);
+    if (Math.abs((await dbg(page)).players.P1 - leftX) > 0.5) throw new Error('Movement did not stop on release');
+    console.log('mobile movement art: both holds/release passed, unlimited path >1000px, inside base');
+  }
   // Click the visible button center, not a keyboard shortcut, to verify art/hit alignment.
-  const buttonX = mobile ? W - 52 : W / 2;
-  const buttonY = mobile ? H / 2 : H - 104;
-  const tap = () => mobile ? page.touchscreen.tap(buttonX, buttonY) : page.mouse.click(buttonX, buttonY);
+  const tap = async () => {
+    const d = await dbg(page);
+    const { x, y } = d.aimButtonBounds;
+    return mobile ? page.touchscreen.tap(x / d.uiScale, y / d.uiScale)
+      : page.mouse.click(x / d.uiScale, y / d.uiScale);
+  };
   await tap();
   await waitFor(async () => (await dbg(page)).cameraMode === 'AIMING', 3000, 'button enters AIMING');
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-aim-cancel.png` });
@@ -184,6 +218,12 @@ async function inspect(browser, mobile) {
   await waitFor(async () => (await dbg(page)).currentPlayerId === 'P2' && (await dbg(page)).phase === 'ACTION', 7000, 'next turn');
   await pause(1300);
   await page.screenshot({ path: `${OUT_DIR}/${prefix}-red-base.png` });
+  if (mobile) {
+    const buttons = (await dbg(page)).moveButtons;
+    if (Math.abs(buttons.left.y - buttons.right.y) > 1) {
+      throw new Error('Red-base movement buttons must stay aligned with the deck at this viewport');
+    }
+  }
   if ((await dbg(page)).hp.P2 !== 8) throw new Error('Expected direct-hit damage and HP animation 10 -> 8');
   await tap();
   await waitFor(async () => (await dbg(page)).cameraMode === 'AIMING', 3000, 'P2 aim');

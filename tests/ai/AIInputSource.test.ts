@@ -121,9 +121,7 @@ describe('AIInputSource', () => {
     const bounds = GAME_CONFIG.player.rightBounds;
     expect(move.targetX).toBeGreaterThanOrEqual(bounds.minX);
     expect(move.targetX).toBeLessThanOrEqual(bounds.maxX);
-    expect(Math.abs(move.targetX - 4550)).toBeLessThanOrEqual(
-      GAME_CONFIG.player.maxMovePerTurn
-    );
+    expect(h.state.players.P2.moveRemaining).toBe(0);
     // 真实 MovementSystem 已执行
     expect(h.state.players.P2.x).toBe(move.targetX);
 

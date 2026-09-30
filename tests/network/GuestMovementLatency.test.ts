@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MoveInputCore } from '../../src/game/input/MoveInputCore';
 import { NetworkMessageType } from '../../src/game/network/NetworkMessageType';
+import { computeStateHash } from '../../src/game/network/online/AuthoritativeState';
 import { createInitialGameState } from '../../src/game/state/GameState';
 import { MovementSystem } from '../../src/game/systems/MovementSystem';
 import { TurnManager } from '../../src/game/systems/TurnManager';
@@ -49,7 +50,7 @@ function localBaseline(): { core: MoveInputCore; state: ReturnType<typeof create
 }
 
 describe('Guest 移动不依赖权威回包频率', () => {
-  it.each([0, 50, 100])('RTT %i×2 ms：按住/松手与本地距离、预算一致', async (latencyMs) => {
+  it.each([0, 50, 100])('RTT %i×2 ms：按住/松手与本地距离一致', async (latencyMs) => {
     const net = await start(latencyMs);
     const core = new MoveInputCore(() => 'P2', () => net.guestState, net.guestCoord.inputBus);
     const local = localBaseline();
@@ -65,34 +66,51 @@ describe('Guest 移动不依赖权威回包频率', () => {
     await tick(20); // 释放前已经发送的有限帧增量完成有序投递。
     expect(net.hostState.players.P2.x).toBeCloseTo(local.state.players.P2.x, 6);
     expect(net.guestState.players.P2.x).toBeCloseTo(local.state.players.P2.x, 6);
-    expect(net.hostState.players.P2.moveRemaining).toBeCloseTo(local.state.players.P2.moveRemaining, 6);
+    expect(net.hostState.players.P2.moveRemaining).toBe(0);
+    expect(net.guestState.players.P2.moveRemaining).toBe(0);
+    expect(computeStateHash(net.guestState)).toBe(computeStateHash(net.hostState));
     const stoppedX = net.hostState.players.P2.x;
     await tick(60);
     expect(net.hostState.players.P2.x).toBe(stoppedX);
   });
 
-  it('200 ms RTT：反转、边界与预算按实际路径消耗；耗尽不能续走', async () => {
-    const net = await start(100);
+  it.each([0, 50, 100])('RTT %i×2 ms：同回合反复往返超过750px，持续移动且双端与本地一致', async (latencyMs) => {
+    const net = await start(latencyMs);
     const core = new MoveInputCore(() => 'P2', () => net.guestState, net.guestCoord.inputBus);
     const local = localBaseline();
-    for (const [direction, frames] of [[-1, 24], [1, 24], [-1, 60]] as const) {
+    let travelled = 0;
+    let previousX = net.hostState.players.P2.x;
+    for (const direction of [-1, 1, -1] as const) {
       core.setDirection(direction);
       local.core.setDirection(direction);
-      for (let i = 0; i < frames; i++) {
+      for (let i = 0; i < 60; i++) {
         core.update(dt);
         local.core.update(dt);
         await tick();
+        travelled += Math.abs(net.hostState.players.P2.x - previousX);
+        previousX = net.hostState.players.P2.x;
       }
     }
+    core.setDirection(0);
+    core.update(dt);
     await tick(20);
+    travelled += Math.abs(net.hostState.players.P2.x - previousX);
+    expect(travelled).toBeGreaterThan(750);
+    expect(net.hostState.turnId).toBe(1);
     expect(net.hostState.players.P2.x).toBeCloseTo(local.state.players.P2.x, 6);
+    expect(net.guestState.players.P2.x).toBeCloseTo(local.state.players.P2.x, 6);
     expect(net.hostState.players.P2.moveRemaining).toBe(0);
     expect(net.guestState.players.P2.moveRemaining).toBe(0);
     expect(net.hostState.players.P2.x).toBeGreaterThanOrEqual(GAME_CONFIG.player.rightBounds.minX);
     expect(net.hostState.players.P2.x).toBeLessThanOrEqual(GAME_CONFIG.player.rightBounds.maxX);
+    expect(net.guestRejected).not.toHaveBeenCalled();
+    expect(computeStateHash(net.guestState)).toBe(computeStateHash(net.hostState));
+    const stoppedX = net.hostState.players.P2.x;
+    await tick(60);
+    expect(net.hostState.players.P2.x).toBe(stoppedX);
   });
 
-  it('200 ms RTT：触碰平台边界后反向离开，不额外消耗预算', async () => {
+  it('200 ms RTT：触碰平台边界后仍可反向离开', async () => {
     const net = await start(100);
     net.hostState.players.P2.x = net.guestState.players.P2.x = 4890;
     const core = new MoveInputCore(() => 'P2', () => net.guestState, net.guestCoord.inputBus);
@@ -112,10 +130,51 @@ describe('Guest 移动不依赖权威回包频率', () => {
     expect(net.hostState.players.P2.moveRemaining).toBeCloseTo(local.state.players.P2.moveRemaining, 6);
     expect(net.hostState.players.P2.x).toBeLessThan(4900);
   });
+
+  it('200 ms RTT：移动超过250px后恢复快照，有限0字段保持一致并可继续移动', async () => {
+    const net = await start(100);
+    const core = new MoveInputCore(() => 'P2', () => net.guestState, net.guestCoord.inputBus);
+    const startX = net.hostState.players.P2.x;
+    core.setDirection(-1);
+    for (let i = 0; i < 60; i++) {
+      core.update(dt);
+      await tick();
+    }
+    core.setDirection(0);
+    core.update(dt);
+    await tick(20);
+    const recoveredX = net.hostState.players.P2.x;
+    expect(startX - recoveredX).toBeGreaterThan(250);
+    net.guestState.players.P2.x = startX;
+    net.guestState.players.P2.moveRemaining = 250; // 模拟恢复前旧状态，必须被权威0覆写。
+    net.guestCoord.requestPostReconnectSync();
+    await tick(20);
+    expect(net.guestSnapshotApplied).toHaveBeenCalledTimes(1);
+    expect(net.guestState.players.P2.x).toBe(recoveredX);
+    for (const state of [net.hostState, net.guestState]) {
+      for (const player of Object.values(state.players)) {
+        expect(player.moveRemaining).toBe(0);
+        expect(Number.isFinite(player.moveRemaining)).toBe(true);
+      }
+    }
+    expect(computeStateHash(net.guestState)).toBe(computeStateHash(net.hostState));
+
+    core.setDirection(1);
+    for (let i = 0; i < 30; i++) {
+      core.update(dt);
+      await tick();
+    }
+    core.setDirection(0);
+    core.update(dt);
+    await tick(20);
+    expect(net.hostState.players.P2.x - recoveredX).toBeGreaterThan(100);
+    expect(computeStateHash(net.guestState)).toBe(computeStateHash(net.hostState));
+    expect(net.guestRejected).not.toHaveBeenCalled();
+  });
 });
 
 describe('Host 移动速度与发射起点仍由权威校验', () => {
-  it('恶意大增量/旧 absolute 请求洪水不能在相同Host时刻耗尽250px预算', async () => {
+  it('取消距离预算后，恶意大增量/旧 absolute 洪水仍受Host同一时刻32px突发限速', async () => {
     const net = await start();
     const startX = net.hostState.players.P2.x;
     for (let i = 0; i < 20; i++) {
@@ -124,7 +183,7 @@ describe('Host 移动速度与发射起点仍由权威校验', () => {
     }
     await vi.advanceTimersByTimeAsync(1);
     expect(net.hostState.players.P2.x - startX).toBeCloseTo(32, 6);
-    expect(net.hostState.players.P2.moveRemaining).toBeCloseTo(218, 6);
+    expect(net.hostState.players.P2.moveRemaining).toBe(0);
   });
 
   it.each([0, 50, 100])('RTT %i×2 ms：移动后立即开火校正到当前权威炮塔', async (latencyMs) => {

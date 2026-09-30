@@ -1,7 +1,9 @@
 /** Phase 17 first-look assets. Missing files retain the existing playable visuals. */
 export const ART = {
   harbor: 'art-harbor',
-  aimControls: 'art-aim-controls',
+  moveArrow: 'art-move-arrow',
+  aimReady: 'art-aim-gesture-ready',
+  aimActive: 'art-aim-gesture-active',
   platform: 'art-dock-platform',
   portraitFrame: 'art-portrait-frame',
   smoke: 'art-smoke',
@@ -31,7 +33,9 @@ export const ART = {
 
 export const ART_FILES = [
   [ART.harbor, 'harbor.png'],
-  [ART.aimControls, 'aim-controls.png'],
+  [ART.moveArrow, 'move-arrow.png'],
+  [ART.aimReady, 'aim-gesture-ready.png'],
+  [ART.aimActive, 'aim-gesture-active.png'],
   [ART.platform, 'dock-platform-tall.png'],
   [ART.portraitFrame, 'portrait-frame.png'],
   [ART.smoke, 'smoke-puff.png'],
@@ -52,6 +56,13 @@ export const ART_FILES = [
   [ART.baseFire, 'base-fire-varied.png'],
   [ART.octopus, 'octopus-flex.png'],
 ] as const;
+
+/** Generated controls: measured alpha bounds, so visible art matches the input layout. */
+export const CONTROL_ART_FRAMES = {
+  [ART.moveArrow]: { x: 55, y: 76, width: 1143, height: 1113 },
+  [ART.aimReady]: { x: 50, y: 59, width: 1154, height: 1140 },
+  [ART.aimActive]: { x: 49, y: 57, width: 1156, height: 1142 },
+} as const;
 
 /** Long-piling dock, measured alpha bounds; world and menu share the same aspect ratio. */
 export const DOCK_ART_FRAME = { x: 17, y: 65, width: 1739, height: 759 } as const;
