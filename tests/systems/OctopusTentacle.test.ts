@@ -345,6 +345,8 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     }
     tick(99);
     expect(hit).not.toHaveBeenCalled();
+    expect(scene.sound.play.mock.calls.map((call) => call[0]))
+      .toEqual([SFX.laserCharge, SFX.laserSweep]);
     expect(tentacle.isAttacking).toBe(true);
     tick(1);
     await idle;
@@ -358,13 +360,14 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     tentacle.refresh(state);
     tick(5000);
     expect(hit).toHaveBeenCalledTimes(1);
-    // 整段攻击蓄力/扫射各只播一次；攻击结束后的 refresh 不再触发音效
-    expect(scene.sound.play).toHaveBeenCalledTimes(2);
+    // 蓄力/扫射/端点爆炸各只播一次；结束后的 refresh 不再触发音效。
+    expect(scene.sound.play.mock.calls.map((call) => call[0]))
+      .toEqual([SFX.laserCharge, SFX.laserSweep, SFX.explosion]);
   });
 
-  it.each([[100, 'focusing'], [1000, 'holding']] as const)(
+  it.each([[100, 'focusing'], [1000, 'holding'], [1500, 'sweeping']] as const)(
     'snapshot restore after %s ms cancels %s callbacks and permits only a new turn to attack', async (elapsed, phase) => {
-    const { tentacle, hit, complete, tick } = fixture();
+    const { scene, tentacle, hit, complete, tick } = fixture();
     const state = activeState();
     state.octopus.lastAttackTurnId = 6;
     state.octopus.lastAttackTarget = 'P2';
@@ -376,6 +379,7 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     await oldIdle;
     tick(5000);
     expect(hit).not.toHaveBeenCalled();
+    expect(scene.sound.play.mock.calls.map((call) => call[0])).not.toContain(SFX.explosion);
     expect(tentacle.isAttacking).toBe(false);
     expect(complete).toHaveBeenCalledTimes(1);
     tentacle.refresh(state);
@@ -389,6 +393,7 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     await tentacle.whenIdle();
     expect(hit).toHaveBeenCalledExactlyOnceWith('P1');
     expect(complete).toHaveBeenCalledTimes(2);
+    expect(scene.sound.play.mock.calls.filter((call) => call[0] === SFX.explosion)).toHaveLength(1);
   });
 
   it('renders the final beam for one frame, while recovery can immediately remove that lingering FX', async () => {

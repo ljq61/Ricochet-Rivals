@@ -180,17 +180,30 @@ export class OctopusTentacle {
         }
       }
       fx.clear();
-      // A ragged glowing edge and upward drifting ash hide the crop seam without a mask pipeline.
-      for (let i = 0; i < 42; i++) {
-        const x = cfg.x + Math.sin(i * 2.4) * cfg.width * 0.24;
-        const drift = (q * 3 + i * 0.137) % 1;
-        const y = edge - drift * 110 + Math.sin(i * 1.7 + q * 18) * 12;
-        const alpha = (1 - drift) * Math.min(1, (1 - q) * 6);
-        fx.fillStyle(i % 3 === 0 ? 0xffe3f9 : 0xdb83ef, alpha)
-          .fillCircle(x + drift * Math.sin(i) * 38, y, 2 + (i % 4));
+      // Broad white-hot fragments, halos and trails stay legible at mobile world scale.
+      const fade = Math.min(1, (1 - q) * 8);
+      for (let i = 0; i < 84; i++) {
+        const drift = (q * 2.3 + i * 0.137) % 1;
+        const dx = Math.sin(i * 2.4);
+        const x = cfg.x + dx * (cfg.width * 0.24 + drift * 190);
+        const y = edge - drift * (180 + (i % 6) * 20) + Math.sin(i * 1.7 + q * 18) * 18;
+        const alpha = (1 - drift * 0.75) * fade;
+        const size = 6 + (i % 5) * 2;
+        fx.fillStyle(0xcb65ff, alpha * 0.25).fillCircle(x, y, size * 3);
+        fx.lineStyle(5 + i % 3, 0xf89bff, alpha * 0.8)
+          .lineBetween(x, y, x - dx * 28, y + 30 + drift * 28);
+        fx.fillStyle(i % 3 === 0 ? 0xffffff : 0xffccf4, alpha).fillCircle(x, y, size);
       }
-      fx.lineStyle(9, 0xef8bff, (1 - q) * 0.25)
-        .lineBetween(cfg.x - cfg.width * 0.2, edge, cfg.x + cfg.width * 0.2, edge);
+      // Three glow layers make the uneven dissolution front much brighter than the sprite.
+      for (const [width, color, alpha] of [[58, 0xb644ed, 0.35], [22, 0xf58dff, 0.9], [7, 0xffffff, 1]] as const) {
+        fx.lineStyle(width, color, alpha * fade);
+        for (let i = 0; i < 14; i++) {
+          const x = cfg.x + (i / 14 - 0.5) * cfg.width * 0.52;
+          const nextX = cfg.x + ((i + 1) / 14 - 0.5) * cfg.width * 0.52;
+          fx.lineBetween(x, edge + Math.sin(i * 1.8 + q * 15) * 15,
+            nextX, edge + Math.sin((i + 1) * 1.8 + q * 15) * 15);
+        }
+      }
     };
     draw();
     this.deathTween = this.scene.tweens.add({ targets: progress, value: 1,
@@ -310,6 +323,7 @@ export class OctopusTentacle {
       fx.fillStyle(0xeb8fff, 0.85).fillCircle(endX, endY, 25);
       if (q >= 1 && !this.laserHit) {
         this.laserHit = true;
+        this.sfx.play(SFX.explosion);
         this.onLaserHit(target);
       }
     };

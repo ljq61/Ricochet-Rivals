@@ -164,7 +164,7 @@ export const GAME_CONFIG = {
    * HP、存活回合和激光目标属于权威状态，动画只消费结算记录。
    */
   octopus: {
-    maxHp: 20,
+    maxHp: 15,
     /** 击败后的消融表现；碰撞体在动画开始时即移除。 */
     deathDurationMs: 1100,
     /** 出生当回合不计；每个玩家行动均计一个回合。 */

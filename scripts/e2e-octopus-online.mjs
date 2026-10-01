@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer-core';
-import { installRoarProbe, roarStarts } from './e2e-audio-probe.mjs';
+import { installRoarProbe, roarStarts, explosionStarts } from './e2e-audio-probe.mjs';
 
 const WIDTH = 844, HEIGHT = 390;
 const browserPath = [
@@ -116,7 +116,7 @@ function sameBoundary(host, guest, label) {
   check(`${label}: last authoritative hash matches on both peers`, guest.online.lastHashMatch === true &&
     host.online.localHash === guest.online.localHash, `${host.online.localHash}/${guest.online.localHash}`);
 }
-async function verifyLaserTrace(samples, turn, peer) {
+async function verifyLaserTrace(samples, turn, peer, booms) {
   try {
     const attack = samples.filter((s) => s.lastAttackTurnId === turn);
     const focus = attack.find((s) => s.phase === 'focusing');
@@ -135,6 +135,9 @@ async function verifyLaserTrace(samples, turn, peer) {
     ]) {
       check(`${peer}: ${label}`, duration >= min && duration <= max, `${Math.round(duration)} ms`);
     }
+    check(`${peer}: base endpoint plays exactly one real explosion`, booms.length === 1 &&
+      booms[0].state === 'running' && booms[0].gain > 0 &&
+      booms[0].at >= sweep.t + 700 && booms[0].at <= idle.t + 50);
     const active = attack.filter((s) => s.phase !== 'idle');
     const premature = active.filter((s) => s.turnPhase === 'ACTION' || s.cameraMode === 'TURN_TRANSITION');
     check(`${peer}: next action and camera transition wait for the entire laser animation`,
@@ -194,11 +197,12 @@ async function setBoth(pages, hp, turnId, octopus) {
 }
 async function laserRound(pages, shooter, expectedHp, baselineRecovery) {
   for (const page of pages) await trace(page);
+  const beforeBoom = (await Promise.all(pages.map(explosionStarts))).map((starts) => starts.length);
   const turn = await fireTouch(shooter);
   const [host, guest] = await nextTurn(pages, turn);
   const samples = await Promise.all(pages.map(stopTrace));
-  await verifyLaserTrace(samples[0], turn, 'Host');
-  await verifyLaserTrace(samples[1], turn, 'Guest');
+  await verifyLaserTrace(samples[0], turn, 'Host', (await explosionStarts(pages[0])).slice(beforeBoom[0]));
+  await verifyLaserTrace(samples[1], turn, 'Guest', (await explosionStarts(pages[1])).slice(beforeBoom[1]));
   sameBoundary(host, guest, `turn ${turn}`);
   check(`turn ${turn}: random target agrees and one HP was removed`, host.octopusState.lastAttackTurnId === turn &&
     host.octopusState.lastAttackTarget === guest.octopusState.lastAttackTarget &&
@@ -236,9 +240,9 @@ async function pair(host, guest) {
 async function run(pages) {
   const [host, guest] = pages;
   await pair(host, guest);
-  check('both new matches begin with an unspawned twenty-HP tentacle', (await Promise.all(pages.map(debug)))
-    .every((d) => d.octopusState.hp === 20 && d.octopusState.spawnTurnId === null));
-  await setBoth(pages, 10, 6, { hp: 20, spawnTurnId: 1, lastResolvedTurnId: 5,
+  check('both new matches begin with an unspawned fifteen-HP tentacle', (await Promise.all(pages.map(debug)))
+    .every((d) => d.octopusState.hp === 15 && d.octopusState.spawnTurnId === null));
+  await setBoth(pages, 10, 6, { hp: 15, spawnTurnId: 1, lastResolvedTurnId: 5,
     lastAttackTurnId: null, lastAttackTarget: null });
   await pause(1600); // The emergence animation is presentation only.
   let [h, g] = await laserRound(pages, host, 19, 0);
@@ -266,7 +270,7 @@ async function run(pages) {
     check(`${peer}: turn and camera transition wait for the death animation`, samples.every((s) =>
       s.turn === turn && s.turnPhase !== 'ACTION' && s.cameraMode !== 'TURN_TRANSITION'));
     const roar = await roarStarts(pages[i]);
-    check(`${peer}: actual monster roar plays once`, roar.length === 1 && roar[0].state === 'running' && roar[0].duration > 1);
+    check(`${peer}: actual monster roar plays once`, roar.length === 1 && roar[0].state === 'running' && roar[0].duration > 2 && roar[0].gain >= 0.9 && roar[0].rms > 0.2);
   }
   sameBoundary(h, g, 'tentacle destroyed');
   check('normal center hit removes 2 HP, tentacle art and Matter obstacle on both peers', [h, g].every((d) =>
@@ -297,15 +301,16 @@ async function run(pages) {
     (await Promise.all(pages.map(roarStarts))).every((starts) => starts.length === 1));
 
   // Test the actual final laser animation/confirmation path after recovery.
-  await setBoth(pages, 1, h.turnId, { hp: 20, spawnTurnId: 1, lastResolvedTurnId: h.turnId - 1,
+  await setBoth(pages, 1, h.turnId, { hp: 15, spawnTurnId: 1, lastResolvedTurnId: h.turnId - 1,
     lastAttackTurnId: history.lastAttackTurnId, lastAttackTarget: history.lastAttackTarget });
   await pause(1600);
   for (const page of pages) await trace(page);
+  const finalBoom = (await Promise.all(pages.map(explosionStarts))).map((starts) => starts.length);
   turn = await fireTouch(guest);
   const results = await Promise.all(pages.map((page) => waitFor(page, (d) => d?.scene === 'ResultScene', 'laser lethal ResultScene')));
   const finalTraces = await Promise.all(pages.map(stopTrace));
-  await verifyLaserTrace(finalTraces[0], turn, 'lethal Host');
-  await verifyLaserTrace(finalTraces[1], turn, 'lethal Guest');
+  await verifyLaserTrace(finalTraces[0], turn, 'lethal Host', (await explosionStarts(host)).slice(finalBoom[0]));
+  await verifyLaserTrace(finalTraces[1], turn, 'lethal Guest', (await explosionStarts(guest)).slice(finalBoom[1]));
   check('laser ends the match with the same winner on both peers', results[0].winnerId === results[1].winnerId &&
     ['P1', 'P2'].includes(results[0].winnerId));
   check('lethal laser introduces no extra desync recovery', finalTraces[1].every((s) => s.recoveryCount === 1));

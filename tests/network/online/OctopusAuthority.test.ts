@@ -110,7 +110,7 @@ describe('Octopus untrusted wire validation', () => {
   });
 
   it.each([
-    { hp: -1 }, { hp: 21 }, { hp: 1.5 }, { hp: Number.NaN },
+    { hp: -1 }, { hp: 16 }, { hp: 1.5 }, { hp: Number.NaN },
     { spawnTurnId: 0 }, { spawnTurnId: 9 }, { spawnTurnId: null },
     { lastResolvedTurnId: -1 }, { lastResolvedTurnId: 9 }, { lastResolvedTurnId: 1.5 },
     { lastAttackTurnId: 5 }, { lastAttackTurnId: 9 }, { lastAttackTurnId: null },
@@ -120,22 +120,22 @@ describe('Octopus untrusted wire validation', () => {
   });
 
   it('accepts an unspawned hazard and historical attacks after death; rejects partial attack pairs', () => {
-    expect(isAuthoritativeOctopusSnapshot({ hp: 20, spawnTurnId: null, lastResolvedTurnId: 2, lastAttackTurnId: null, lastAttackTarget: null }, 2)).toBe(true);
+    expect(isAuthoritativeOctopusSnapshot({ hp: 15, spawnTurnId: null, lastResolvedTurnId: 2, lastAttackTurnId: null, lastAttackTarget: null }, 2)).toBe(true);
     expect(isAuthoritativeOctopusSnapshot({ ...sample, hp: 0 }, 8)).toBe(true);
     expect(isAuthoritativeOctopusSnapshot({ ...sample, hp: 0, lastAttackTurnId: 8 }, 8)).toBe(false);
     expect(isAuthoritativeOctopusSnapshot({ ...sample, lastAttackTurnId: null, lastAttackTarget: null }, 8)).toBe(true);
     expect(isAuthoritativeOctopusSnapshot({ hp: 9, spawnTurnId: null, lastResolvedTurnId: 2, lastAttackTurnId: null, lastAttackTarget: null }, 2)).toBe(false);
   });
 
-  it('accepts a spawned tentacle up to 20 HP and rejects 21 HP at both wire entry points', () => {
+  it('accepts a spawned tentacle up to 15 HP and rejects 16 HP at both wire entry points', () => {
     const host = agedTentacle();
-    host.octopus.hp = 20;
+    host.octopus.hp = 15;
     const snapshot = buildSnapshot(host);
     const result = buildTurnResultPayload(host, null, null);
     expect(isAuthoritativeGameSnapshot(snapshot)).toBe(true);
     expect(isTurnResultPayload(result)).toBe(true);
-    expect(isAuthoritativeGameSnapshot({ ...snapshot, octopus: { ...snapshot.octopus, hp: 21 } })).toBe(false);
-    expect(isTurnResultPayload({ ...result, octopus: { ...result.octopus, hp: 21 } })).toBe(false);
+    expect(isAuthoritativeGameSnapshot({ ...snapshot, octopus: { ...snapshot.octopus, hp: 16 } })).toBe(false);
+    expect(isTurnResultPayload({ ...result, octopus: { ...result.octopus, hp: 16 } })).toBe(false);
   });
 });
 

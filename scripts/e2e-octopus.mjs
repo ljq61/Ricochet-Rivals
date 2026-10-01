@@ -6,7 +6,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import puppeteer from 'puppeteer-core';
-import { installRoarProbe, roarStarts } from './e2e-audio-probe.mjs';
+import { installRoarProbe, roarStarts, explosionStarts } from './e2e-audio-probe.mjs';
 
 const WIDTH = 844, HEIGHT = 390;
 const browserPath = [
@@ -101,6 +101,7 @@ async function startTrace(page) {
 }
 async function laserTurn(page) {
   await startTrace(page);
+  const explosionCount = (await explosionStarts(page)).length;
   const turn = await fireTouch(page);
   const focusing = await waitFor(page, (d) => d.octopusState.attackPhase === 'focusing', 'focus octopus first');
   check('camera focus begins before energy gathering', focusing.octopusState.visual?.end === null);
@@ -126,6 +127,10 @@ async function laserTurn(page) {
   check('energy charge lasts 500 ms', chargeMs >= 450 && chargeMs <= 750, `${chargeMs.toFixed(0)} ms`);
   check('charged pause lasts 200 ms', holdMs >= 150 && holdMs <= 450, `${holdMs.toFixed(0)} ms`);
   check('laser sweep lasts 800 ms', sweepMs >= 750 && sweepMs <= 1100, `${sweepMs.toFixed(0)} ms`);
+  const boom = (await explosionStarts(page)).slice(explosionCount);
+  check('laser base endpoint plays one actual explosion sound', boom.length === 1 &&
+    boom[0].state === 'running' && boom[0].gain > 0 &&
+    boom[0].at >= sweep.t + 700 && boom[0].at <= end.t + 50);
   check('one laser is recorded for the completed turn', next.octopusState.lastAttackTurnId === turn);
   const preHit = samples.filter((s) => ['focusing', 'charging', 'holding', 'sweeping'].includes(s.phase));
   const first = preHit[0]?.displayHp;
@@ -166,20 +171,20 @@ async function run(page, url) {
   await tapButton(page, 'local2p');
   let d = await waitFor(page, (d) => d?.scene === 'BattleScene' && d.phase === 'ACTION', 'local battle');
   check('mobile touch profile and DPR 2', d.controlProfile === 'touch' && d.uiScale === 2);
-  check('new matches contain a twenty-HP unspawned hazard', d.octopusState.hp === 20 &&
+  check('new matches contain a fifteen-HP unspawned hazard', d.octopusState.hp === 15 &&
     d.octopusState.spawnTurnId === null && !d.octopusState.active);
-  await prepare(page, 20, 2);
+  await prepare(page, 15, 2);
   await pause(1600); // emergence animation only; body is already authoritative
-  for (let hp = 20; hp > 0; hp -= 2) {
-    if (hp === 2) await startTrace(page);
+  for (let hp = 15; hp > 0; hp -= 2) {
+    if (hp === 1) await startTrace(page);
     const turn = await fireTouch(page, 2500);
-    if (hp === 2) {
+    if (hp === 1) {
       await waitFor(page, (d) => d.octopusState.attackPhase === 'dissolving' &&
         d.octopusState.deathProgress >= 0.3, 'visible dissolution');
       await page.screenshot({ path: '/private/tmp/rr-octopus-death-mobile.png' });
     }
     d = await settledNextTurn(page, turn);
-    check(`normal projectile direct hit reduces tentacle ${hp}→${hp - 2}`, d.octopusState.hp === hp - 2);
+    check(`normal projectile direct hit reduces tentacle ${hp}→${Math.max(0, hp - 2)}`, d.octopusState.hp === Math.max(0, hp - 2));
   }
   check('defeated tentacle has no active obstacle', !d.octopusState.active);
   if (typeof d.octopusState.bodyCount === 'number') {
@@ -199,7 +204,8 @@ async function run(page, url) {
     s.turn === d.turnId - 1) && d.octopusState.deathProgress === 1);
   const roar = await roarStarts(page);
   check('actual decoded monster roar plays once on a running AudioContext', roar.length === 1 &&
-    roar[0].state === 'running' && roar[0].duration > 1 && roar[0].length > 40000);
+    roar[0].state === 'running' && roar[0].duration > 2 && roar[0].length > 80000 &&
+    roar[0].gain >= 0.9 && roar[0].rms > 0.2);
   await page.evaluate(() => window.__RR_DEBUG__.setHp('P1', 4));
   let turn = await fireTouch(page);
   d = await settledNextTurn(page, turn);
@@ -214,7 +220,7 @@ async function run(page, url) {
   check('muted defeat still dissolves without playing another roar', d.octopusState.hp === 0 &&
     d.octopusState.deathProgress === 1 && (await roarStarts(page)).length === 1);
   await page.evaluate(() => localStorage.setItem('ricochet-rivals:settings', JSON.stringify({ soundEnabled: true })));
-  await prepare(page, 20, 5);
+  await prepare(page, 15, 5);
   turn = await fireTouch(page);
   d = await settledNextTurn(page, turn);
   check('age four has no laser damage', d.octopusState.lastAttackTurnId === null && d.hp.P1 === 10 && d.hp.P2 === 10);
@@ -234,7 +240,7 @@ async function run(page, url) {
   await tapButton(page, 'rematch');
   d = await waitFor(page, (d) => d?.scene === 'BattleScene' && d.phase === 'ACTION', 'rematch');
   check('rematch resets HP and all hazard history', d.hp.P1 === 10 && d.hp.P2 === 10 &&
-    d.octopusState.hp === 20 && d.octopusState.spawnTurnId === null &&
+    d.octopusState.hp === 15 && d.octopusState.spawnTurnId === null &&
     d.octopusState.lastAttackTurnId === null && !d.octopusState.active);
   await pause(1200);
   check('prior match laser callbacks cannot damage rematch', (await debug(page)).hp.P1 === 10 && (await debug(page)).hp.P2 === 10);

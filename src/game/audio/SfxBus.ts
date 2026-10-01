@@ -39,7 +39,7 @@ export const SFX_FILES = [
   [SFX.click, 'click.mp3'],
   [SFX.laserCharge, 'laser-charge.mp3'],
   [SFX.laserSweep, 'laser-sweep.mp3'],
-  [SFX.octopusDeath, 'octopus-death.mp3'],
+  [SFX.octopusDeath, 'octopus-death-roar.mp3'],
 ] as const;
 
 /** 首版音量基线（手感调参随试玩反馈迭代） */
@@ -54,7 +54,7 @@ const SFX_VOLUME: Record<SfxKey, number> = {
   [SFX.click]: 0.4,
   [SFX.laserCharge]: 0.5,
   [SFX.laserSweep]: 0.55,
-  [SFX.octopusDeath]: 0.65,
+  [SFX.octopusDeath]: 0.95,
 };
 
 /**
