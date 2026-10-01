@@ -21,41 +21,43 @@ export class BattleSettings {
   private destroyed = false;
 
   constructor(private readonly options: BattleSettingsOptions) {
+    const artBase = `${import.meta.env.BASE_URL}assets/art/`;
     this.root.className = 'rr-battle-settings';
     this.root.innerHTML = `
       <style>
         .rr-battle-settings{position:fixed;inset:0;z-index:40;pointer-events:none;font-family:system-ui,sans-serif;color:#f5ead2}
         .rr-battle-settings *{box-sizing:border-box}
-        .rr-battle-settings button{font:700 16px system-ui,sans-serif;color:inherit;touch-action:manipulation;cursor:pointer;border:2px solid #bba779;border-radius:9px;background:linear-gradient(#254758,#122735);box-shadow:inset 0 2px #9bb5ba33,0 3px 0 #060e16;min-height:48px;padding:10px 16px;-webkit-tap-highlight-color:transparent}
-        .rr-battle-settings button:active{background:#365967;transform:translateY(1px)}
-        .rr-battle-settings button:focus-visible{outline:3px solid #ffdc84;outline-offset:3px}
-        .rr-battle-settings .rr-gear{position:absolute;width:48px;height:48px;min-height:48px;padding:9px;border-color:#aab6be;pointer-events:auto;border-radius:10px;color:#f8db9a}
-        .rr-battle-settings .rr-gear svg{display:block;width:26px;height:26px}
-        .rr-battle-settings .rr-overlay{position:absolute;inset:0;pointer-events:auto;display:grid;place-items:center;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));background:#020d1cbb}
+        .rr-battle-settings button{font:800 17px system-ui,sans-serif;letter-spacing:1px;color:#ebf2ef;text-shadow:0 2px #07131f;touch-action:manipulation;cursor:pointer;border:0;border-radius:0;background:transparent url('${artBase}button-steel.png') center/100% 100% no-repeat;min-height:54px;padding:10px 24px;-webkit-tap-highlight-color:transparent;filter:drop-shadow(0 3px 1px #020a11aa)}
+        .rr-battle-settings button:active{filter:brightness(1.16) drop-shadow(0 1px 1px #020a11aa);transform:translateY(1px)}
+        .rr-battle-settings button:focus-visible{outline:2px solid #ffdc84;outline-offset:2px}
+        .rr-battle-settings .rr-gear{position:absolute;width:48px;height:48px;min-height:48px;padding:0;pointer-events:auto;background-image:url('${artBase}settings-gear.png');background-size:contain;filter:drop-shadow(0 2px 2px #05122499)}
+        .rr-battle-settings .rr-overlay{position:absolute;inset:0;pointer-events:auto;display:grid;place-items:center;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));background:#020d1cb8}
         .rr-battle-settings [hidden]{display:none!important}
-        .rr-battle-settings .rr-panel{position:relative;width:340px;max-width:100%;max-height:100%;overflow:auto;overscroll-behavior:contain;background:linear-gradient(145deg,#1c3a4c,#0d1d2e);border:2px solid #bba779;border-radius:14px;box-shadow:0 16px 48px #0008,inset 0 0 0 5px #9ab3bd14;padding:20px}
-        .rr-battle-settings .rr-panel:before,.rr-battle-settings .rr-panel:after{content:'';position:absolute;top:9px;width:5px;height:5px;border-radius:50%;background:#a5b3ba;box-shadow:inset 0 1px 1px #fff8}
-        .rr-battle-settings .rr-panel:before{left:9px}.rr-battle-settings .rr-panel:after{right:9px}
-        .rr-battle-settings .rr-tag{font:700 10px monospace;letter-spacing:2px;text-align:center;color:#b4c9d2;margin-bottom:5px}
-        .rr-battle-settings h2{margin:0 0 18px;text-align:center;font-size:23px;letter-spacing:2px;color:#ffe3a2}
-        .rr-battle-settings .rr-actions{display:grid;gap:12px}
-        .rr-battle-settings .rr-sound{display:flex;align-items:center;justify-content:space-between;border-color:#899fab}
-        .rr-battle-settings .rr-sound span{font-size:13px;letter-spacing:1px;padding:4px 9px;border-radius:5px;background:#527352;color:#e2ffd7}
-        .rr-battle-settings .rr-sound[aria-pressed=false] span{background:#46535d;color:#d1dde4}
-        .rr-battle-settings .rr-primary{background:linear-gradient(#b99043,#705428);border-color:#e3c17d;color:#fff5d5}
-        .rr-battle-settings .rr-primary:active{background:#b99043}
-        .rr-battle-settings .rr-secondary{border-color:#8da5b3;color:#d2e5ee}
-        .rr-battle-settings .rr-confirm-text{font-size:15px;line-height:1.7;text-align:center;color:#d2e0e9;margin:0 0 18px}
-        @media(max-height:360px){.rr-battle-settings .rr-panel{padding:14px 18px}.rr-battle-settings h2{font-size:20px;margin-bottom:12px}.rr-battle-settings .rr-actions{gap:9px}.rr-battle-settings button{padding:8px 14px}}
+        .rr-battle-settings .rr-panel{position:relative;isolation:isolate;width:380px;max-width:100%;max-height:100%;overflow:auto;overscroll-behavior:contain;padding:36px 34px 41px;filter:drop-shadow(0 14px 20px #0009)}
+        .rr-battle-settings .rr-panel:before{content:'';position:absolute;inset:0;border:28px solid transparent;border-image:url('${artBase}portrait-frame.png') 255 255 295 255 / 28px 28px 34px 28px round;pointer-events:none;z-index:-1}
+        .rr-battle-settings .rr-panel:after{content:'';position:absolute;inset:24px 23px 28px;z-index:-2;background:repeating-linear-gradient(0deg,#7aa2b908 0 1px,transparent 1px 4px),repeating-linear-gradient(90deg,#030b1512 0 1px,transparent 1px 7px),linear-gradient(135deg,#243c4c,#112536 60%,#0c1c2b);box-shadow:inset 0 0 0 2px #081523,inset 0 0 24px #020b17}
+        .rr-battle-settings .rr-tag{position:absolute;bottom:12px;left:50%;width:160px;height:22px;display:grid;place-items:center;transform:translateX(-50%);background:url('${artBase}button-steel.png') center/100% 100% no-repeat;font:800 8px monospace;letter-spacing:2px;text-align:center;color:#b7c8cd;text-shadow:0 1px #000}
+        .rr-battle-settings h2{width:174px;min-height:39px;display:grid;place-items:center;margin:0 auto 15px;background:url('${artBase}button-gold.png') center/100% 100% no-repeat;text-align:center;font-size:21px;letter-spacing:3px;color:#151c22;text-shadow:0 1px #ffe6a0}
+        .rr-battle-settings .rr-actions{display:grid;gap:11px}
+        .rr-battle-settings .rr-sound{display:flex;align-items:center;gap:9px;text-align:left}
+        .rr-battle-settings .rr-sound b{font:inherit;flex:1}
+        .rr-battle-settings .rr-sound-icon{position:relative;display:block;width:23px;height:22px;flex-shrink:0;filter:drop-shadow(0 1px #000)}
+        .rr-battle-settings .rr-sound-icon:before{content:'';position:absolute;inset:3px 8px 3px 0;background:#e8c178;clip-path:polygon(0 28%,40% 28%,100% 0,100% 100%,40% 72%,0 72%)}
+        .rr-battle-settings .rr-sound-icon:after{content:'';position:absolute;inset:2px 0 2px 8px;border-right:3px solid #e8c178;border-radius:50%}
+        .rr-battle-settings .rr-sound span{position:relative;width:81px;height:28px;padding:3px 27px 3px 6px;font:800 12px system-ui,sans-serif;letter-spacing:0;background:repeating-linear-gradient(90deg,#fff1 0 1px,transparent 1px 5px),#183f3c;border:2px solid #6c8478;box-shadow:inset 0 2px 4px #020d14;color:#c2f1ca;text-shadow:0 1px #000;flex-shrink:0}
+        .rr-battle-settings .rr-sound span:after{content:'';position:absolute;right:3px;top:2px;width:18px;height:20px;background:repeating-linear-gradient(90deg,transparent 0 4px,#5b411f44 4px 5px),linear-gradient(#f4d492,#a57536);border:1px solid #f6ddb0;box-shadow:1px 1px 0 #071623}
+        .rr-battle-settings .rr-sound[aria-pressed=false] span{padding:3px 6px 3px 27px;text-align:right;background-color:#122230;border-color:#546270;color:#9cacb7}
+        .rr-battle-settings .rr-sound[aria-pressed=false] span:after{left:3px;right:auto;filter:saturate(.25)}
+        .rr-battle-settings .rr-primary{background-image:url('${artBase}button-gold.png');color:#151c22;text-shadow:0 1px #ffe1a0}
+        .rr-battle-settings .rr-confirm-text{font-size:15px;line-height:1.7;text-align:center;color:#d2e0e9;text-shadow:0 2px #040e18;margin:0 0 16px;padding:8px 0;border-top:1px solid #78919c44;border-bottom:1px solid #020b16}
+        @media(max-height:360px){.rr-battle-settings .rr-panel{width:350px;padding:28px 28px 34px}.rr-battle-settings .rr-panel:before{border-image-width:23px 23px 29px 23px}.rr-battle-settings .rr-panel:after{inset:20px 19px 24px}.rr-battle-settings h2{font-size:19px;min-height:34px;width:158px;margin-bottom:9px}.rr-battle-settings .rr-actions{gap:8px}.rr-battle-settings button{min-height:48px;padding:8px 22px}.rr-battle-settings .rr-gear{padding:0}.rr-battle-settings .rr-tag{bottom:10px;font-size:7px}.rr-battle-settings .rr-confirm-text{margin-bottom:10px;padding:5px 0}}
       </style>
-      <button type="button" class="rr-gear" data-action="gear" aria-label="设置" aria-haspopup="dialog" aria-expanded="false">
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.5-2-3.5-2.3.9a8 8 0 0 0-1.7-1L15 3h-4l-.4 2.9a8 8 0 0 0-1.7 1L6.6 6l-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2 1.5 2 3.5 2.3-.9a8 8 0 0 0 1.7 1L11 21h4l.4-2.9a8 8 0 0 0 1.7-1l2.3.9 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg>
-      </button>
+      <button type="button" class="rr-gear" data-action="gear" aria-label="设置" aria-haspopup="dialog" aria-expanded="false"></button>
       <div class="rr-overlay" hidden>
         <section class="rr-panel" role="dialog" aria-modal="true" aria-labelledby="rr-settings-title">
           <div class="rr-tag">RICOCHET RIVALS</div><h2 id="rr-settings-title">设置</h2>
           <div class="rr-actions" data-panel="settings">
-            <button type="button" class="rr-sound" data-action="sound" aria-pressed="true">声音 <span>开启</span></button>
+            <button type="button" class="rr-sound" data-action="sound" aria-pressed="true"><i class="rr-sound-icon" aria-hidden="true"></i><b>声音</b><span>开启</span></button>
             <button type="button" class="rr-secondary" data-action="leave">返回主界面</button>
             <button type="button" class="rr-primary" data-action="resume">继续游戏</button>
           </div>
