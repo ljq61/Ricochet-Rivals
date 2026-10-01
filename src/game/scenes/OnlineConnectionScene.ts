@@ -368,6 +368,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     });
     this.roomController = controller;
     controller.onStateChange((state) => {
+      if (state === RoomConnectionState.IDLE) this.currentCode = null;
       // 房间码就绪 → COPY 源更新（含 RETRY 后重建房）
       if (state === RoomConnectionState.ROOM_WAITING) {
         this.currentCode = controller.currentRoomCode;
@@ -638,6 +639,15 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.reposition();
   }
 
+  /** 房间码尚未取得的建房服务失败，提示等待后重试；加入/恢复保留原错误。 */
+  private isRoomStartupFailure(): boolean {
+    const controller = this.roomController;
+    const reason = controller?.lastFailure?.reason;
+    return controller?.currentState === RoomConnectionState.FAILED &&
+      !this.joinInputVisible && this.currentCode === null &&
+      (reason === 'SIGNALING_FAILED' || reason === 'SERVER_ERROR');
+  }
+
   /** Room 流渲染（SG-5 正式 UI：房间码 + 自动连接，零 SDP 露出） */
   private renderRoomState(): void {
     const state = this.roomController?.currentState ?? RoomConnectionState.IDLE;
@@ -693,9 +703,11 @@ export class OnlineConnectionScene extends Phaser.Scene {
         break;
       case RoomConnectionState.FAILED: {
         const failure = this.roomController?.lastFailure ?? null;
-        status = this.roomFailureMessage ?? 'Connection failed';
+        const starting = this.isRoomStartupFailure();
+        status = starting ? '房间服务器正在启动，\n请10秒后重试' : this.roomFailureMessage ?? 'Connection failed';
+        if (starting) prompt = '点击 TRY AGAIN 后重新创建房间。';
         // Debug Mode 输出具体 reason（规格 SG-7）：正式构建保持简洁
-        if (DEBUG_GAME && failure !== null) {
+        if (DEBUG_GAME && failure !== null && !starting) {
           status += ` [${failure.reason}${failure.code !== undefined ? `:${failure.code}` : ''}]`;
         }
         visibleButtons.length = 0;
@@ -929,6 +941,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     const verified = state === 'VERIFIED';
     const connected = verified && this.lobbyNotice === null;
     const failed = state === 'FAILED' || this.lobbyNotice !== null;
+    const startupFailure = this.isRoomStartupFailure();
     const waiting = state === 'ROOM_WAITING' || state === 'RECONNECTING_SIGNALING';
     this.buttons.back?.setPosition(
       safeArea.left + (24 + 32) * uiScale,
@@ -947,9 +960,9 @@ export class OnlineConnectionScene extends Phaser.Scene {
 
     // 横屏短视口把标题、说明和动作区各放独立行，保留 64px 按钮命中区。
     const baseStatusY = safeArea.top + (short ? 115 : compact ? 132 : verified ? 200 : 160) * uiScale;
-    this.statusLine.setFontSize((verified ? compact ? 22 : 28 : waiting ? compact ? 18 : 22 : compact ? 14 : TEXT_FONT) * uiScale);
-    this.statusLine.setFontStyle(verified || waiting ? 'bold' : 'normal');
-    this.statusLine.setColor(toCssColor(failed ? 0xff6b7b : connected ? 0x6de3ad : waiting ? 0xffd568 : PALETTE.head));
+    this.statusLine.setFontSize((verified || startupFailure ? compact ? 22 : 28 : waiting ? compact ? 18 : 22 : compact ? 14 : TEXT_FONT) * uiScale);
+    this.statusLine.setFontStyle(verified || waiting || startupFailure ? 'bold' : 'normal');
+    this.statusLine.setColor(toCssColor(startupFailure ? 0xffd568 : failed ? 0xff6b7b : connected ? 0x6de3ad : waiting ? 0xffd568 : PALETTE.head));
     this.promptLine.setFontSize((compact ? 13 : TEXT_FONT) * uiScale);
     const textWidth = width - safeArea.left - safeArea.right - 56 * uiScale;
     this.statusLine.setWordWrapWidth(textWidth);
@@ -963,13 +976,14 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.connectionPlate.clear();
     this.signalBars.clear();
     this.networkLine.setVisible(connected);
-    if (verified) {
+    if (verified || startupFailure) {
       const plateWidth = Math.min(420, availableWidth - 32) * uiScale;
-      const top = statusY - (compact ? 24 : 32) * uiScale;
+      const top = Math.min(statusY - (compact ? 24 : 32) * uiScale,
+        this.statusLine.getBounds().top - 12 * uiScale);
       const bottom = this.promptLine.getBounds().bottom + 12 * uiScale;
-      this.connectionPlate.fillStyle(connected ? 0x0a282b : 0x301e2a, 0.92);
+      this.connectionPlate.fillStyle(startupFailure ? 0x352819 : connected ? 0x0a282b : 0x301e2a, 0.92);
       this.connectionPlate.fillRoundedRect(width / 2 - plateWidth / 2, top, plateWidth, bottom - top, 14 * uiScale);
-      this.connectionPlate.lineStyle(uiScale, connected ? 0x6de3ad : 0xff6b7b, 0.65);
+      this.connectionPlate.lineStyle(uiScale, startupFailure ? 0xffd568 : connected ? 0x6de3ad : 0xff6b7b, 0.8);
       this.connectionPlate.strokeRoundedRect(width / 2 - plateWidth / 2, top, plateWidth, bottom - top, 14 * uiScale);
       if (connected) {
         const sample = Date.now() - this.lastPongAt <= 6_000 ? this.lastRttMs : null;
@@ -1006,7 +1020,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.createResponse?.setPosition(centerX, actionRowY);
     this.buttons.joinConfirm?.setPosition(centerX, actionRowY);
     this.buttons.copy?.setPosition(centerX + (this.useManualFlow() ? 170 : 0) * uiScale, actionRowY);
-    this.buttons.tryAgain?.setPosition(centerX, compact ? primaryY : height * 0.6);
+    this.buttons.tryAgain?.setPosition(centerX, Math.max(compact ? primaryY : height * 0.6,
+      startupFailure ? this.promptLine.getBounds().bottom + 20 * uiScale + buttonH / 2 : 0));
     const enterY = Math.max(compact ? primaryY : height * 0.58,
       verified ? this.promptLine.getBounds().bottom + 16 * uiScale + buttonH / 2 : 0);
     const horizontalActions = verified && short && availableWidth >= 432;
