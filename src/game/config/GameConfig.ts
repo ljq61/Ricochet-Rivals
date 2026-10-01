@@ -73,6 +73,14 @@ export const GAME_CONFIG = {
     impactStayMs: 850,
     /** TURN_TRANSITION：回合切换时相机平移到新玩家的时长（Phase 8） */
     turnTransitionDurationMs: 600,
+    /**
+     * TURN_TRANSITION 近距快转：相机已在新玩家附近时（章鱼激光终结于
+     * 被打基地 = 常为下一位玩家阵地；普通回合爆炸也多落在下一位玩家
+     * 附近），全长 600ms 平移是纯空转 —— 观感为"攻击后停顿约 1 秒才
+     * 进入下一回合"。位移 ≤ 阈值改用短时长，回合即刻开始。
+     */
+    turnTransitionNearPx: 500,
+    turnTransitionNearMs: 150,
     /** FREE_VIEW 内点击「己方 / 敌方」快捷聚焦的平移时长 */
     panDurationMs: 450,
   },

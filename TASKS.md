@@ -2,7 +2,7 @@
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
 > 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`，2026-10-01 已合并 main）—— 全部 Stage ✅（SG-8 ICE Restart 2026-09-30 收官：限次 restartIce 经活信令 + peerToken 重入、恢复走既有 Phase 15 恢复链）。公网 WSS 信令已部署并验证（Render 单实例；9 项公网协议检查 + 34 项真实 WebRTC 双端对战 + 5 项 Pages 手机尺寸配对检查）。合并 main 前复验（2026-10-01）：根 788/788 + server 43/43 + 全量 E2E **215/215**。剩余 = coturn TURN（尚未启用）与真机验收矩阵、Manual SDP Cleanup。详见「Online Connection Migration」章节。**
-> 当前验证（2026-10-01 合并 main 前复验）：`npm run typecheck` / `npm run test`（**788**）/ `npm run build` / `npm run e2e` 全量 **215 passed / 0 failed** 全绿（六段；含 Host 直推快照恢复修复与真实 WebRTC 回归；E2E 严禁与写 dist 任务并行）。
+> 当前验证（2026-10-01）：`npm run typecheck` / `npm run test`（**790**）/ `npm run build` / `npm run e2e` 全量 **215 passed / 0 failed** 全绿（六段；含 Host 直推快照恢复修复与转场近距快转；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
 ---
@@ -2905,6 +2905,28 @@ dev_signaling_turn（11 提交）快进合并 main 前的验证、修复与文�
     评审记录，不回写历史）
 - 验证：typecheck ✅ / test **788/788** ✅ / build ✅ / 全量 E2E
   **215/215** ✅（battle 段修复后单跑 31/31，全量收口确认）
+
+---
+
+# 转场节奏修复轮：章鱼攻击后近距快转（2026-10-01）✅
+
+用户反馈：章鱼攻击完后停顿约 1 秒才进入下一回合。
+
+- [x] **根因**（静态链路追踪实锤）：激光终结于被打基地束点 → 相机已停在
+  下一位玩家附近（激光目标 50% 为下一位玩家；普通回合爆炸也多落在下一位
+  玩家附近）→ `transitionToPlayer` 仍跑全长 **600ms** 转场 tween = 位移≈0
+  的纯空转（画面静止），叠加回合横幅淡入 ≈ 感知 1 秒停顿
+- [x] **修复（近距快转）**：`GameConfig.camera` 新增
+  `turnTransitionNearPx: 500` / `turnTransitionNearMs: 150`；
+  `CameraController.transitionToPlayer` 按位移选时长 —— 相机已在新
+  玩家附近 → **150ms 快转**（回合即刻开始，章鱼攻击后停顿从 ~600ms+
+  横幅 ≈ 1s 收敛到 150ms+横幅）；跨图/远距保持 600ms 全长平移（观感
+  不变）；普通回合同类空转（爆炸驻留即下一位玩家阵地）一并受益
+- [x] **测试**：CameraControllerResolution 新增 2 用例（激光收尾停在
+  打侧基地 clamp 位置 → 快转 + 完成即 FREE_VIEW；500/501 阈值边界 +
+  跨图全长）；E2E 转场断言全部 waitFor 化、无时长假设，零改动
+- 验证：typecheck ✅ / test **790/790** ✅ / build ✅ / 全量 E2E
+  **215/215** ✅
 
 ---
 

@@ -287,18 +287,26 @@ export class CameraController implements GestureClaimant {
   transitionToPlayer(getTargetX: () => number): Promise<void> {
     this.stopTransitionTween();
     this.setMode(CameraMode.TURN_TRANSITION);
+    const targetScrollX = this.centerToScroll(
+      clampCameraCenterX(
+        getTargetX(),
+        this.visibleWorldWidth,
+        GAME_CONFIG.world.width
+      )
+    );
+    // 近距快转：章鱼激光终结于被打基地（常为下一位玩家阵地）、普通回合
+    // 爆炸也多落在下一位玩家附近 —— 相机已在目标附近时全长 600ms 平移
+    // 为纯空转，观感为"攻击后停顿约 1 秒才进入下一回合"；改用短时长。
+    const { turnTransitionNearPx, turnTransitionNearMs } = GAME_CONFIG.camera;
+    const duration = Math.abs(this.camera.scrollX - targetScrollX) <= turnTransitionNearPx
+      ? turnTransitionNearMs
+      : GAME_CONFIG.camera.turnTransitionDurationMs;
     return new Promise<void>((resolve) => {
       this.transitionResolver = resolve;
       this.transitionTween = this.scene.tweens.add({
         targets: this.camera,
-        scrollX: this.centerToScroll(
-          clampCameraCenterX(
-            getTargetX(),
-            this.visibleWorldWidth,
-            GAME_CONFIG.world.width
-          )
-        ),
-        duration: GAME_CONFIG.camera.turnTransitionDurationMs,
+        scrollX: targetScrollX,
+        duration,
         ease: 'Sine.easeInOut',
         onComplete: () => {
           this.transitionTween = null;

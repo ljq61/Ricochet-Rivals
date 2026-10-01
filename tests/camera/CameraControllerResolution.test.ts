@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type Phaser from 'phaser';
 import { CameraController } from '../../src/game/camera/CameraController';
 import { CameraMode } from '../../src/game/camera/CameraMode';
+import { GAME_CONFIG } from '../../src/game/config/GameConfig';
 import type { GesturePointerEvent } from '../../src/game/input/gesture';
 
 vi.mock('phaser', () => ({ default: {} }));
@@ -152,5 +153,31 @@ describe('CameraController hazard resolution ownership', () => {
     expect(centerX()).toBe(3000);
     expect(controller.currentMode).toBe(CameraMode.FREE_VIEW);
     expect(controller.tryClaim(pointer(100))).toBe(true);
+  });
+
+  it('turn transitions snap fast when the camera already sits at the next player', () => {
+    const { camera, controller, tick, tweens } = fixture();
+    // 章鱼激光收尾：相机停在被 clamp 的右侧基地边缘，下一位玩家就在附近
+    const clampedCenter = GAME_CONFIG.world.width - camera.width / camera.zoom / 2;
+    camera.scrollX = clampedCenter - camera.width / 2;
+    void controller.transitionToPlayer(() => 4400);
+    expect(tweens).toHaveLength(1);
+    expect(tweens[0]!.config.duration).toBe(GAME_CONFIG.camera.turnTransitionNearMs);
+    tick(GAME_CONFIG.camera.turnTransitionNearMs);
+    expect(controller.currentMode).toBe(CameraMode.FREE_VIEW);
+  });
+
+  it('turn transitions keep the full duration only beyond the near threshold', () => {
+    const { camera, controller, tweens } = fixture();
+    // 夹具默认中心 1500：目标 2000 = 位移 500（含边界）→ 近距快转
+    void controller.transitionToPlayer(() => 2000);
+    expect(tweens[0]!.config.duration).toBe(GAME_CONFIG.camera.turnTransitionNearMs);
+    // 位移 501 超阈值 → 全长转场
+    void controller.transitionToPlayer(() => 2001);
+    expect(tweens[1]!.config.duration).toBe(GAME_CONFIG.camera.turnTransitionDurationMs);
+    // 跨图目标 → 全长转场
+    void controller.transitionToPlayer(() => 4550);
+    expect(tweens[2]!.config.duration).toBe(GAME_CONFIG.camera.turnTransitionDurationMs);
+    expect(camera.scrollX).toBe(1078); // 断言前未推进任何 tick，起点不变
   });
 });
