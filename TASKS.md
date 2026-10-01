@@ -2930,6 +2930,25 @@ dev_signaling_turn（11 提交）快进合并 main 前的验证、修复与文�
 
 ---
 
+# CI 部署修复轮：@types/node 缺失（2026-10-01）✅
+
+GitHub Pages 部署流水线连续两次失败（ca9c4da / 68c88dc，均在
+Typecheck 步）：`tests/ui/StartupLoadingScreen.test.ts` 报
+`Cannot find module 'node:events' or its corresponding type declarations`。
+
+- [x] **根因**：2388ea4（加载页轮）引入全仓首个 `node:` 导入
+  （`import { EventEmitter } from 'node:events'`），但 **@types/node
+  不在 package.json / package-lock.json**——作者本地 node_modules
+  残留旧版掩盖 → 本地 typecheck 绿；CI `npm ci` 后无任何 Node 类型 →
+  解析失败。本地绿 CI 红的典型 lock 漂移（works on my machine）
+- [x] **修复**：`@types/node ^22.20.4` 入 devDependencies（对齐
+  workflow `node-version: 22`；本地同步安装 22.20.4 复验）；
+  package.json + package-lock.json 一并提交
+- 验证：typecheck ✅ / test **790/790** ✅ / build ✅ / 重新部署见
+  workflow run
+
+---
+
 # V0.1 RELEASE GATE
 
 以下全部通过才能称为 V0.1：
