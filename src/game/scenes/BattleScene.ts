@@ -34,6 +34,7 @@ import { AimButton } from '../ui/AimButton';
 import { AimRenderer } from '../ui/AimRenderer';
 import { SfxBus, SFX, type SfxKey } from '../audio/SfxBus';
 import { PlayerHud } from '../ui/PlayerHud';
+import { BattleSettings } from '../ui/BattleSettings';
 import { BattleMiniMap } from '../ui/BattleMiniMap';
 import { battleHudLayout } from '../ui/miniMapMath';
 import { TurnBanner } from '../ui/TurnBanner';
@@ -120,6 +121,8 @@ export class BattleScene extends Phaser.Scene {
   /** Phase 17 Juice：音效总线（发射/飞行/爆炸/命中/回合/胜负） */
   private sfx!: SfxBus;
   private playerHud!: PlayerHud;
+  private battleSettings: BattleSettings | null = null;
+  private leavingToMenu = false;
   private miniMap!: BattleMiniMap;
   private turnBanner!: TurnBanner;
   private damageNumbers!: DamageNumbers;
@@ -202,6 +205,8 @@ export class BattleScene extends Phaser.Scene {
     this.syncLocked = false;
     this.syncFailed = false;
     this.handedToResult = false;
+    this.leavingToMenu = false;
+    this.battleSettings = null;
     this.disconnectButton = null;
     this.roomRecovery = null;
     this.lastRejectedToastMs = 0;
@@ -270,6 +275,7 @@ export class BattleScene extends Phaser.Scene {
         //（dwell 曾返回 waiting），TURN_END 已由 channel 发出，本地权威
         // endTurn 仍归场景 —— 与 'proceed' 返回值路径等价收尾。
         resumeNextTurn: () => {
+          if (this.leavingToMenu) return;
           if (this.online?.role === 'host') {
             this.turnManager.endTurn();
           }
@@ -282,6 +288,7 @@ export class BattleScene extends Phaser.Scene {
         // Phase 15：Guest 恢复期间锁 Move/Aim/Fire（复用远程回合输入锁口径，
         // syncLocked 并入 isRemoteControlledTurn —— 相机自由观察保留）
         setSyncLock: (locked) => {
+          if (this.leavingToMenu) return;
           this.syncLocked = locked;
           if (locked) this.freezeOnlineInput();
         },
@@ -455,6 +462,12 @@ export class BattleScene extends Phaser.Scene {
 
     // 12. HUD：HP 血条（伤害动画由 State 变化驱动）+ 回合横幅（Phase 9 热座）
     this.playerHud = new PlayerHud(this, this.viewportService);
+    this.battleSettings = new BattleSettings({
+      onOpenChange: (open) => this.handleSettingsOpen(open),
+      onLeave: () => this.leaveToMainMenu(),
+      onSoundChange: (enabled) => { if (!enabled) this.sound.stopAll(); },
+    });
+    this.battleSettings.setAnchor(this.playerHud.settingsAnchor);
     this.miniMap = new BattleMiniMap(this, this.viewportService);
     this.refreshMiniMap();
     // Renderer RENDER runs after Camera.preRender computes this frame's worldView.
@@ -470,6 +483,8 @@ export class BattleScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
+    if (this.leavingToMenu) return;
+    this.battleSettings?.setAnchor(this.playerHud.settingsAnchor);
     // Phase 10 SP：按回合归属接线（AI 回合静默人类输入）。
     // 必须先于 controls.update —— 热座 playerId 跟随 currentPlayerId，
     // 接线晚一帧会让回合切换瞬间的人类按键被路由给 AI 玩家。
@@ -612,10 +627,12 @@ export class BattleScene extends Phaser.Scene {
 
   /** Phase 11：对局结束 → 结果场景（转场 150～300ms） */
   private transitionToResult(): void {
+    if (this.leavingToMenu) return;
     this.cameras.main.fadeOut(250, 26, 34, 51);
     this.cameras.main.once(
       Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE,
       () => {
+        if (this.leavingToMenu) return;
         // Phase 16：联机对局把旧协调器交接给 ResultScene（其 dispose 归
         // Result；session / transport 保留在 registry SessionManager，
         // Rematch 复用同一 WebRTC 连接）。handedToResult 置位后
@@ -705,6 +722,8 @@ export class BattleScene extends Phaser.Scene {
    */
   private isRemoteControlledTurn(): boolean {
     return (
+      this.leavingToMenu ||
+      this.battleSettings?.isOpen === true ||
       this.connectionLost ||
       this.connectionRecoveryActive ||
       this.syncLocked || // Phase 15：desync 恢复期间锁 Move/Aim/Fire
@@ -719,21 +738,35 @@ export class BattleScene extends Phaser.Scene {
 
   /** SP：回合归属切换人类 / AI 输入（gameOver 后人类恢复自由观察） */
   private syncInputOwnership(): void {
+    if (this.leavingToMenu) {
+      this.controls.setEnabled(false);
+      this.aiInput?.setEnabled(false);
+      return;
+    }
     if (this.aiInput) {
       const aiTurn =
         this.state.currentPlayerId === this.aiInput.playerId &&
         !this.state.gameOver;
-      this.controls.setEnabled(!aiTurn);
+      this.controls.setEnabled(!aiTurn && this.isLocalControlledTurn());
       this.aiInput.setEnabled(aiTurn);
       return;
     }
-    if (this.online !== null) {
-      // Phase 14：仅本地玩家回合启用本地输入（Move/Aim/Fire）；
-      // 对手回合期间相机 Free View 仍可自由观察
-      this.controls.setEnabled(this.isLocalControlledTurn());
-      return;
+    this.controls.setEnabled(this.isLocalControlledTurn());
+  }
+
+  private handleSettingsOpen(open: boolean): void {
+    this.inputRouter.releaseAll();
+    this.input.keyboard?.resetKeys();
+    if (open) {
+      this.controls.setEnabled(false);
+      this.aimController.cancel();
+      if (!this.isAiControlledTurn() &&
+        (this.state.phase === TurnPhase.AIM || this.state.phase === TurnPhase.RETURN_HOME)) {
+        this.cameraController.cancelAim();
+        this.turnManager.cancelAim();
+      }
     }
-    // Local 2P 热座：恒启用（系统层按回合归属校验）
+    this.syncInputOwnership();
   }
 
   /**
@@ -746,6 +779,7 @@ export class BattleScene extends Phaser.Scene {
    * 后经 resumeNextTurn 补驱），回合切换始终由 Host 控制。
    */
   private async onAttackResolved(): Promise<void> {
+    if (this.leavingToMenu) return;
     const mode = this.cameraController.currentMode;
     if (mode !== CameraMode.IMPACT && mode !== CameraMode.PROJECTILE_FOLLOW) {
       this.logCameraEvent(`attackResolved-guarded(cam=${mode})`);
@@ -793,6 +827,7 @@ export class BattleScene extends Phaser.Scene {
 
   /** Guest authoritative results contain both explosion and laser damage. */
   private showProjectileDamage(result: DamageResult): void {
+    if (this.leavingToMenu) return;
     const octopus = this.state.octopus;
     const hasLaser = octopus.lastAttackTurnId === result.explosion.turnId;
     this.damageNumbers.show({ ...result, players: result.players.map((entry) =>
@@ -834,6 +869,7 @@ export class BattleScene extends Phaser.Scene {
 
   /** 相机 TURN_TRANSITION 到新玩家 → ACTION（Host/离线/Guest 共用收尾） */
   private async beginNextTurnTransition(): Promise<void> {
+    if (this.leavingToMenu) return;
     const epoch = this.presentationEpoch;
     const turnId = this.state.turnId;
     this.octopusTentacle.refresh(this.state);
@@ -864,6 +900,7 @@ export class BattleScene extends Phaser.Scene {
 
   /** Guest 快照已经应用并 ACK；此处只恢复表现，不再次切换玩家或重置预算。 */
   private restoreSnapshotPresentation(): void {
+    if (this.leavingToMenu) return;
     this.presentationEpoch += 1;
     this.octopusTentacle.restore(this.state);
     this.inputRouter.releaseAll();
@@ -884,6 +921,7 @@ export class BattleScene extends Phaser.Scene {
    * 无需回滚；2s 防刷屏（移动键连按可能触发一串拒绝）。
    */
   private showOnlineRejected(payload: CommandRejectedPayload): void {
+    if (this.leavingToMenu) return;
     const now = Date.now();
     if (now - this.lastRejectedToastMs < 2_000) {
       return;
@@ -898,7 +936,7 @@ export class BattleScene extends Phaser.Scene {
    * 恢复耗尽）→ 既有终局 UX。对局结束后的正常关闭已被协调器抑制。
    */
   private handleOnlineDisconnected(): void {
-    if (this.connectionLost || this.connectionRecoveryActive) {
+    if (this.leavingToMenu || this.connectionLost || this.connectionRecoveryActive) {
       return;
     }
     const recovery = this.roomRecovery;
@@ -922,6 +960,7 @@ export class BattleScene extends Phaser.Scene {
     this.turnBanner.showMessage('RECONNECTING…', 0xffc24d);
     this.online?.setConnectionRecoveryActive(true);
     const result = await recovery.attemptRecovery();
+    if (this.roomRecovery !== recovery || this.leavingToMenu || !this.scene.isActive()) return;
     this.online?.setConnectionRecoveryActive(false);
     // 终局守卫：恢复期间对局可能已被其他路径接管 —— 对端主动离开
     //（connectionLost）/ SYNC_FAILED / **gameOver 交接 ResultScene
@@ -976,7 +1015,7 @@ export class BattleScene extends Phaser.Scene {
    *（原 handleOnlineDisconnected 主体 —— SG-8 起由恢复耗尽 / 不可恢复路径共用）。
    */
   private showOpponentLostUi(): void {
-    if (this.connectionLost) {
+    if (this.leavingToMenu || this.connectionLost) {
       return;
     }
     this.connectionLost = true;
@@ -997,6 +1036,7 @@ export class BattleScene extends Phaser.Scene {
 
   /** Phase 15：同步状态迁移展示（DESYNC/SYNCING 提示；SYNCED 类不打扰） */
   private handleOnlineSyncStateChange(state: OnlineSyncState, detail?: string): void {
+    if (this.leavingToMenu) return;
     if (state === OnlineSyncState.DESYNC_DETECTED || state === OnlineSyncState.SYNC_REQUESTED) {
       // Phase 15 修复轮：进入恢复即废弃在飞本地模拟 —— 权威快照将整回合
       // 重述；后台冻结的炮弹迟发 impact 会把相机打回 IMPACT 且无重试
@@ -1016,7 +1056,7 @@ export class BattleScene extends Phaser.Scene {
 
   /** Phase 15：同步彻底失败（重试耗尽）—— 终止比赛回菜单，禁止继续错局 */
   private handleOnlineSyncFailure(): void {
-    if (this.syncFailed || this.connectionLost) {
+    if (this.leavingToMenu || this.syncFailed || this.connectionLost) {
       return;
     }
     this.syncFailed = true;
@@ -1038,6 +1078,13 @@ export class BattleScene extends Phaser.Scene {
 
   /** 断线 / 退出返回主菜单（fade + rAF 冻结兜底，幂等） */
   private leaveToMainMenu(): void {
+    if (this.leavingToMenu || this.handedToResult) return;
+    this.leavingToMenu = true;
+    this.presentationEpoch += 1;
+    this.inputRouter.releaseAll();
+    this.input.keyboard?.resetKeys();
+    this.aimController.cancel();
+    this.syncInputOwnership();
     let started = false;
     const startMenu = (): void => {
       if (started) {
@@ -1157,6 +1204,9 @@ export class BattleScene extends Phaser.Scene {
       },
       get phase(): string {
         return self.state.phase;
+      },
+      get settings(): object | null {
+        return self.battleSettings?.debugState ?? null;
       },
       get gameOver(): boolean {
         return self.state.gameOver;
@@ -1285,6 +1335,8 @@ export class BattleScene extends Phaser.Scene {
       (window as unknown as Record<string, unknown>).__RR_DEBUG__ = { scene: 'Transition' };
     }
     this.presentationEpoch += 1;
+    this.battleSettings?.destroy();
+    this.battleSettings = null;
     this.game.renderer.off(Phaser.Renderer.Events.RENDER, this.onMiniMapRender, this);
     this.viewportService.destroy();
     this.inputRouter.destroy();

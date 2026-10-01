@@ -69,6 +69,22 @@ export class PlayerHud {
     }
   }
 
+  /** DOM gear center below the P1 portrait, in CSS pixels. */
+  get settingsAnchor(): { x: number; y: number } {
+    const { safeArea, uiScale } = this.viewport.current;
+    const scale = this.hudScale();
+    return {
+      x: (safeArea.left + 12 * uiScale + 36 * scale) / uiScale,
+      y: (safeArea.top + 83 * scale) / uiScale + 8 + 24,
+    };
+  }
+
+  private hudScale(): number {
+    const { width, safeArea, uiScale } = this.viewport.current;
+    const available = (width - safeArea.left - safeArea.right) / uiScale;
+    return uiScale * Math.min(1, (available - 110) / (CARD_WIDTH * 2));
+  }
+
   private createEntry(id: PlayerId): HudEntry {
     const right = id === 'P2';
     const portraitX = right ? CARD_WIDTH - 36 : 36;
@@ -108,8 +124,7 @@ export class PlayerHud {
 
   private reposition(): void {
     const { width, height, safeArea, uiScale, zoom } = this.viewport.current;
-    const available = (width - safeArea.left - safeArea.right) / uiScale;
-    const scale = uiScale * Math.min(1, (available - 110) / (CARD_WIDTH * 2));
+    const scale = this.hudScale();
     const y = safeArea.top + 44 * scale;
     const screenY = height / 2 + (y - height / 2) / zoom;
     const leftX = safeArea.left + 12 * uiScale;
