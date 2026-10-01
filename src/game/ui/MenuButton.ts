@@ -23,6 +23,9 @@ export interface MenuButtonDeps {
   baseHeight?: number;
   fontSize?: number;
   icon?: 'sound' | 'fullscreen';
+  /** 联机菜单使用与海港 HUD 一致的铆钉金属牌；其余菜单沿用原素材。 */
+  skin?: 'harbor';
+  harborIcon?: 'network' | 'create' | 'join' | 'copy' | 'retry' | 'battle' | 'back';
   onTap: () => void;
 }
 
@@ -70,7 +73,7 @@ export class MenuButton {
     this.baseWidth = baseWidth;
     const artKey = deps.accent === undefined ? ART.buttonGold : ART.buttonSteel;
     this.art =
-      baseWidth >= ART_MIN_WIDTH && scene.textures.exists(artKey)
+      deps.skin !== 'harbor' && baseWidth >= ART_MIN_WIDTH && scene.textures.exists(artKey)
         ? scene.add.image(0, 0, artKey)
         : null;
 
@@ -181,6 +184,10 @@ export class MenuButton {
 
   private draw(): void {
     const ui = this.deps.viewport.current.uiScale;
+    if (this.deps.skin === 'harbor') {
+      this.drawHarborButton(ui);
+      return;
+    }
     if (this.art !== null) {
       // 生成底板路径：按下压暗一拍（label 色 / 加粗沿用现有逻辑）
       this.art.setTint(this.pressed ? 0xcfcfcf : 0xffffff);
@@ -213,6 +220,90 @@ export class MenuButton {
     if (this.deps.icon) {
       this.label.setVisible(false);
       this.drawIcon(ui);
+    }
+  }
+
+  /** 深海蓝嵌板、黄铜/钢框、切角与铆钉；绘制边界和输入尺寸一致。 */
+  private drawHarborButton(ui: number): void {
+    const g = this.bg;
+    const { width, height } = this;
+    const gold = this.deps.accent === undefined;
+    const active = this.hovered || this.pressed;
+    const rim = gold ? 0xc8913f : 0x718b99;
+    const highlight = gold ? 0xffdfa0 : 0xd8edf2;
+    const compact = this.baseWidth < 100;
+    const plate = (inset: number, color: number): void => {
+      const x = width / 2 - inset, y = height / 2 - inset, cut = 6 * ui;
+      g.fillStyle(color, 1).beginPath().moveTo(-x + cut, -y)
+        .lineTo(x - cut, -y).lineTo(x, -y + cut).lineTo(x, y - cut)
+        .lineTo(x - cut, y).lineTo(-x + cut, y).lineTo(-x, y - cut)
+        .lineTo(-x, -y + cut).closePath().fillPath();
+    };
+    g.clear();
+    plate(0, 0x091520);
+    plate(2 * ui, active ? highlight : rim);
+    plate(5 * ui, this.pressed ? 0x122938 : active ? 0x24526a : 0x193c4d);
+    g.lineStyle(ui, highlight, 0.8)
+      .lineBetween(-width / 2 + 9 * ui, -height / 2 + 3 * ui, width / 2 - 9 * ui, -height / 2 + 3 * ui);
+    g.lineStyle(2 * ui, 0x070f19, 0.7)
+      .lineBetween(-width / 2 + 9 * ui, height / 2 - 3 * ui, width / 2 - 9 * ui, height / 2 - 3 * ui);
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        const x = sx * (width / 2 - 10 * ui), y = sy * (height / 2 - 10 * ui);
+        g.fillStyle(0x091520).fillCircle(x, y, 3 * ui);
+        g.fillStyle(highlight, 0.85).fillCircle(x - 0.5 * ui, y - 0.5 * ui, 1.5 * ui);
+      }
+    }
+    const emblemX = compact ? 0 : -width / 2 + 34 * ui;
+    if (!compact) {
+      g.fillStyle(0x0b2230, 1).fillRoundedRect(emblemX - 17 * ui, -17 * ui, 34 * ui, 34 * ui, 4 * ui);
+      g.lineStyle(ui, rim, 0.85).strokeRoundedRect(emblemX - 17 * ui, -17 * ui, 34 * ui, 34 * ui, 4 * ui);
+      g.lineStyle(ui, rim, 0.55).lineBetween(-width / 2 + 61 * ui, -height / 2 + 11 * ui,
+        -width / 2 + 61 * ui, height / 2 - 11 * ui);
+    }
+    this.drawHarborIcon(emblemX, ui, highlight);
+    this.label.setVisible(!compact).setX(compact ? 0 : 24 * ui)
+      .setFontFamily('Arial, sans-serif').setFontStyle('bold')
+      .setFontSize((this.deps.fontSize ?? FONT_SIZE) * ui)
+      .setColor(gold ? '#fff1cc' : '#e1eef2').setStroke('#091520', 2 * ui);
+    const textWidth = width - 96 * ui;
+    if (!compact && this.label.width > textWidth) {
+      this.label.setFontSize(Math.max(12 * ui,
+        (this.deps.fontSize ?? FONT_SIZE) * ui * textWidth / this.label.width));
+    }
+  }
+
+  /** 小图标与金属边框共用坐标，不依赖字体箭头或新增位图。 */
+  private drawHarborIcon(x: number, ui: number, color: number): void {
+    const g = this.bg;
+    const line = (ax: number, ay: number, bx: number, by: number): void => {
+      g.lineBetween(x + ax * ui, ay * ui, x + bx * ui, by * ui);
+    };
+    g.lineStyle(2.5 * ui, color, 1);
+    const symbol = this.deps.harborIcon ?? 'network';
+    if (symbol === 'back') {
+      line(12, 0, -12, 0); line(-12, 0, -2, -10); line(-12, 0, -2, 10);
+    } else if (symbol === 'create') {
+      g.strokeRoundedRect(x - 11 * ui, -11 * ui, 22 * ui, 22 * ui, 3 * ui);
+      line(-6, 0, 6, 0); line(0, -6, 0, 6);
+    } else if (symbol === 'join') {
+      line(3, -11, 11, -11); line(11, -11, 11, 11); line(11, 11, 3, 11);
+      line(-12, 0, 5, 0); line(5, 0, -1, -6); line(5, 0, -1, 6);
+    } else if (symbol === 'copy') {
+      g.strokeRoundedRect(x - 5 * ui, -6 * ui, 15 * ui, 18 * ui, 2 * ui);
+      line(-9, 7, -12, 7); line(-12, 7, -12, -12); line(-12, -12, 4, -12);
+    } else if (symbol === 'retry') {
+      g.beginPath().arc(x, 0, 10 * ui, -0.7, Math.PI * 1.4).strokePath();
+      line(8, -7, 8, -14); line(8, -7, 1, -8);
+    } else if (symbol === 'battle') {
+      line(-10, -11, 10, 11); line(10, -11, -10, 11);
+      line(-12, 5, -5, 12); line(5, 12, 12, 5);
+    } else {
+      line(-10, -7, 10, -7); line(-10, -7, 0, 10); line(10, -7, 0, 10);
+      for (const [dx, dy] of [[-10, -7], [10, -7], [0, 10]] as const) {
+        g.fillStyle(0x0b2230).fillCircle(x + dx * ui, dy * ui, 4 * ui);
+        g.lineStyle(2 * ui, color).strokeCircle(x + dx * ui, dy * ui, 4 * ui);
+      }
     }
   }
 

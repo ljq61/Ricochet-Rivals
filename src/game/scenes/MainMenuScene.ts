@@ -109,6 +109,8 @@ export class MainMenuScene extends Phaser.Scene {
       online: new MenuButton(this, {
         router: this.inputRouter,
         id: 'menu-online',
+        skin: 'harbor',
+        harborIcon: 'network',
         viewport: this.viewport,
         label: 'ONLINE',
         baseWidth: MODE_BUTTON_WIDTH,

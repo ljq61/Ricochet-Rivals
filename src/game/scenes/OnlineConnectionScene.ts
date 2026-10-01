@@ -209,6 +209,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.create = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-create',
+      skin: 'harbor',
+      harborIcon: 'create',
       viewport: this.viewport,
       label: 'CREATE GAME',
       baseHeight: 56,
@@ -217,6 +219,9 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.join = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-join',
+      skin: 'harbor',
+      harborIcon: 'join',
+      accent: 0x718b99,
       viewport: this.viewport,
       label: 'JOIN GAME',
       baseHeight: 56,
@@ -225,6 +230,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.connect = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-connect',
+      skin: 'harbor',
+      harborIcon: 'network',
       viewport: this.viewport,
       label: 'CONNECT',
       baseHeight: 56,
@@ -233,6 +240,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.copy = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-copy',
+      skin: 'harbor',
+      harborIcon: 'copy',
       viewport: this.viewport,
       label: 'COPY CODE',
       accent: 0x56698a,
@@ -243,6 +252,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.createResponse = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-create-response',
+      skin: 'harbor',
+      harborIcon: 'network',
       viewport: this.viewport,
       label: 'CREATE RESPONSE',
       baseHeight: 56,
@@ -251,6 +262,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.joinConfirm = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-join-confirm',
+      skin: 'harbor',
+      harborIcon: 'join',
       viewport: this.viewport,
       label: 'JOIN',
       baseHeight: 56,
@@ -259,6 +272,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.tryAgain = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-try-again',
+      skin: 'harbor',
+      harborIcon: 'retry',
       viewport: this.viewport,
       label: 'TRY AGAIN',
       baseWidth: SMALL_WIDTH,
@@ -277,6 +292,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.enterBattle = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-enter-battle',
+      skin: 'harbor',
+      harborIcon: 'battle',
       viewport: this.viewport,
       label: 'ENTER BATTLE',
       baseHeight: 56,
@@ -285,10 +302,12 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.back = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-back',
+      skin: 'harbor',
+      harborIcon: 'back',
       viewport: this.viewport,
       // Phase 17 修复轮：手机上 260 宽的 BACK 与底部动作行（CONNECT）重叠
       // —— 改为左上角小 icon（64×64 触控目标达标，E2E 仍经 rect 点击）
-      label: '←',
+      label: 'BACK',
       accent: 0x56698a,
       baseWidth: 64,
       onTap: () => this.leaveToMenu(),
@@ -296,6 +315,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
     this.buttons.backToMenu = new MenuButton(this, {
       router: this.inputRouter,
       id: 'online-back-to-menu',
+      skin: 'harbor',
+      harborIcon: 'back',
       viewport: this.viewport,
       label: 'BACK TO MENU',
       accent: 0x56698a,
@@ -914,12 +935,18 @@ export class OnlineConnectionScene extends Phaser.Scene {
       safeArea.top + (24 + 32) * uiScale
     );
     const availableWidth = (width - safeArea.left - safeArea.right) / uiScale;
+    const menuWidth = Math.max(160, Math.min(320, availableWidth - 48));
+    for (const key of ['create', 'join', 'joinConfirm', 'createResponse', 'connect'] as const) {
+      this.buttons[key]?.setBaseWidth(menuWidth);
+    }
+    this.buttons.copy?.setBaseWidth(Math.min(SMALL_WIDTH, menuWidth));
+    this.buttons.tryAgain?.setBaseWidth(Math.min(SMALL_WIDTH, menuWidth));
     this.title.setFontSize(Math.min(short ? 24 : compact ? 28 : TITLE_FONT,
       (availableWidth - 32) / 18 / 0.6) * uiScale);
-    this.title.setPosition(width / 2, safeArea.top + (short ? 76 : compact ? 85 : 121) * uiScale);
+    this.title.setPosition(width / 2, safeArea.top + (short ? 76 : compact ? availableWidth < 600 ? 104 : 85 : 121) * uiScale);
 
     // 横屏短视口把标题、说明和动作区各放独立行，保留 64px 按钮命中区。
-    const statusY = safeArea.top + (short ? 115 : compact ? 132 : verified ? 200 : 160) * uiScale;
+    const baseStatusY = safeArea.top + (short ? 115 : compact ? 132 : verified ? 200 : 160) * uiScale;
     this.statusLine.setFontSize((verified ? compact ? 22 : 28 : waiting ? compact ? 18 : 22 : compact ? 14 : TEXT_FONT) * uiScale);
     this.statusLine.setFontStyle(verified || waiting ? 'bold' : 'normal');
     this.statusLine.setColor(toCssColor(failed ? 0xff6b7b : connected ? 0x6de3ad : waiting ? 0xffd568 : PALETTE.head));
@@ -927,8 +954,12 @@ export class OnlineConnectionScene extends Phaser.Scene {
     const textWidth = width - safeArea.left - safeArea.right - 56 * uiScale;
     this.statusLine.setWordWrapWidth(textWidth);
     this.promptLine.setWordWrapWidth(textWidth);
+    const statusY = Math.max(baseStatusY,
+      this.title.getBounds().bottom + this.statusLine.height / 2 + 8 * uiScale);
     this.statusLine.setPosition(width / 2, statusY);
-    this.promptLine.setPosition(width / 2, statusY + (verified ? compact ? 48 : 68 : short ? 25 : compact ? 28 : 34) * uiScale);
+    const promptY = Math.max(statusY + (verified ? compact ? 48 : 68 : short ? 25 : compact ? 28 : 34) * uiScale,
+      this.statusLine.getBounds().bottom + this.promptLine.height / 2 + 8 * uiScale);
+    this.promptLine.setPosition(width / 2, promptY);
     this.connectionPlate.clear();
     this.signalBars.clear();
     this.networkLine.setVisible(connected);
@@ -979,7 +1010,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
     const enterY = Math.max(compact ? primaryY : height * 0.58,
       verified ? this.promptLine.getBounds().bottom + 16 * uiScale + buttonH / 2 : 0);
     const horizontalActions = verified && short && availableWidth >= 432;
-    const actionWidth = horizontalActions ? Math.min(320, (availableWidth - 48) / 2) : 320;
+    const actionWidth = horizontalActions ? Math.min(320, (availableWidth - 48) / 2) : menuWidth;
     const actionCenterX = safeArea.left + (width - safeArea.left - safeArea.right) / 2;
     this.buttons.enterBattle?.setBaseWidth(actionWidth);
     this.buttons.backToMenu?.setBaseWidth(actionWidth);
