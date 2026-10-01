@@ -207,7 +207,7 @@ export const GAME_CONFIG = {
 
   /**
    * Single Player AI（Phase 10，CODELY.md §18）。
-   * 三档难度共用同一套决策逻辑，仅误差幅度不同（禁止三套 AI 代码）；
+   * 三档难度共用弹道求解与命令链路，普通/困难瞄准身体并收紧误差；
    * 全部 Gameplay 随机经 SeededRandom（CODELY.md §16 禁止 Math.random）。
    */
   ai: {
@@ -223,19 +223,25 @@ export const GAME_CONFIG = {
     },
     /** 无可行解时的尽力弹仰角（deg，朝敌方方向的低弹道） */
     fallbackAngleDeg: 30,
-    /** 难度参数：aimErrorDeg = 角度误差（±deg）；powerErrorRatio = 力度误差（速度 ±比例） */
+    /**
+     * 难度误差按实际 3300–4800px 阵地距离校准：速度误差会近似加倍为射程误差。
+     * targetHeightRatio 从脚底向头顶取瞄准高度，普通/困难瞄准身体中心。
+     */
     difficulties: {
       easy: {
         aimErrorDeg: 16,
         powerErrorRatio: 0.25,
+        targetHeightRatio: 0, // 保留简单档的地面瞄准
       },
       normal: {
-        aimErrorDeg: 8,
-        powerErrorRatio: 0.12,
+        aimErrorDeg: 4,
+        powerErrorRatio: 0.04,
+        targetHeightRatio: 0.5,
       },
       hard: {
-        aimErrorDeg: 3,
-        powerErrorRatio: 0.05,
+        aimErrorDeg: 1,
+        powerErrorRatio: 0.006,
+        targetHeightRatio: 0.5,
       },
     },
   },

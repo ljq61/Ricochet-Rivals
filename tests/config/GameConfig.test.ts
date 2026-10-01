@@ -85,8 +85,11 @@ describe('GAME_CONFIG integrity', () => {
     expect(normal.aimErrorDeg).toBeGreaterThan(hard.aimErrorDeg);
     expect(easy.powerErrorRatio).toBeGreaterThan(normal.powerErrorRatio);
     expect(normal.powerErrorRatio).toBeGreaterThan(hard.powerErrorRatio);
-    // CODELY.md §18：Normal = ±8° / ±12%
-    expect(normal.aimErrorDeg).toBe(8);
-    expect(normal.powerErrorRatio).toBeCloseTo(0.12, 6);
+    // 4000px 战场上速度误差近似加倍为射程误差，普通/困难保持可用命中率。
+    expect(normal.powerErrorRatio).toBeLessThanOrEqual(0.04);
+    expect(hard.powerErrorRatio).toBeLessThanOrEqual(0.006);
+    expect(easy.targetHeightRatio).toBe(0);
+    expect(normal.targetHeightRatio).toBe(0.5);
+    expect(hard.targetHeightRatio).toBe(0.5);
   });
 });

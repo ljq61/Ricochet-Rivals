@@ -108,8 +108,8 @@ describe('AIInputSource', () => {
 
   it('需要移动的决策：先 MOVE 后 FIRE，FIRE 原点为移动后坐标', () => {
     startP2Turn(h);
-    // 合成近敌：距离 250 < 最小落点偏移 − 容差 → 必须移动后求解
-    h.state.players.P1.x = 4800;
+    // 合成近敌：距离 200 < 身体瞄准的最小射程 − 容差 → 必须移动后求解
+    h.state.players.P1.x = 4750;
 
     // > thinkDelay max 900：MOVE 必已发出（思考是第一条命令）；
     // 不假设 postMove 停顿是否已过 —— seed 固定，think+停顿可能同窗完成

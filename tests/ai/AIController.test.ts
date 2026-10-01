@@ -41,37 +41,38 @@ describe('AIController', () => {
     expect(decision.fire).not.toBeNull();
   });
 
-  it('P2 回合：135° 基准角 ± Normal 误差（≤ 8°）', () => {
+  it('P2 回合：135° 基准角 ± Normal 误差（≤ 4°）', () => {
     state.currentPlayerId = 'P2';
     const controller = new AIController('normal');
     for (let seed = 0; seed < 50; seed++) {
       const d = controller.decide(state, new SeededRandom(seed));
       expect(d.fire).not.toBeNull();
-      expect(d.fire!.angleDeg).toBeGreaterThanOrEqual(135 - 8);
-      expect(d.fire!.angleDeg).toBeLessThanOrEqual(135 + 8);
+      expect(d.fire!.angleDeg).toBeGreaterThanOrEqual(135 - GAME_CONFIG.ai.difficulties.normal.aimErrorDeg);
+      expect(d.fire!.angleDeg).toBeLessThanOrEqual(135 + GAME_CONFIG.ai.difficulties.normal.aimErrorDeg);
     }
   });
 
-  it('Hard 难度误差收紧：角度 ≤ ±3°、力度 ≤ ±5%（以 solver 为基准）', () => {
+  it('Hard 难度瞄准身体并收紧误差（以 solver 为基准）', () => {
     state.currentPlayerId = 'P2';
     const controller = new AIController('hard');
     const base = solveTrajectory({
       originX: state.players.P2.x,
       originY: LAUNCH_Y,
       targetX: state.players.P1.x,
+      targetY: state.players.P1.y - GAME_CONFIG.player.collision.height * 0.5,
     });
     expect(base).not.toBeNull();
     for (let seed = 0; seed < 50; seed++) {
       const d = controller.decide(state, new SeededRandom(seed));
-      expect(Math.abs(d.fire!.angleDeg - base!.angleDeg)).toBeLessThanOrEqual(3);
-      expect(d.fire!.speed).toBeGreaterThanOrEqual(base!.speed * 0.95 - 1e-6);
-      expect(d.fire!.speed).toBeLessThanOrEqual(base!.speed * 1.05 + 1e-6);
+      expect(Math.abs(d.fire!.angleDeg - base!.angleDeg)).toBeLessThanOrEqual(GAME_CONFIG.ai.difficulties.hard.aimErrorDeg);
+      expect(d.fire!.speed).toBeGreaterThanOrEqual(base!.speed * (1 - GAME_CONFIG.ai.difficulties.hard.powerErrorRatio) - 1e-6);
+      expect(d.fire!.speed).toBeLessThanOrEqual(base!.speed * (1 + GAME_CONFIG.ai.difficulties.hard.powerErrorRatio) + 1e-6);
     }
   });
 
   it('误差后速度仍在人类可达空间 [550, 2400]（含 clamp 兜底）', () => {
     state.currentPlayerId = 'P2';
-    // 合成超远敌人：基础解必然贴上限速度，×(1+5%) 后依赖 clamp
+    // 合成超远敌人：基础解必然贴上限速度，叠加困难档误差 后依赖 clamp
     state.players.P1.x = -1000;
     for (let seed = 0; seed < 30; seed++) {
       const d = new AIController('hard').decide(state, new SeededRandom(seed));

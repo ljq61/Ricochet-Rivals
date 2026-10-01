@@ -19,7 +19,7 @@ import { solveTrajectory } from './TrajectorySolver';
  *
  * 回合唯一出口是发射（游戏没有 pass 机制）：无可行解时也必须给出
  * 尽力弹，否则回合卡死。仅 gameOver / 非法相位 / 已阵亡 / 已发射
- * 返回空决策。三档难度共用同一套逻辑，仅误差幅度不同。
+ * 返回空决策。三档难度共用求解与执行链路，瞄准高度和误差由配置决定。
  */
 
 export interface AIFirePlan {
@@ -55,12 +55,15 @@ export class AIController {
     const enemyId = state.currentPlayerId === 'P1' ? 'P2' : 'P1';
     const enemy = state.players[enemyId];
     const origin = getLaunchOrigin(me);
+    const { targetHeightRatio } = GAME_CONFIG.ai.difficulties[this.difficulty];
+    const targetY = enemy.y - GAME_CONFIG.player.collision.height * targetHeightRatio;
 
     // 1. 原地求解
     const solution = solveTrajectory({
       originX: origin.x,
       originY: origin.y,
       targetX: enemy.x,
+      targetY,
     });
     if (solution) {
       return { moveTargetX: null, fire: this.applyError(solution, rng) };
@@ -72,6 +75,7 @@ export class AIController {
         originX: candidateX,
         originY: origin.y, // 水平移动，高度不变
         targetX: enemy.x,
+        targetY,
       });
       if (moved) {
         return { moveTargetX: candidateX, fire: this.applyError(moved, rng) };

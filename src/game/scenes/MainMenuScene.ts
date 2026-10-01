@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { MenuArtwork } from '../ui/MenuArtwork';
 import { DEBUG_GAME } from '../config/DebugConfig';
 import { ART } from '../config/ArtAssets';
+import type { AIDifficulty } from '../config/GameConfig';
 import { createMatchSetup } from '../match/MatchFactory';
 import type { MatchSetup } from '../match/MatchSetup';
 import { ViewportService } from '../platform/ViewportService';
@@ -49,6 +50,11 @@ export class MainMenuScene extends Phaser.Scene {
     MenuButton
   >;
   private soundButton!: MenuButton;
+  private difficultyButtons!: Record<AIDifficulty, MenuButton>;
+  private difficultyBackButton!: MenuButton;
+  private difficultyTitle!: Phaser.GameObjects.Text;
+  private difficultyHint!: Phaser.GameObjects.Text;
+  private choosingDifficulty = false;
   private fullscreenButton: MenuButton | null = null;
   private transitioning = false;
 
@@ -59,6 +65,8 @@ export class MainMenuScene extends Phaser.Scene {
   create(): void {
     // scene.start 复用 Scene 实例：转场守卫必须在这里复位
     this.transitioning = false;
+    this.choosingDifficulty = false;
+    this.fullscreenButton = null;
     this.viewport = new ViewportService(this, { worldCameraZoom: false });
     // 菜单按钮命中走 InputRouter zone（与 Battle HUD 同管线；
     // Phaser GameObject interactive 在本项目 Scale 配置下指针坐标失效）
@@ -96,7 +104,7 @@ export class MainMenuScene extends Phaser.Scene {
         baseWidth: MODE_BUTTON_WIDTH,
         baseHeight: MODE_BUTTON_HEIGHT,
         fontSize: 18,
-        onTap: () => this.startBattle(createMatchSetup('single_player')),
+        onTap: () => this.showDifficultySelection(true),
       }),
       local2p: new MenuButton(this, {
         router: this.inputRouter,
@@ -122,6 +130,42 @@ export class MainMenuScene extends Phaser.Scene {
         onTap: () => this.transitionTo(OnlineConnectionScene.KEY),
       }),
     };
+
+    this.difficultyButtons = Object.fromEntries(
+      (['easy', 'normal', 'hard'] as const).map((difficulty) => [
+        difficulty,
+        new MenuButton(this, {
+          router: this.inputRouter,
+          id: `menu-difficulty-${difficulty}`,
+          viewport: this.viewport,
+          label: { easy: 'EASY · 简单', normal: 'NORMAL · 普通', hard: 'HARD · 困难' }[difficulty],
+          baseWidth: MODE_BUTTON_WIDTH,
+          baseHeight: MODE_BUTTON_HEIGHT,
+          fontSize: 18,
+          onTap: () => this.startBattle(createMatchSetup('single_player', difficulty)),
+        }),
+      ])
+    ) as Record<AIDifficulty, MenuButton>;
+    this.difficultyBackButton = new MenuButton(this, {
+      router: this.inputRouter,
+      id: 'menu-difficulty-back',
+      viewport: this.viewport,
+      label: 'BACK',
+      skin: 'harbor',
+      harborIcon: 'back',
+      baseWidth: 112,
+      baseHeight: ICON_SIZE,
+      fontSize: 16,
+      onTap: () => this.showDifficultySelection(false),
+    });
+    this.difficultyTitle = this.add.text(0, 0, '选择难度', {
+      fontFamily: 'Arial, sans-serif', fontStyle: 'bold', color: '#ffca59',
+      stroke: '#151c22', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(900);
+    this.difficultyHint = this.add.text(0, 0, '简单：轻松练习   普通：精准交锋\n困难：更精准、更有压迫感的炮击', {
+      fontFamily: 'Arial, sans-serif', color: '#e8eef7',
+      stroke: '#151c22', strokeThickness: 3, align: 'center',
+    }).setOrigin(0.5).setDepth(900);
 
     this.soundButton = new MenuButton(this, {
       router: this.inputRouter,
@@ -159,7 +203,7 @@ export class MainMenuScene extends Phaser.Scene {
 
     document.addEventListener('fullscreenchange', this.syncFullscreenIcon);
     this.syncFullscreenIcon();
-    this.reposition();
+    this.showDifficultySelection(false);
     this.viewport.onChange(() => this.reposition());
     this.installDebugHandles();
 
@@ -168,6 +212,18 @@ export class MainMenuScene extends Phaser.Scene {
   }
 
   // ---- 动作 --------------------------------------------------------------
+
+  private showDifficultySelection(visible: boolean): void {
+    if (this.transitioning) return;
+    this.choosingDifficulty = visible;
+    this.title.setVisible(!visible);
+    for (const button of Object.values(this.modeButtons)) button.setVisible(!visible);
+    for (const button of Object.values(this.difficultyButtons)) button.setVisible(visible);
+    this.difficultyBackButton.setVisible(visible);
+    this.difficultyTitle.setVisible(visible);
+    this.difficultyHint.setVisible(visible);
+    this.reposition();
+  }
 
   /** 模式启动：fadeOut → BattleScene(setup)（转场 150～300ms） */
   private startBattle(setup: MatchSetup): void {
@@ -239,9 +295,10 @@ export class MainMenuScene extends Phaser.Scene {
 
     const gap = MODE_GAP * uiScale;
     const buttonH = MODE_BUTTON_HEIGHT * uiScale;
-    const top = height / uiScale < 540
+    const preferredTop = height / uiScale < 540
       ? safeArea.top + Math.max(160, height / uiScale * 0.43) * uiScale
       : height * MODE_TOP_FRACTION + safeArea.top;
+    const top = Math.min(preferredTop, height - safeArea.bottom - 14 * uiScale - 2 * (buttonH + gap) - buttonH / 2);
     const list = [
       this.modeButtons.singlePlayer,
       this.modeButtons.local2p,
@@ -250,6 +307,23 @@ export class MainMenuScene extends Phaser.Scene {
     for (let i = 0; i < list.length; i++) {
       list[i]?.setPosition(width / 2, top + (buttonH + gap) * i);
     }
+    const difficultyList = [this.difficultyButtons.easy, this.difficultyButtons.normal, this.difficultyButtons.hard];
+    const availableWidth = (width - safeArea.left - safeArea.right) / uiScale;
+    for (let i = 0; i < difficultyList.length; i++) {
+      difficultyList[i]?.setBaseWidth(Math.min(MODE_BUTTON_WIDTH, availableWidth - 32));
+      difficultyList[i]?.setPosition(width / 2, top + (buttonH + gap) * i);
+    }
+    this.difficultyBackButton.setPosition(safeArea.left + 70 * uiScale, safeArea.top + 38 * uiScale);
+    const compactHeader = top - safeArea.top < 140 * uiScale;
+    this.difficultyTitle.setFontSize((compactHeader ? 24 : 30) * uiScale);
+    const headerY = compactHeader
+      ? Math.min(safeArea.top + 38 * uiScale, top - buttonH / 2 - this.difficultyTitle.height / 2 - 8 * uiScale)
+      : top - 100 * uiScale;
+    this.difficultyTitle.setPosition(width / 2, headerY)
+      .setVisible(this.choosingDifficulty && headerY - this.difficultyTitle.height / 2 >= safeArea.top);
+    this.difficultyHint.setFontSize(Math.min(15, (availableWidth - 32) / 22) * uiScale)
+      .setPosition(width / 2, top - 54 * uiScale)
+      .setVisible(this.choosingDifficulty && !compactHeader);
 
     const bottom = height - safeArea.bottom - 14 * uiScale - ICON_SIZE * uiScale / 2;
     const right = width - safeArea.right - 14 * uiScale - ICON_SIZE * uiScale / 2;
@@ -271,6 +345,21 @@ export class MainMenuScene extends Phaser.Scene {
       get soundEnabled(): boolean {
         return getUserSettings().soundEnabled;
       },
+      get menuPage(): string {
+        return self.choosingDifficulty ? 'difficulty' : 'modes';
+      },
+      get textRects(): Record<string, ButtonRect> {
+        if (!self.choosingDifficulty) return {};
+        const ui = self.viewport.current.uiScale;
+        const rects: Record<string, ButtonRect> = {};
+        for (const [key, text] of Object.entries({ title: self.difficultyTitle, hint: self.difficultyHint })) {
+          if (!text.visible) continue;
+          const r = text.getBounds();
+          rects[key] = { x: (r.x + r.width / 2) / ui, y: (r.y + r.height / 2) / ui,
+            width: r.width / ui, height: r.height / ui };
+        }
+        return rects;
+      },
       get buttons(): Record<string, ButtonRect> {
         // 物理 px → CSS px：E2E（puppeteer）注入坐标为 CSS 口径
         const ui = self.viewport.current.uiScale;
@@ -283,12 +372,19 @@ export class MainMenuScene extends Phaser.Scene {
             height: r.height / ui,
           };
         };
-        const rects: Record<string, ButtonRect> = {
-          singlePlayer: toCss(self.modeButtons.singlePlayer),
-          local2p: toCss(self.modeButtons.local2p),
-          online: toCss(self.modeButtons.online),
-          sound: toCss(self.soundButton),
-        };
+        const rects: Record<string, ButtonRect> = self.choosingDifficulty
+          ? {
+              easy: toCss(self.difficultyButtons.easy),
+              normal: toCss(self.difficultyButtons.normal),
+              hard: toCss(self.difficultyButtons.hard),
+              back: toCss(self.difficultyBackButton),
+            }
+          : {
+              singlePlayer: toCss(self.modeButtons.singlePlayer),
+              local2p: toCss(self.modeButtons.local2p),
+              online: toCss(self.modeButtons.online),
+            };
+        rects.sound = toCss(self.soundButton);
         if (self.fullscreenButton) {
           rects.fullscreen = toCss(self.fullscreenButton);
         }

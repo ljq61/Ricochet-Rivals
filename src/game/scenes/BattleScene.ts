@@ -1123,6 +1123,9 @@ export class BattleScene extends Phaser.Scene {
       get scene(): string {
         return 'BattleScene';
       },
+      get aiDifficulty(): string | null {
+        return self.setup.p2Controller === 'ai' ? self.setup.aiDifficulty ?? 'normal' : null;
+      },
       get controlProfile(): string {
         return self.deviceProfile.controlProfile;
       },

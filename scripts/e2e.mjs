@@ -1155,6 +1155,47 @@ async function runMobile(browser) {
 
 // ---- Single Player 场景（Phase 10 冒烟 + Phase 11 Result/Rematch） -------
 
+async function runDifficultySelection(browser) {
+  section('Single Player — 难度选择（桌面 / 手机横屏 / 竖屏）');
+  for (const viewport of [
+    { width: 1280, height: 800, deviceScaleFactor: 1, hasTouch: false },
+    { width: 844, height: 390, deviceScaleFactor: 3, hasTouch: true },
+    { width: 390, height: 844, deviceScaleFactor: 3, hasTouch: true },
+    { width: 667, height: 320, deviceScaleFactor: 2, hasTouch: true },
+    { width: 667, height: 256, deviceScaleFactor: 2, hasTouch: true },
+  ]) {
+    const page = await browser.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.setViewport(viewport);
+    const tap = key => viewport.hasTouch ? tapMenuButton(page, key) : clickMenuButton(page, key);
+    for (const difficulty of ['easy', 'normal', 'hard']) {
+      await page.goto(URL, { waitUntil: 'load' });
+      await waitForScene(page, 'MainMenuScene');
+      await tap('singlePlayer');
+      const menu = await dbg(page);
+      const rects = Object.values(menu.buttons);
+      check(`${viewport.width}×${viewport.height} 难度按钮可见且触控区域充足 (${difficulty})`,
+        menu.menuPage === 'difficulty' && ['easy', 'normal', 'hard', 'back'].every(key => menu.buttons[key]) &&
+        rects.every(r => r.width >= 48 && r.height >= 48 && r.x - r.width / 2 >= 0 &&
+          r.y - r.height / 2 >= 0 && r.x + r.width / 2 <= viewport.width && r.y + r.height / 2 <= viewport.height));
+      check(`${viewport.width}×${viewport.height} 难度标题文字无裁切 (${difficulty})`,
+        Object.values(menu.textRects).every(r => r.x - r.width / 2 >= 0 && r.y - r.height / 2 >= 0 &&
+          r.x + r.width / 2 <= viewport.width && r.y + r.height / 2 <= viewport.height));
+      await tap('back');
+      check(`${viewport.width}×${viewport.height} 返回模式选择 (${difficulty})`, (await dbg(page)).menuPage === 'modes');
+      await tap('singlePlayer');
+      await tap(difficulty);
+      await waitForScene(page, 'BattleScene');
+      const battle = await dbg(page);
+      check(`${viewport.width}×${viewport.height} ${difficulty} 正确开局`, battle.aiEnabled === true &&
+        battle.aiDifficulty === difficulty && battle.turnId === 1 && battle.currentPlayerId === 'P1');
+    }
+    check(`${viewport.width}×${viewport.height} 难度流程无运行错误`, errors.length === 0, errors.join('; '));
+    await page.close();
+  }
+}
+
 async function runSinglePlayer(browser) {
   section('Single Player — AI（菜单进入 → 对战 → Result → Rematch/Menu）');
 
@@ -1165,9 +1206,17 @@ async function runSinglePlayer(browser) {
   // Phase 11：菜单 → SINGLE PLAYER → BattleScene
   await waitForScene(page, 'MainMenuScene', 15000);
   await clickMenuButton(page, 'singlePlayer');
+  const difficultyMenu = await dbg(page);
+  check('SP 先选择难度，尚未进入战斗', difficultyMenu.scene === 'MainMenuScene' && difficultyMenu.menuPage === 'difficulty');
+  check('难度菜单提供简单/普通/困难及返回', ['easy', 'normal', 'hard', 'back'].every(key => difficultyMenu.buttons[key]));
+  await clickMenuButton(page, 'back');
+  check('难度返回恢复模式选择', (await dbg(page)).menuPage === 'modes');
+  await clickMenuButton(page, 'singlePlayer');
+  await clickMenuButton(page, 'normal');
   await waitForScene(page, 'BattleScene', 10000);
   const d0 = await dbg(page);
   check('SP 模式激活（菜单进入，aiEnabled）', d0.aiEnabled === true);
+  check('SP 选择普通难度传入 AI', d0.aiDifficulty === 'normal');
   check('开局为 P1 人类回合', d0.currentPlayerId === 'P1' && d0.phase === 'ACTION');
 
   // 1. 人类回合输入可用（P1 移动）
@@ -1261,7 +1310,7 @@ async function runSinglePlayer(browser) {
       fresh.hp.P2 === 10 &&
       fresh.turnId === 1 &&
       fresh.currentPlayerId === 'P1' &&
-      fresh.aiEnabled === true,
+      fresh.aiEnabled === true && fresh.aiDifficulty === 'normal',
     `hp=${fresh.hp.P1}/${fresh.hp.P2} turn=${fresh.turnId} player=${fresh.currentPlayerId}`
   );
 
@@ -2562,6 +2611,7 @@ async function main() {
   try {
     if (!only || only === 'desktop') await runDesktop(browser);
     if (!only || only === 'mobile') await runMobile(browser);
+    if (!only || only === 'sp' || only === 'difficulty') await runDifficultySelection(browser);
     if (!only || only === 'sp') await runSinglePlayer(browser);
     if (!only || only === 'online') await runOnlineP2P(browser);
     if (!only || only === 'battle') await runOnlineBattle(browser);
