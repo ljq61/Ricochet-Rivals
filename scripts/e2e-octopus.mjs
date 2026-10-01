@@ -92,39 +92,66 @@ async function startTrace(page) {
       const hazard = d.octopusState;
       window.__RR_OCTOPUS_TRACE__.push({ t: performance.now(), phase: hazard.attackPhase,
         pending: hazard.pendingHit, turn: d.turnId, hp: d.hp,
-        displayHp: hazard.displayHp ?? null, lastAttackTurnId: hazard.lastAttackTurnId });
+        displayHp: hazard.displayHp ?? null, lastAttackTurnId: hazard.lastAttackTurnId,
+        visual: hazard.visual, worldView: d.cameraWorldView });
     }, 10);
   });
 }
 async function laserTurn(page) {
   await startTrace(page);
   const turn = await fireTouch(page);
+  const focusing = await waitFor(page, (d) => d.octopusState.attackPhase === 'focusing', 'focus octopus first');
+  check('camera focus begins before energy gathering', focusing.octopusState.visual?.end === null);
   const charging = await waitFor(page, (d) => d.octopusState.attackPhase === 'charging', 'laser charge');
   check('charged laser preserves turn ownership until presentation ends', charging.turnId === turn);
   check('charge keeps a pending visual hit', charging.octopusState.pendingHit === true);
-  await page.screenshot({ path: '/private/tmp/rr-octopus-charging-mobile.png' });
+  const holding = await waitFor(page, (d) => d.octopusState.attackPhase === 'holding', 'pause before sweeping');
+  check('charged pause emits no beam and does not hit', holding.octopusState.visual?.end === null && holding.octopusState.pendingHit);
   await waitFor(page, (d) => d.octopusState.attackPhase === 'sweeping', 'laser sweep');
-  await page.screenshot({ path: '/private/tmp/rr-octopus-sweeping-mobile.png' });
   const next = await settledNextTurn(page, turn);
   const samples = await page.evaluate(() => {
     clearInterval(window.__RR_OCTOPUS_TRACE_TIMER__);
     return window.__RR_OCTOPUS_TRACE__;
   });
+  const focus = samples.find((s) => s.phase === 'focusing');
   const charge = samples.find((s) => s.phase === 'charging');
+  const hold = samples.find((s) => s.phase === 'holding');
   const sweep = samples.find((s) => s.phase === 'sweeping');
   const end = samples.find((s) => s.t > sweep?.t && s.phase === 'idle');
-  const chargeMs = sweep?.t - charge?.t, sweepMs = end?.t - sweep?.t;
-  check('energy charge lasts 500 ms', chargeMs >= 450 && chargeMs <= 800, `${chargeMs.toFixed(0)} ms`);
-  check('laser sweep lasts 600 ms', sweepMs >= 550 && sweepMs <= 900, `${sweepMs.toFixed(0)} ms`);
+  const focusMs = charge?.t - focus?.t, chargeMs = hold?.t - charge?.t;
+  const holdMs = sweep?.t - hold?.t, sweepMs = end?.t - sweep?.t;
+  check('camera moves first for 450 ms', focusMs >= 400 && focusMs <= 700, `${focusMs.toFixed(0)} ms`);
+  check('energy charge lasts 500 ms', chargeMs >= 450 && chargeMs <= 750, `${chargeMs.toFixed(0)} ms`);
+  check('charged pause lasts 200 ms', holdMs >= 150 && holdMs <= 450, `${holdMs.toFixed(0)} ms`);
+  check('laser sweep lasts 800 ms', sweepMs >= 750 && sweepMs <= 1100, `${sweepMs.toFixed(0)} ms`);
   check('one laser is recorded for the completed turn', next.octopusState.lastAttackTurnId === turn);
-  const hpDuringCharge = samples.filter((s) => s.phase === 'charging' && s.displayHp !== null);
-  if (hpDuringCharge.length) {
-    const first = hpDuringCharge[0].displayHp;
-    check('rendered HP stays stable during charge', hpDuringCharge.every((s) =>
-      s.displayHp.P1 === first.P1 && s.displayHp.P2 === first.P2));
-    const target = next.octopusState.lastAttackTarget;
-    check('laser HP is revealed after charging', first[target] === next.hp[target] + 1);
-  }
+  const preHit = samples.filter((s) => ['focusing', 'charging', 'holding', 'sweeping'].includes(s.phase));
+  const first = preHit[0]?.displayHp;
+  check('HP feedback is observable before the laser endpoint', first !== null && first !== undefined);
+  check('rendered HP stays stable throughout gathering, pause, and sweep', preHit.every((s) =>
+    s.displayHp.P1 === first.P1 && s.displayHp.P2 === first.P2 && s.pending));
+  const target = next.octopusState.lastAttackTarget;
+  check('one HP is revealed after the sweep reaches the selected base', first[target] === next.hp[target] + 1);
+  check('no beam exists before sweeping', preHit.filter((s) => s.phase !== 'sweeping').every((s) => s.visual?.end === null));
+  const beam = preHit.filter((s) => s.phase === 'sweeping' && s.visual?.end !== null);
+  check('angular sweep has multiple rendered frames', beam.length >= 10);
+  const side = target === 'P1' ? -1 : 1;
+  const startVisual = beam[0].visual;
+  const initialAngle = Math.atan2(startVisual.end.x - startVisual.tip.x, startVisual.end.y - startVisual.tip.y);
+  check('beam begins about 30 degrees toward the selected side from vertical', Math.abs(initialAngle - side * Math.PI / 6) < 0.2);
+  check('beam endpoint stays on the ground plane', beam.every((s) => Math.abs(s.visual.end.y - 960) < 1));
+  check('beam sweeps continuously toward the selected base', beam.every((s, i) => i === 0 ||
+    (s.visual.end.x - beam[i - 1].visual.end.x) * side >= -3));
+  const cameraFrames = beam.filter((s) => s.visual.progress >= 0.1 && s.visual.progress <= 0.9);
+  check('camera follows the advancing sweep front each frame', cameraFrames.length >= 5 && cameraFrames.every((s) => {
+    const width = s.worldView.width;
+    const desired = 2500 + (s.visual.end.x - 2500) * s.visual.progress;
+    const clamped = Math.max(width / 2, Math.min(5000 - width / 2, desired));
+    return Math.abs(s.worldView.x + width / 2 - clamped) < 180;
+  }));
+  const baseX = target === 'P1' ? 475 : 4525;
+  check('completed sweep endpoint reaches the selected base', end?.visual?.progress === 1 &&
+    Math.abs(end.visual.end.x - baseX) < 1 && Math.abs(end.visual.end.y - 960) < 1);
   return next;
 }
 async function run(page, url) {

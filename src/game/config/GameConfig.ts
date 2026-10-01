@@ -168,8 +168,10 @@ export const GAME_CONFIG = {
     /** 出生当回合不计；每个玩家行动均计一个回合。 */
     attackAfterTurns: 5,
     laserDamage: 1,
+    focusDurationMs: 450,
     chargeDurationMs: 500,
-    sweepDurationMs: 600,
+    holdDurationMs: 200,
+    sweepDurationMs: 800,
     /** 出现条件：任一方 HP ≤ 该值 */
     hpThreshold: 4,
     /** 触手世界 X（战场中央海面） */

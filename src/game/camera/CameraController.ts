@@ -64,6 +64,8 @@ export class CameraController implements GestureClaimant {
 
   private returnTween: Phaser.Tweens.Tween | null = null;
   private panTween: Phaser.Tweens.Tween | null = null;
+  private resolutionTween: Phaser.Tweens.Tween | null = null;
+  private resolutionFocus: { x: number; y: number } | null = null;
 
   /** TURN_TRANSITION：回合切换平移 Tween + 到位回调（Phase 8） */
   private transitionTween: Phaser.Tweens.Tween | null = null;
@@ -106,6 +108,10 @@ export class CameraController implements GestureClaimant {
     this.stopPanTween();
     this.setCenterX(this.getCenterX());
     this.anchorVerticalToGround();
+    if (this.resolutionFocus !== null) {
+      this.resolutionFocus.y = this.camera.scrollY + this.camera.height / 2;
+      this.resolutionTween?.updateTo('y', this.resolutionFocus.y, true);
+    }
   }
 
   // ---- 模式控制 ----------------------------------------------------------
@@ -116,6 +122,7 @@ export class CameraController implements GestureClaimant {
     this.stopReturnTween();
     this.stopPanTween();
     this.stopTransitionTween();
+    this.releaseResolutionFocus();
     // 模式被接管时立即结束 IMPACT 停留 / TURN_TRANSITION（Promise 提前 resolve）
     this.resolveImpactStay();
     this.endDrag();
@@ -192,11 +199,48 @@ export class CameraController implements GestureClaimant {
     this.setCenterX(worldX);
   }
 
-  /** Laser presentation shares RESOLVE without starting another turn transition. */
-  focusResolution(target: { x: number; y: number }): void {
-    if (this.mode === CameraMode.IMPACT) this.impactTarget = target;
-    this.centerOnX(target.x);
-    this.anchorVerticalToGround();
+  /** Hazard focus preserves the impact/dwell mode and takes over camera movement only. */
+  focusResolution(target: { x: number; y: number }, durationMs = 0): void {
+    if (this.resolutionFocus === null) {
+      this.stopPanTween();
+      this.endDrag();
+    }
+    this.resolutionTween?.stop();
+    this.resolutionTween = null;
+    const focus = this.resolutionFocus ?? {
+      x: this.getCenterX(), y: this.camera.scrollY + this.camera.height / 2,
+    };
+    this.resolutionFocus = focus;
+    const x = clampCameraCenterX(target.x, this.visibleWorldWidth, GAME_CONFIG.world.width);
+    const y = groundAnchoredCenterY(this.visibleWorldHeight, GAME_CONFIG.world.height);
+    if (durationMs > 0) {
+      this.resolutionTween = this.scene.tweens.add({ targets: focus, x, y,
+        duration: durationMs, ease: 'Sine.easeInOut',
+        onUpdate: () => this.applyResolutionFocus(),
+        onComplete: () => { this.resolutionTween = null; this.applyResolutionFocus(); },
+      });
+    } else {
+      focus.x = x;
+      focus.y = y;
+      this.applyResolutionFocus();
+    }
+  }
+
+  releaseResolutionFocus(): void {
+    // Leave IMPACT at the last beam position, rather than returning to the old explosion.
+    if (this.resolutionFocus !== null && this.mode === CameraMode.IMPACT) {
+      this.impactTarget = { ...this.resolutionFocus };
+    }
+    this.resolutionTween?.stop();
+    this.resolutionTween = null;
+    this.resolutionFocus = null;
+  }
+
+  private applyResolutionFocus(): void {
+    if (this.resolutionFocus === null) return;
+    this.setCenterX(this.resolutionFocus.x);
+    this.setCenterY(followClampedCenterY(this.resolutionFocus.y, this.visibleWorldHeight,
+      GAME_CONFIG.world.height, this.followTopBoundY()));
   }
 
   /**
@@ -216,7 +260,7 @@ export class CameraController implements GestureClaimant {
    * 新拖动 / 模式切换会打断平移。
    */
   panToX(worldX: number): void {
-    if (this.mode !== CameraMode.FREE_VIEW) {
+    if (this.mode !== CameraMode.FREE_VIEW || this.resolutionFocus !== null) {
       return;
     }
     this.stopPanTween();
@@ -268,7 +312,7 @@ export class CameraController implements GestureClaimant {
 
   /** 无副作用探测：FREE_VIEW 时认领该指针并开始拖动 */
   tryClaim(event: GesturePointerEvent): boolean {
-    if (this.mode !== CameraMode.FREE_VIEW || this.dragging) {
+    if (this.mode !== CameraMode.FREE_VIEW || this.resolutionFocus !== null || this.dragging) {
       return false;
     }
     this.dragging = true;
@@ -299,6 +343,14 @@ export class CameraController implements GestureClaimant {
   // ---- 每帧更新 ----------------------------------------------------------
 
   update(deltaMs: number): void {
+    if (this.resolutionFocus !== null) {
+      this.applyResolutionFocus();
+      if (this.mode === CameraMode.IMPACT) {
+        this.impactStayElapsedMs += deltaMs;
+        if (this.impactStayElapsedMs >= GAME_CONFIG.camera.impactStayMs) this.resolveImpactStay();
+      }
+      return;
+    }
     switch (this.mode) {
       case CameraMode.FREE_VIEW:
         // 垂直贴地（窗口尺寸变化时自愈）；水平由拖动控制
@@ -352,6 +404,7 @@ export class CameraController implements GestureClaimant {
 
   /** Phase 6.5 起控制器无 DOM 监听（InputRouter 统一持有）；保留对称清理 */
   destroy(): void {
+    this.releaseResolutionFocus();
     this.stopReturnTween();
     this.stopPanTween();
     this.stopTransitionTween();

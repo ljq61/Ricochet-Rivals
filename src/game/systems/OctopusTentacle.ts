@@ -3,11 +3,21 @@ import { ART, SHEET_GRID } from '../config/ArtAssets';
 import { GAME_CONFIG } from '../config/GameConfig';
 import { COLLISION_CATEGORY } from '../physics/collisionCategories';
 import { TurnPhase, type GameState } from '../state/GameState';
+import { baseDockGeometry } from './WorldBuilder';
 import { isOctopusActive } from '../state/OctopusState';
 import type { PlayerId } from '../state/ids';
 
 const OCTOPUS_ANIM_KEY = 'fx-octopus-idle-loop';
 const FRAME_COUNT = SHEET_GRID.cols * SHEET_GRID.rows;
+
+export interface LaserVisual {
+  tip: { x: number; y: number };
+  end: { x: number; y: number } | null;
+  /** Canvas angle, measured clockwise from positive X. */
+  angle: number | null;
+  progress: number;
+  target: PlayerId | null;
+}
 
 /** State-driven obstacle and laser presentation. HP and damage belong to the resolver. */
 export class OctopusTentacle {
@@ -19,19 +29,26 @@ export class OctopusTentacle {
   private lastShownAttackTurn = 0;
   private laserHit = true;
   private laserTween: Phaser.Tweens.Tween | null = null;
-  private finishLaser: (() => void) | null = null;
+  private finishLaser: ((keepLastFrame?: boolean) => void) | null = null;
+  private lingeringFx: Phaser.GameObjects.Graphics | null = null;
   private idlePromise: Promise<void> = Promise.resolve();
-  private phase: 'idle' | 'charging' | 'sweeping' = 'idle';
+  private phase: 'idle' | 'focusing' | 'charging' | 'holding' | 'sweeping' = 'idle';
+  private visual: LaserVisual = { tip: { x: 0, y: 0 }, end: null, angle: null, progress: 0, target: null };
 
   constructor(
     private readonly scene: Phaser.Scene,
     private readonly onLaserHit: (target: PlayerId) => void = () => {},
-    private readonly onLaserFocus: (x: number, y: number) => void = () => {},
+    private readonly onLaserFocus: (x: number, y: number, durationMs: number) => void = () => {},
+    private readonly onLaserComplete: () => void = () => {},
   ) {}
 
   get isActive(): boolean { return this.active; }
   get attackPhase(): string { return this.phase; }
   get isAttacking(): boolean { return this.phase !== 'idle'; }
+  get laserVisual(): LaserVisual {
+    return { ...this.visual, tip: { ...this.visual.tip },
+      end: this.visual.end === null ? null : { ...this.visual.end } };
+  }
 
   hasPendingLaserHit(state: GameState): boolean {
     const turn = state.octopus.lastAttackTurnId;
@@ -46,7 +63,7 @@ export class OctopusTentacle {
     const target = state.octopus.lastAttackTarget;
     if (this.active && turn !== null && target !== null && turn > this.lastShownAttackTurn &&
         [TurnPhase.RESOLVE, TurnPhase.END, TurnPhase.GAME_OVER].includes(state.phase)) {
-      this.playLaser(turn, target, state);
+      this.playLaser(turn, target);
     }
   }
 
@@ -95,73 +112,106 @@ export class OctopusTentacle {
   }
 
   private cancelLaser(): void {
+    this.lingeringFx?.destroy();
+    this.lingeringFx = null;
     this.laserTween?.stop();
     this.laserTween = null;
     this.finishLaser?.();
     this.finishLaser = null;
     this.laserHit = true;
     this.phase = 'idle';
+    this.visual.end = null;
+    this.onLaserComplete();
   }
 
-  private playLaser(turn: number, target: PlayerId, state: GameState): void {
+  private playLaser(turn: number, target: PlayerId): void {
     this.lastShownAttackTurn = turn;
     this.laserHit = false;
-    this.phase = 'charging';
+    this.phase = 'focusing';
     const cfg = GAME_CONFIG.octopus;
-    const targetX = state.players[target].x;
-    const targetY = state.players[target].y - 65;
+    const baseX = baseDockGeometry(target).center;
+    const groundY = GAME_CONFIG.world.groundTopY;
+    const chargeEnd = cfg.focusDurationMs + cfg.chargeDurationMs;
+    const sweepStart = chargeEnd + cfg.holdDurationMs;
+    const duration = sweepStart + cfg.sweepDurationMs;
     const fx = this.scene.add.graphics().setDepth(870).setName('octopus-laser');
     const progress = { elapsed: 0 };
     this.idlePromise = new Promise<void>((resolve) => {
-      this.finishLaser = () => { fx.destroy(); resolve(); };
+      this.finishLaser = (keepLastFrame = false) => {
+        if (keepLastFrame) {
+          // Render the final ray at the base before cleaning up on the next frame.
+          this.lingeringFx = fx;
+          this.scene.time.delayedCall(16, () => {
+            if (this.lingeringFx === fx) {
+              fx.destroy();
+              this.lingeringFx = null;
+            }
+          });
+        } else {
+          fx.destroy();
+        }
+        resolve();
+      };
     });
     const draw = (): void => {
       const rotation = this.sprite?.rotation ?? 0;
-      const tipX = cfg.x + 65 + Math.sin(rotation) * cfg.height;
-      const tipY = cfg.baseY - Math.cos(rotation) * cfg.height + 40;
+      // Top curl in the source frame, transformed around the tentacle's bottom pivot.
+      const tipX = cfg.x + 65 * Math.cos(rotation) + (cfg.height - 40) * Math.sin(rotation);
+      const tipY = cfg.baseY + 65 * Math.sin(rotation) - (cfg.height - 40) * Math.cos(rotation);
       const t = progress.elapsed;
+      this.visual = { tip: { x: tipX, y: tipY }, end: null, angle: null, progress: 0, target };
       fx.clear();
-      if (t < cfg.chargeDurationMs) {
-        const q = t / cfg.chargeDurationMs;
-        fx.fillStyle(0xb848ef, 0.16 + q * 0.25).fillCircle(tipX, tipY, 18 + q * 44);
+      if (t < cfg.focusDurationMs) return;
+      if (t < sweepStart) {
+        this.phase = t < chargeEnd ? 'charging' : 'holding';
+        const q = Math.min(1, (t - cfg.focusDurationMs) / cfg.chargeDurationMs);
+        // Inward particles arrive from all directions; the charged core stays still during the hold.
+        for (let i = 0; i < 24 && this.phase === 'charging'; i++) {
+          const angle = i * Math.PI * 2 / 24 + (i % 3) * 0.17;
+          const travel = Math.min(1, q / (0.65 + (i % 6) * 0.07));
+          const radius = (130 + (i % 5) * 15) * (1 - travel);
+          const x = tipX + Math.cos(angle) * radius;
+          const y = tipY + Math.sin(angle) * radius;
+          fx.lineStyle(2, 0xf4b0ff, 0.65).lineBetween(x, y,
+            x + Math.cos(angle) * 12, y + Math.sin(angle) * 12);
+          fx.fillStyle(0xfbd5ff, 1).fillCircle(x, y, 2 + (i % 3));
+        }
+        fx.fillStyle(0xb848ef, 0.16 + q * 0.25).fillCircle(tipX, tipY, 18 + q * 38);
         fx.lineStyle(3, 0xf296fa, 0.9).strokeCircle(tipX, tipY, 65 - q * 47);
         fx.fillStyle(0xe890ff, 1).fillCircle(tipX, tipY, 8 + q * 14);
         fx.fillStyle(0xffffff, q).fillCircle(tipX, tipY, 4 + q * 8);
-        for (let i = 0; i < 6; i++) {
-          const angle = i * Math.PI / 3 + q * 2;
-          const radius = 100 * (1 - q) + 20;
-          fx.fillCircle(tipX + Math.cos(angle) * radius, tipY + Math.sin(angle) * radius, 3);
-        }
-      } else {
-        if (this.phase === 'charging') {
-          this.phase = 'sweeping';
-          this.onLaserFocus(targetX, targetY);
-        }
-        const q = Math.min(1, (t - cfg.chargeDurationMs) / cfg.sweepDurationMs);
-        const endX = targetX + (q - 0.5) * 400;
-        const endY = targetY + (q - 0.5) * 80;
-        const alpha = Math.min(1, (1 - q) * 6);
-        fx.lineStyle(40, 0xb749ec, 0.2 * alpha).lineBetween(tipX, tipY, endX, endY);
-        fx.lineStyle(15, 0xf480ff, 0.6 * alpha).lineBetween(tipX, tipY, endX, endY);
-        fx.lineStyle(4, 0xffffff, alpha).lineBetween(tipX, tipY, endX, endY);
-        fx.fillStyle(0xffffff, alpha).fillCircle(tipX, tipY, 15);
-        fx.fillStyle(0xeb8fff, alpha).fillCircle(endX, endY, 25);
-        if (q >= 0.5 && !this.laserHit) {
-          this.laserHit = true;
-          this.onLaserHit(target);
-        }
+        return;
+      }
+      this.phase = 'sweeping';
+      const q = Math.min(1, (t - sweepStart) / cfg.sweepDurationMs);
+      // 30° from vertically downward towards the chosen base, then rotate outwards.
+      const startAngle = target === 'P1' ? Math.PI * 2 / 3 : Math.PI / 3;
+      const targetAngle = Math.atan2(groundY - tipY, baseX - tipX);
+      const angle = startAngle + (targetAngle - startAngle) * q;
+      const endX = tipX + (groundY - tipY) / Math.tan(angle);
+      const endY = groundY;
+      this.visual = { tip: { x: tipX, y: tipY }, end: { x: endX, y: endY }, angle, progress: q, target };
+      // Ease into following the contact point, so starting the sweep cannot jump the camera.
+      this.onLaserFocus(cfg.x + (endX - cfg.x) * q, groundY, 0);
+      fx.lineStyle(40, 0xb749ec, 0.2).lineBetween(tipX, tipY, endX, endY);
+      fx.lineStyle(15, 0xf480ff, 0.6).lineBetween(tipX, tipY, endX, endY);
+      fx.lineStyle(4, 0xffffff, 1).lineBetween(tipX, tipY, endX, endY);
+      fx.fillStyle(0xffffff, 1).fillCircle(tipX, tipY, 15);
+      fx.fillStyle(0xeb8fff, 0.85).fillCircle(endX, endY, 25);
+      if (q >= 1 && !this.laserHit) {
+        this.laserHit = true;
+        this.onLaserHit(target);
       }
     };
-    this.onLaserFocus(cfg.x, cfg.baseY - cfg.height / 2);
+    this.onLaserFocus(cfg.x, cfg.baseY - cfg.height / 2, cfg.focusDurationMs);
     draw();
-    this.laserTween = this.scene.tweens.add({ targets: progress,
-      elapsed: cfg.chargeDurationMs + cfg.sweepDurationMs,
-      duration: cfg.chargeDurationMs + cfg.sweepDurationMs,
+    this.laserTween = this.scene.tweens.add({ targets: progress, elapsed: duration, duration,
       onUpdate: draw,
       onComplete: () => {
         this.phase = 'idle';
         this.laserTween = null;
-        this.finishLaser?.();
+        this.onLaserComplete();
+        this.finishLaser?.(true);
         this.finishLaser = null;
       },
     });

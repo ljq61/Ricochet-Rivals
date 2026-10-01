@@ -75,13 +75,17 @@ async function trace(page) {
     window.__RR_ONLINE_OCTOPUS_TRACE__ = [];
     window.__RR_ONLINE_OCTOPUS_TIMER__ = setInterval(() => {
       const d = window.__RR_DEBUG__;
-      if (d?.scene === 'BattleScene') window.__RR_ONLINE_OCTOPUS_TRACE__.push({
-        t: performance.now(), turn: d.turnId, phase: d.octopusState.attackPhase,
+      if (d?.scene !== 'BattleScene') return;
+      const hazard = d.octopusState, visual = hazard.visual;
+      window.__RR_ONLINE_OCTOPUS_TRACE__.push({
+        t: performance.now(), turn: d.turnId, phase: hazard.attackPhase,
         turnPhase: d.phase, cameraMode: d.cameraMode,
-        pending: d.octopusState.pendingHit, target: d.octopusState.lastAttackTarget,
-        hp: d.hp, displayHp: d.octopusState.displayHp,
-        lastAttackTurnId: d.octopusState.lastAttackTurnId,
-        recoveryCount: d.recoveryCount,
+        cameraScrollX: d.cameraScrollX, cameraZoom: d.cameraZoom, uiScale: d.uiScale,
+        pending: hazard.pendingHit, target: hazard.lastAttackTarget,
+        hp: { ...d.hp }, displayHp: { ...hazard.displayHp },
+        lastAttackTurnId: hazard.lastAttackTurnId, recoveryCount: d.recoveryCount,
+        visual: visual ? { tip: { ...visual.tip }, end: visual.end ? { ...visual.end } : null,
+          angle: visual.angle, progress: visual.progress, target: visual.target } : null,
       });
     }, 10);
   });
@@ -111,19 +115,67 @@ function sameBoundary(host, guest, label) {
     host.online.localHash === guest.online.localHash, `${host.online.localHash}/${guest.online.localHash}`);
 }
 async function verifyLaserTrace(samples, turn, peer) {
-  const charge = samples.find((s) => s.phase === 'charging' && s.lastAttackTurnId === turn);
-  const sweep = samples.find((s) => s.phase === 'sweeping' && s.lastAttackTurnId === turn);
-  check(`${peer}: charge and sweep both rendered for turn ${turn}`, Boolean(charge && sweep));
-  const active = samples.filter((s) => s.phase === 'charging' || s.phase === 'sweeping');
-  const premature = active.filter((s) => s.turnPhase === 'ACTION' || s.cameraMode === 'TURN_TRANSITION');
-  if (premature.length) {
+  try {
+    const attack = samples.filter((s) => s.lastAttackTurnId === turn);
+    const focus = attack.find((s) => s.phase === 'focusing');
+    const charge = attack.find((s) => s.phase === 'charging');
+    const hold = attack.find((s) => s.phase === 'holding');
+    const sweep = attack.find((s) => s.phase === 'sweeping');
+    const idle = attack.find((s) => s.phase === 'idle' && s.t > (sweep?.t ?? Infinity));
+    check(`${peer}: camera focus, charge, hold, sweep and completion render in order`,
+      Boolean(focus && charge && hold && sweep && idle) && focus.t < charge.t &&
+      charge.t < hold.t && hold.t < sweep.t && sweep.t < idle.t);
+    for (const [label, duration, min, max] of [
+      ['camera focus 450 ms', charge.t - focus.t, 400, 800],
+      ['particle charge 500 ms', hold.t - charge.t, 450, 800],
+      ['hold 200 ms', sweep.t - hold.t, 160, 500],
+      ['moving laser sweep 800 ms', idle.t - sweep.t, 740, 1200],
+    ]) {
+      check(`${peer}: ${label}`, duration >= min && duration <= max, `${Math.round(duration)} ms`);
+    }
+    const active = attack.filter((s) => s.phase !== 'idle');
+    const premature = active.filter((s) => s.turnPhase === 'ACTION' || s.cameraMode === 'TURN_TRANSITION');
+    check(`${peer}: next action and camera transition wait for the entire laser animation`,
+      premature.length === 0, JSON.stringify(premature.slice(0, 3)));
+    check(`${peer}: camera reaches the tentacle before charging starts`, Boolean(charge.visual) &&
+      Math.abs(charge.cameraScrollX + WIDTH * charge.uiScale / 2 - charge.visual.tip.x) < 100);
+    check(`${peer}: HP display holds one laser hit through focus, charge, hold and most of the sweep`,
+      active.filter((s) => s.phase !== 'sweeping' || s.visual?.progress < 0.9).every((s) =>
+        s.pending && s.displayHp[s.target] === s.hp[s.target] + 1));
+    check(`${peer}: hold completes before sweep progress begins`,
+      attack.filter((s) => ['focusing', 'charging', 'holding'].includes(s.phase))
+        .every((s) => (s.visual?.progress ?? 0) === 0));
+    const swept = attack.filter((s) => s.phase === 'sweeping' && s.visual?.end);
+    check(`${peer}: sweep exposes beam geometry`, swept.length > 1);
+    const first = swept[0], last = swept.at(-1);
+    const targetAngle = first.target === 'P1' ? 2 * Math.PI / 3 : Math.PI / 3;
+    check(`${peer}: laser starts 30 degrees toward its target from vertical down`,
+      first.visual.progress <= 0.1 && Math.abs(first.visual.angle - targetAngle) < 0.15,
+      `${(first.visual.angle * 180 / Math.PI).toFixed(1)} degrees, q=${first.visual.progress.toFixed(3)}`);
+    const dockX = last.target === 'P1' ? 475 : 4525;
+    const reached = idle.visual;
+    check(`${peer}: sweep reaches the selected base`, last.visual.progress >= 0.9 &&
+      reached?.progress === 1 && Boolean(reached.end) &&
+      Math.abs(reached.end.x - dockX) < 2 && Math.abs(reached.end.y - 960) < 2,
+      JSON.stringify({ lastSampleProgress: last.visual.progress, final: reached }));
+    const direction = last.target === 'P1' ? -1 : 1;
+    check(`${peer}: camera moves with the sweeping beam toward the selected base`,
+      (last.cameraScrollX - first.cameraScrollX) * direction > 100);
+    const cameraErrors = swept.map((s) => {
+      const halfVisible = WIDTH * s.uiScale / s.cameraZoom / 2;
+      const focusX = 2500 + (s.visual.end.x - 2500) * s.visual.progress;
+      const expected = halfVisible >= 2500 ? 2500
+        : Math.max(halfVisible, Math.min(5000 - halfVisible, focusX));
+      const actual = s.cameraScrollX + WIDTH * s.uiScale / 2;
+      return Math.abs(actual - expected);
+    });
+    check(`${peer}: camera follows the moving beam each frame within viewport bounds`,
+      cameraErrors.every((error) => error <= 180), `max error ${Math.max(...cameraErrors).toFixed(1)} world px`);
+  } catch (error) {
     await writeFile(`/private/tmp/rr-octopus-${peer.replace(/[^a-zA-Z]/g, '-')}-turn-${turn}-trace.json`,
       JSON.stringify(samples, null, 2));
+    throw error;
   }
-  check(`${peer}: next action and camera transition wait for the laser animation`, premature.length === 0,
-    JSON.stringify(premature.slice(0, 3)));
-  check(`${peer}: HP display holds one laser hit until the sweep`, charge.pending &&
-    charge.displayHp[charge.target] === charge.hp[charge.target] + 1);
 }
 async function setBoth(pages, hp, turnId, octopus) {
   for (const page of pages) {

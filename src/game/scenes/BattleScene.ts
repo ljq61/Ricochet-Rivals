@@ -235,12 +235,13 @@ export class BattleScene extends Phaser.Scene {
     // Phase 17 玩法特性：中央章鱼触手（任一方 HP ≤ 4 升起；create 无条件重建）
     this.octopusTentacle = new OctopusTentacle(this,
       (target) => this.showLaserHit(target),
-      (x, y) => {
+      (x, y, durationMs) => {
         if (!this.syncLocked && !this.connectionRecoveryActive && !this.connectionLost && !this.syncFailed) {
           this.turnBanner.hideTransient();
         }
-        this.cameraController.focusResolution({ x, y });
+        this.cameraController.focusResolution({ x, y }, durationMs);
       },
+      () => this.cameraController?.releaseResolutionFocus(),
     );
     this.octopusTentacle.restore(this.state);
 
@@ -1138,6 +1139,7 @@ export class BattleScene extends Phaser.Scene {
         const display = self.laserDisplayPlayers();
         return { ...self.state.octopus, active: self.octopusTentacle.isActive,
           attackPhase: self.octopusTentacle.attackPhase,
+          visual: self.octopusTentacle.laserVisual,
           pendingHit: self.octopusTentacle.hasPendingLaserHit(self.state),
           bodyCount: (self.matter.world?.getAllBodies() ?? []).filter((body) => body.label === 'octopus-tentacle').length,
           displayHp: { P1: display.P1.hp, P2: display.P2.hp } };

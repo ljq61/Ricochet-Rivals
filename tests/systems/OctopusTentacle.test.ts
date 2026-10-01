@@ -29,6 +29,8 @@ function fakeObject() {
 function fixture() {
   const objects: ReturnType<typeof fakeObject>[] = [];
   const bodies = new Set<object>();
+  let now = 0;
+  const timers: { due: number; callback: () => void; canceled: boolean }[] = [];
   type TweenConfig = {
     targets: Record<string, unknown> | Record<string, unknown>[];
     duration?: number;
@@ -44,6 +46,13 @@ function fixture() {
       text: () => { const obj = fakeObject(); objects.push(obj); return obj; },
     },
     textures: { exists: () => false },
+    time: {
+      delayedCall: vi.fn((delay: number, callback: () => void) => {
+        const timer = { due: now + delay, callback, canceled: false };
+        timers.push(timer);
+        return { remove: () => { timer.canceled = true; }, destroy: () => { timer.canceled = true; } };
+      }),
+    },
     matter: {
       add: { rectangle: vi.fn(() => { const body = {}; bodies.add(body); return body; }) },
       world: { remove: vi.fn((body: object) => bodies.delete(body)) } as
@@ -69,6 +78,7 @@ function fixture() {
     },
   };
   const tick = (ms: number) => {
+    now += ms;
     for (const tween of [...tweens]) {
       if (tween.stopped || tween.props.length === 0) continue;
       tween.elapsed += ms;
@@ -81,10 +91,16 @@ function fixture() {
         tween.config.onComplete?.();
       }
     }
+    for (const timer of timers) {
+      if (!timer.canceled && timer.due <= now) {
+        timer.canceled = true;
+        timer.callback();
+      }
+    }
   };
-  const hit = vi.fn(), focus = vi.fn();
-  const tentacle = new OctopusTentacle(scene as unknown as Phaser.Scene, hit, focus);
-  return { scene, tentacle, hit, focus, tick, objects, bodies };
+  const hit = vi.fn(), focus = vi.fn(), complete = vi.fn();
+  const tentacle = new OctopusTentacle(scene as unknown as Phaser.Scene, hit, focus, complete);
+  return { scene, tentacle, hit, focus, complete, tick, objects, bodies };
 }
 
 function activeState() {
@@ -98,9 +114,10 @@ function activeState() {
 
 describe('OctopusTentacle lifecycle and laser presentation', () => {
   it('shutdown after Matter clears its world cancels FX and resolves pending work without a ghost hit', async () => {
-    const { scene, tentacle, hit, tick, objects } = fixture();
+    const { scene, tentacle, hit, complete, tick, objects } = fixture();
     const state = activeState();
     tentacle.restore(state);
+    complete.mockClear(); // restore also releases any prior camera presentation
     state.octopus.lastAttackTurnId = 6;
     state.octopus.lastAttackTarget = 'P2';
     tentacle.refresh(state);
@@ -113,6 +130,7 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     expect(hit).not.toHaveBeenCalled();
     expect(tentacle.isActive).toBe(false);
     expect(tentacle.attackPhase).toBe('idle');
+    expect(complete).toHaveBeenCalledTimes(1);
     expect(objects.every((obj) => obj.destroyed)).toBe(true);
     expect(() => tentacle.destroy()).not.toThrow();
   });
@@ -151,53 +169,94 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     expect(scene.matter.world?.remove).toHaveBeenCalledTimes(1);
   });
 
-  it('an unseen laser charges for 500 ms, sweeps for 600 ms, hits at midpoint once, and deduplicates refreshes', async () => {
-    const { tentacle, hit, focus, tick } = fixture();
+  it.each(['P1', 'P2'] as const)('focuses before charging, holds, then continuously sweeps to %s and hits only at the endpoint', async (target) => {
+    const { tentacle, hit, focus, complete, tick } = fixture();
     const state = activeState();
     state.octopus.lastAttackTurnId = 6;
-    state.octopus.lastAttackTarget = 'P2';
+    state.octopus.lastAttackTarget = target;
     tentacle.refresh(state);
     const idle = tentacle.whenIdle();
-    expect(tentacle.attackPhase).toBe('charging');
+    expect(tentacle.attackPhase).toBe('focusing');
     expect(tentacle.hasPendingLaserHit(state)).toBe(true);
     expect(focus).toHaveBeenCalledTimes(1);
-    tick(GAME_CONFIG.octopus.chargeDurationMs - 1);
+    expect(focus.mock.calls[0]?.[2]).toBe(450);
+    tick(449);
+    expect(tentacle.attackPhase).toBe('focusing');
+    expect(tentacle.laserVisual?.end).toBeNull();
+    expect(hit).not.toHaveBeenCalled();
+    tentacle.refresh(state);
+    tick(1);
     expect(tentacle.attackPhase).toBe('charging');
+    tick(499);
+    expect(tentacle.attackPhase).toBe('charging');
+    expect(tentacle.laserVisual?.end).toBeNull();
+    tick(1);
+    expect(tentacle.attackPhase).toBe('holding');
+    tick(199);
+    expect(tentacle.attackPhase).toBe('holding');
+    expect(tentacle.laserVisual?.end).toBeNull();
     expect(hit).not.toHaveBeenCalled();
-    tentacle.refresh(state);
+    expect(focus).toHaveBeenCalledTimes(1);
     tick(1);
     expect(tentacle.attackPhase).toBe('sweeping');
-    expect(focus).toHaveBeenCalledTimes(2);
-    tick(GAME_CONFIG.octopus.sweepDurationMs / 2 - 1);
+    const start = structuredClone(tentacle.laserVisual!);
+    expect(start.end).not.toBeNull();
+    expect(start.progress).toBe(0);
+    expect(start.target).toBe(target);
+    const direction = target === 'P1' ? -1 : 1;
+    const startAngle = Math.atan2(start.end!.x - start.tip.x, start.end!.y - start.tip.y);
+    expect(startAngle).toBeCloseTo(direction * Math.PI / 6, 5);
+    expect(start.end!.y).toBe(GAME_CONFIG.world.groundTopY);
+    let previous = start;
+    for (let frame = 0; frame < 7; frame++) {
+      tick(100);
+      const visual = structuredClone(tentacle.laserVisual!);
+      expect((visual.end!.x - previous.end!.x) * direction).toBeGreaterThan(0);
+      expect(visual.end!.y).toBeCloseTo(start.end!.y, 5);
+      expect(visual.progress).toBeGreaterThan(previous.progress);
+      expect(visual.tip).toEqual(start.tip);
+      const camera = focus.mock.calls.at(-1)!;
+      expect(camera[0]).toBeCloseTo(GAME_CONFIG.octopus.x +
+        (visual.end!.x - GAME_CONFIG.octopus.x) * visual.progress, 5);
+      expect(camera[2]).toBe(0);
+      expect(hit).not.toHaveBeenCalled();
+      expect(tentacle.hasPendingLaserHit(state)).toBe(true);
+      tentacle.refresh(state);
+      previous = visual;
+    }
+    tick(99);
     expect(hit).not.toHaveBeenCalled();
-    tick(1);
-    expect(hit).toHaveBeenCalledExactlyOnceWith('P2');
-    expect(tentacle.hasPendingLaserHit(state)).toBe(false);
-    tentacle.refresh(state);
-    tick(GAME_CONFIG.octopus.sweepDurationMs / 2 - 1);
-    expect(tentacle.attackPhase).toBe('sweeping');
+    expect(tentacle.isAttacking).toBe(true);
     tick(1);
     await idle;
+    expect(hit).toHaveBeenCalledExactlyOnceWith(target);
+    const bounds = target === 'P1' ? GAME_CONFIG.player.leftBounds : GAME_CONFIG.player.rightBounds;
+    expect(focus.mock.calls.at(-1)?.[0]).toBeCloseTo((bounds.minX + bounds.maxX) / 2, 5);
+    expect(focus.mock.calls.at(-1)?.[2]).toBe(0);
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(tentacle.hasPendingLaserHit(state)).toBe(false);
     expect(tentacle.attackPhase).toBe('idle');
     tentacle.refresh(state);
     tick(5000);
     expect(hit).toHaveBeenCalledTimes(1);
-    expect(focus).toHaveBeenCalledTimes(2);
   });
 
-  it('snapshot restore cancels pending presentation and permits only a new turn to attack', async () => {
-    const { tentacle, hit, tick } = fixture();
+  it.each([[100, 'focusing'], [1000, 'holding']] as const)(
+    'snapshot restore after %s ms cancels %s callbacks and permits only a new turn to attack', async (elapsed, phase) => {
+    const { tentacle, hit, complete, tick } = fixture();
     const state = activeState();
     state.octopus.lastAttackTurnId = 6;
     state.octopus.lastAttackTarget = 'P2';
     tentacle.refresh(state);
     const oldIdle = tentacle.whenIdle();
-    tick(250);
+    tick(elapsed);
+    expect(tentacle.attackPhase).toBe(phase);
     tentacle.restore(structuredClone(state));
     await oldIdle;
     tick(5000);
     expect(hit).not.toHaveBeenCalled();
     expect(tentacle.isAttacking).toBe(false);
+    expect(complete).toHaveBeenCalledTimes(1);
     tentacle.refresh(state);
     expect(tentacle.isAttacking).toBe(false);
     state.turnId = 7;
@@ -205,8 +264,34 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     state.octopus.lastAttackTurnId = 7;
     state.octopus.lastAttackTarget = 'P1';
     tentacle.refresh(state);
-    tick(GAME_CONFIG.octopus.chargeDurationMs + GAME_CONFIG.octopus.sweepDurationMs);
+    tick(450 + 500 + 200 + 800);
     await tentacle.whenIdle();
     expect(hit).toHaveBeenCalledExactlyOnceWith('P1');
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders the final beam for one frame, while recovery can immediately remove that lingering FX', async () => {
+    const { tentacle, hit, complete, tick, objects } = fixture();
+    const state = activeState();
+    state.octopus.lastAttackTurnId = 6;
+    state.octopus.lastAttackTarget = 'P2';
+    tentacle.refresh(state);
+    tick(450 + 500 + 200 + 800);
+    await tentacle.whenIdle();
+    const fx = objects.find((obj) => obj.name === 'octopus-laser')!;
+    expect(tentacle.attackPhase).toBe('idle');
+    expect(tentacle.laserVisual.progress).toBe(1);
+    expect(tentacle.laserVisual.end?.x).toBeCloseTo(4525, 5);
+    expect(tentacle.laserVisual.end?.y).toBe(960);
+    expect(fx.destroyed).toBe(false);
+    expect(hit).toHaveBeenCalledExactlyOnceWith('P2');
+    expect(complete).toHaveBeenCalledTimes(1);
+    tick(10);
+    expect(fx.destroyed).toBe(false);
+    tentacle.restore(structuredClone(state));
+    expect(fx.destroyed).toBe(true);
+    tick(50);
+    expect(fx.destroy).toHaveBeenCalledTimes(1);
+    expect(hit).toHaveBeenCalledTimes(1);
   });
 });
