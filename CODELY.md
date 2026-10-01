@@ -9,7 +9,7 @@
 - Worms / 百战天虫式双方阵地对抗
 - Angry Birds 式反方向拖拽瞄准和抛射
 - 玩家可以自由横向拖动 Camera 观察整个战场
-- 每回合可以在己方阵地内有限距离移动
+- 每回合可以在己方阵地内自由移动（2026-09-30 起无距离预算）
 - 每回合只能发射一次
 - 发射时 Camera 必须回到己方炮手
 - 炮弹飞行期间 Camera 自动跟随炮弹
@@ -228,9 +228,11 @@ P2 ≈ 4550
 
 MAX_HP = 10
 
-每回合最大移动距离：
+每回合移动距离预算：
 
-MAX_MOVE_PER_TURN = 250px
+已取消（2026-09-30）——行动阶段阵地内自由往返；
+
+协议旧字段保留有限数值 0（GameConfig maxMovePerTurn）
 
 拖拽最大距离：
 
@@ -240,11 +242,11 @@ MAX_AIM_DRAG = 180px
 
 MIN_FIRE_POWER = 0.15
 
-建议基础炮弹速度：
+基础炮弹速度：
 
 MIN_LAUNCH_SPEED = 550
 
-MAX_LAUNCH_SPEED = 1400
+MAX_LAUNCH_SPEED = 2400
 
 Gravity：
 
@@ -468,19 +470,13 @@ P2 永远不能离开：
 
 4150 ～ 4900
 
-移动消耗按照实际移动距离累计。
+移动没有每回合距离预算（2026-09-30 取消旧 250px 累计限制）。
 
-例如：
+行动阶段可在阵地内自由往返。
 
-向右 100px
+本地移动为按住加速手感：速度 320 px/s、加速度 2400 px/s²。
 
-再向左 40px
-
-消耗：
-
-140px
-
-不是净位移 60px。
+AI 与联机直接发 MoveCommand，不走本地加速。
 
 ---
 
@@ -1191,6 +1187,8 @@ Main Agent Final Review
 - [2026-09-30 10:16:35] [2026-09-30] Ricochet Rivals WebRTC 全量 SDP capture-time 坑（SG-5 全量 E2E 实锤，SG-4 引入）：`createOffer/createAnswer` 全量 gather 语义必须在 `waitForIceGatheringComplete` **之后重读** `pc.localDescription` 再序列化——candidate 是在 gather 过程中追加进 SDP 的；若返回 setLocal 后立即序列化的快照则 SDP 零 candidate、对端 ICE 永不配对。**FakeRTC 的 SDP 恒定（'fake:offer-sdp'）→ 316 个网络单测全绿仍回归**，只有真实 Chrome（动态 SDP）暴露——Transport 改动必须过真实 WebRTC E2E，单测绿≠行为等价。**How to apply:** 改 WebRTCTransport 的 offer/answer/SDP 路径后必跑含真实 ICE 的双页段（manual `?manual-sdp` 或 online-room）；trickle 流不受此坑影响（candidate 走独立信令帧）。另：Node 22.11 无全局 WebSocket 构造器（`WebSocket is not defined`）——Node 侧端口探测用 node:net TCP connect；e2e 里 spawn tsx 服务器必须 cwd 指 server/signaling（根目录 npx 走 registry 下载超时）。
 - [2026-09-30 12:20:54] [2026-09-30 12:20] [2026-09-30] Ricochet Rivals SG-8 WebRTC 平台事实（2026-09-30 E2E 实测）：①pc.close() 紧跟 channel.close() 会在 SCTP 流重置握手送达对端前杀死 DTLS —— 对端收不到 channel 'close'、只见 pc failed（SG-8 下误入 60s 恢复窗）；WebRTCTransport.close() 延后 pc.close()（pcCloseDelayMs 默认 300ms，测试注入 0）后对端即时收到 CHANNEL_CLOSED。②ICE 失败期 DataChannel readyState 常仍 'open'（SCTP 残留）——恢复等待不得以 channel open 当 connected，须 pc.connectionState==='connected' 双条件（防假成功门）。③ICE restart 不重建 SCTP —— open 事件不重发，恢复完成靠 connectionState 'connected' + channel open 判定。④重启场景下 pc 'failed' 是 silent 路径（只 transient 'disconnected' 有 console.warn）——E2E 断线诊断别只看日志推断。**How to apply:** 改 WebRTC close/恢复路径时按①~③核对；E2E 断线感知超时先怀疑 close 刷出竞态与 silent failed，waitFor 失败配诊断转储实锤。
 - [2026-10-01 11:11:47] [2026-10-01] [2026-10-01] Ricochet Rivals SFX 资产管线事实（按钮机械点击/章鱼激光音效轮实测）：①generate_sound_effect duration_seconds 最小 1s，prompt 内时长指令（如「0.7s 后静音」）被忽略——激光蓄力给出全长度恒定纹理，需本地裁剪；②生成文件自带前导静音（click 实测 127ms → 按下后延迟响，手感反馈必须 ffmpeg -ss 去前导）；③相位耦合 SFX 用 ffmpeg -t 裁到玩法窗口：laser-charge 0.70s = 蓄力 500ms+hold 200ms（sweep 进入即让位）、laser-sweep 0.93s 覆盖 800ms 扫射+命中余韵；④UI 点击音标准管线：zone onDown 先播 click 再 onTap（Phaser 4 声音管理器 game-global，scene.start 切页不打断），MenuButton 19 处 + AimButton 零调用点改动（组件自持 SfxBus，无状态）；TouchControls 按住型移动钮刻意未加点击音待反馈。**How to apply:** 后续 SFX 生成一律 md5 校验 → silencedetect 查前导/尾静音 → 裁剪对齐玩法相位窗口 → 频谱图复核再入库。
+- [2026-10-01 16:59:32] [2026-10-01] [2026-10-01] Ricochet Rivals Host 直推快照绕过在飞清理（合并前 E2E battle 段实锤，Phase 15/17 恢复链姊妹缺口，已修）：OnlineHostChannel ACK 超时阶梯 #2 会**主动直推 STATE_SNAPSHOT（"Guest 无请求也接受——推送即恢复"）**；该路径在 Guest 侧只走 APPLYING_SNAPSHOT → SYNCED_AFTER_RECOVERY，**从不经过 DESYNC_DETECTED/SYNC_REQUESTED** → BattleScene.handleOnlineSyncStateChange 只挂在这两态的 clearInFlightSimulations 永不执行 → 后台冻结页的回合内本地炮弹模拟存活 → 回前台迟发 impact 把相机打回 IMPACT、requestAim 被拒（实测 cam=IMPACT while phase=RETURN_HOME）。修复 = APPLYING_SNAPSHOT 分支同样清场 + presentationEpoch+=1（与 DESYNC 分支幂等重复；横幅仍按 APPLYING 静默设计）。诊断特征：cameraEventLog 出现 sync=APPLYING_SNAPSHOT 但**没有** DESYNC/SYNC_REQUESTED 前置条目 = 恢复走了推送门。**How to apply:** 权威恢复有多少条入口（guest desync 链 / host 超时推送 / 未来 reconnect、spectator），清在飞模拟就要挂多少条；排查类似卡死先看环形日志缺哪条状态转移。另：e2e 命令接 `| tail` 会吞退出码（实测 E2E 1 failed 仍报 exit 0/OK）——判断成败只认结果行输出。
+- [2026-10-01 16:59:32] [2026-10-01] [2026-10-01] 本项目 CODELY.md 双重身份（2026-10-01 实测）：文件前半是项目规则（git 跟踪、会过时，如已修正的移动距离 250px、炮弹初速 1400），后半是 Codely Structured Memories——replace/write_file 工具对整文件拒绝（"CODELY.md is a memory file"）。用户明确要求校正规则区时的可行路径：Python 脚本精确字面替换（text.count(old)==1 断言，只匹配规则区字符串），改后 git diff 逐 hunk 复核，记忆区零触碰（本次 4 处替换干净落盘）。**How to apply:** 规则区校正走脚本字面替换 + diff 复核；记忆区仍只走 memory 工具，两区永不错写。
 
 ### Reference
 

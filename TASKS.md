@@ -1,8 +1,8 @@
 # Ricochet Rivals — Development Tasks
 
 > 状态：**Phase 0 ～ Phase 17 已完成（2026-09-29）；Phase 18（Mobile QA & V0.1 Release Hardening）agent 侧已闭环：基础设施审计（3 缺口全处置）+ 聚焦钮命中区 48px 下限 + 粒子观测口 + E2E 扩展（932×430@DPR3 视口矩阵 / 双指 / pointercancel / 粒子预算）+ test-reviewer PASS WITH ISSUES（仅 P3×3，已即时修复）—— **agent 侧 Release Gate 就绪**；剩余：用户真机 QA（`docs/PHASE18_DEVICE_QA.md` A-F 段）→ 反馈修复 → Phase 18 = COMPLETE + V0.1 RELEASE GATE。不自动进入 V0.2。**
-> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）—— 全部 Stage ✅（SG-8 ICE Restart 2026-09-30 收官：限次 restartIce 经活信令 + peerToken 重入、恢复走既有 Phase 15 恢复链；根 575/575 + server 31/31 + 全量 E2E **184/184**）。剩余 = 部署（公网 WSS + coturn → 真机 QA）与 Manual SDP Cleanup。详见「Online Connection Migration」章节。**
-> 当前验证：`npm run typecheck` / `npm run test`（652）/ `npm run build` 已通过；本轮小地图与瞄准修订 `npm run e2e` 全量 **190 passed / 0 failed**（含 932×430@DPR3 触控及真实 WebRTC 回归；E2E 严禁与写 dist 任务并行）。
+> 并行轨道：**Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`，2026-10-01 已合并 main）—— 全部 Stage ✅（SG-8 ICE Restart 2026-09-30 收官：限次 restartIce 经活信令 + peerToken 重入、恢复走既有 Phase 15 恢复链）。公网 WSS 信令已部署并验证（Render 单实例；9 项公网协议检查 + 34 项真实 WebRTC 双端对战 + 5 项 Pages 手机尺寸配对检查）。合并 main 前复验（2026-10-01）：根 788/788 + server 43/43 + 全量 E2E **215/215**。剩余 = coturn TURN（尚未启用）与真机验收矩阵、Manual SDP Cleanup。详见「Online Connection Migration」章节。**
+> 当前验证（2026-10-01 合并 main 前复验）：`npm run typecheck` / `npm run test`（**788**）/ `npm run build` / `npm run e2e` 全量 **215 passed / 0 failed** 全绿（六段；含 Host 直推快照恢复修复与真实 WebRTC 回归；E2E 严禁与写 dist 任务并行）。
 > 规则：每完成一个 Phase → 更新本文件 → 跑三项验证 → 停止，等待下一 Phase。
 
 ---
@@ -2278,7 +2278,7 @@ Low×3。核心契约（重置、连接复用、Host authority、对称 ready、
 
 # Online Connection Migration（SG-0 ~ SG-8，分支 `dev_signaling_turn`）
 
-> 状态：**SG-0 ~ SG-8 全部 ✅（2026-09-30，迁移代码侧完成；根 575/575 + server 31/31 + 全量 E2E 184/184）。剩余 = 部署（公网 WSS + coturn → 真机 QA）与 Manual SDP Cleanup —— 见章节尾「待办」。**
+> 状态：**SG-0 ~ SG-8 全部 ✅（2026-09-30 迁移代码侧完成；2026-10-01 合并 main 前复验：根 788/788 + server 43/43 + 全量 E2E 215/215）。公网 WSS 信令已部署验证（Render 单实例 `wss://ricochet-rivals.onrender.com`）；剩余 = coturn TURN（**尚未启用**）+ 真机验收矩阵（**尚未执行**）+ Manual SDP Cleanup —— 见章节尾「待办」。**
 >
 > **架构红线（本迁移全程有效）**：
 > - WebSocket **只用于 Signaling**（房间配对 / SDP / ICE candidate 交换）；Gameplay
@@ -2820,14 +2820,22 @@ pc.close() 根因修复——SCTP close 送达后 CHANNEL_CLOSED 即时路径恢
 
 详细根因、测试范围和部署限制见 [联机审查记录](docs/review/review-2026-09-30-dev_signaling_turn-network.md)。手机尺寸测试为 Chrome 模拟；真实 Safari、跨网切换与 TURN relay 仍按下列部署待办执行。
 
-## 待办（迁移代码侧完成，剩余为部署与验收）
+## 待办（公网信令已部署验证；剩余 = TURN 与真机验收）
 
-- 部署：公网 WSS host + coturn 落地（env 见 server/signaling/README）→
-  DEBUG_FORCE_RELAY 真机验证 TURN relay + 真机 QA 矩阵（Wi-Fi↔5G / VPN /
-  后台切换 × ICE restart 实网行为）
-- 迁移验收清单（规格 Tests）：真机配对矩阵通过后 Room Code 流转正为
+- [x] 公网 WSS 信令部署与验证（2026-09-30 / 10-01）：Render 单实例
+  `wss://ricochet-rivals.onrender.com`；9 项公网协议检查、34 项真实
+  WebRTC 双端对战检查、已发布 Pages 的 5 项手机尺寸配对 / 进入对战
+  检查通过（env 与服务细节见 `server/signaling/README.md`，发布回归
+  记录见 `README.md`）
+- [ ] **coturn TURN 落地**（当前公网服务仅下发 STUN，**TURN 尚未启用**；
+  env 契约见 `server/signaling/README.md`）→ `DEBUG_FORCE_RELAY`
+  真机验证 TURN relay
+- [ ] **真机验收矩阵（尚未执行）**：两部真机 Wi-Fi↔5G / VPN / 后台切换 ×
+  ICE restart 实网行为；浏览器手机模拟不替代真机结论
+- [ ] 迁移验收清单（规格 Tests）：真机配对矩阵通过后 Room Code 流转正为
   官方 Online 模式
-- Manual SDP 流删除（迁移稳定后的独立 Cleanup —— 本阶段不删）
+- [ ] Manual SDP 流删除（迁移稳定后的独立 Cleanup —— 本阶段不删；
+  现仍为 DEBUG_GAME 门控 Debug fallback）
 
 ---
 
@@ -2863,6 +2871,40 @@ pc.close() 根因修复——SCTP close 送达后 CHANNEL_CLOSED 即时路径恢
 - 已知取舍：charge 为恒定电弧质感（无音高爬升），粒子聚集语义可用；
   click 为 0.55s 机械动作序列（非单发短 click）——两者手感随试玩反馈
   迭代；TouchControls 移动钮（按住型玩法控件）未加点击音，待用户反馈
+
+---
+
+# 合并 main 前修复与文档校正轮（2026-10-01）✅
+
+dev_signaling_turn（11 提交）快进合并 main 前的验证、修复与文档对齐。
+
+- [x] **E2E 一帧竞态修复**：`联机双方结算后清除小地图炮弹标记` 在逻辑态
+  waitFor 通过后**即时读** POST_RENDER 驱动的小地图快照，偶发早一帧
+  （全量 214/1 唯一失败项；Phase 9 已知模式）——改为清除态独立
+  waitFor（双端各 5s 预算），HP 一致性断言保持原读法
+- [x] **Host 直推快照绕过在飞清理（联机卡死级 bug）**：battle 段单跑
+  实锤 `2:impact@4482 → requestAim→cam=IMPACT` —— Host ACK 超时
+  阶梯 #2 直推 STATE_SNAPSHOT（"推送即恢复"），Guest 侧只走
+  APPLYING_SNAPSHOT、不经 DESYNC/SYNC_REQUESTED → 挂在这两态的
+  clearInFlightSimulations 永不执行 → 后台冻结页的回合内模拟存活，
+  回前台迟发 impact 把相机打回 IMPACT、卡死下一回合瞄准。修复 =
+  `BattleScene.handleOnlineSyncStateChange` 的 APPLYING_SNAPSHOT
+  分支同样清场 + presentationEpoch+=1（与 DESYNC 分支幂等重复；
+  横幅仍按 APPLYING 静默设计）。诊断特征：相机环形日志出现
+  sync=APPLYING_SNAPSHOT 但**无** DESYNC/SYNC_REQUESTED 前置条目
+- [x] **文档校正（合并后口径）**：
+  - `docs/GAMEPLAY.md` §1/§3：移动距离预算 250px → 已取消（阵地内
+    自由往返；保留发射后锁定与速度/边界规则）
+  - `CODELY.md` §1/§7/§11：同上 + 炮弹初速 MAX_LAUNCH_SPEED
+    1400 → 2400（规则区经脚本精确字面替换，Structured Memories 区
+    零触碰）
+  - `TASKS.md` 头部状态行与 SG 章节状态：测试基线 575/31/184、
+    652/190 → 2026-10-01 复验 788 / 43 / 215；部署状态 → 公网 WSS
+    已部署验证，剩余 TURN 与真机验收（「待办」段同步重构）
+  - `docs/横版…PRD.md` 与 `docs/review/` 保持历史原文（需求基线与
+    评审记录，不回写历史）
+- 验证：typecheck ✅ / test **788/788** ✅ / build ✅ / 全量 E2E
+  **215/215** ✅（battle 段修复后单跑 31/31，全量收口确认）
 
 ---
 

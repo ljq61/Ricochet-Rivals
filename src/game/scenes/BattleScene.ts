@@ -1044,6 +1044,15 @@ export class BattleScene extends Phaser.Scene {
       this.projectileSystem.clearInFlightSimulations();
       this.presentationEpoch += 1;
       this.turnBanner.showMessage('SYNCHRONIZING…', 0xffc24d);
+    } else if (state === OnlineSyncState.APPLYING_SNAPSHOT) {
+      // Host ACK 超时阶梯可在 Guest 未走 DESYNC/SYNC_REQUESTED 时直推
+      // STATE_SNAPSHOT（"推送即恢复"，后台冻结页不 ACK 场景）—— 该路径
+      // 同样是权威恢复：在飞本地模拟必须一并废弃，否则冻结炮弹回前台
+      // 迟发 impact 仍会把相机打回 IMPACT、卡死瞄准
+      // （E2E battle 段实测：2:impact@4482 → requestAim→cam=IMPACT）。
+      // 与 DESYNC 分支幂等重复清场；横幅仍按 APPLYING 静默设计。
+      this.projectileSystem.clearInFlightSimulations();
+      this.presentationEpoch += 1;
     } else if (state === OnlineSyncState.SYNC_FAILED) {
       this.handleOnlineSyncFailure();
     }

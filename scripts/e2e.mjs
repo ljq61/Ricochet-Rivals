@@ -1676,10 +1676,23 @@ async function driveOnlineBattle(pageHost, pageGuest, hooks = {}) {
   );
   check('Guest 经 Turn Barrier 进入 P2 回合（不超前 Host）', guestToP2);
 
+  // Phase 9 教训：小地图标记由相机 POST_RENDER 每帧重算，紧跟逻辑态 waitFor 的
+  // 即时读会偶发早一帧（时序一变就翻车）——结算后清除必须独立 waitFor 断言。
+  await waitFor(
+    pageHost,
+    async () => (await hostD()).minimap?.projectiles.length === 0,
+    5000,
+    'Host 结算后清除小地图炮弹标记'
+  );
+  await waitFor(
+    pageGuest,
+    async () => (await guestD()).minimap?.projectiles.length === 0,
+    5000,
+    'Guest 结算后清除小地图炮弹标记'
+  );
+  check('联机双方结算后清除小地图炮弹标记', true);
   const hAfterT1 = await hostD();
   const gAfterT1 = await guestD();
-  check('联机双方结算后清除小地图炮弹标记',
-    hAfterT1.minimap.projectiles.length === 0 && gAfterT1.minimap.projectiles.length === 0);
   check(
     'Turn 1 权威结算后双端 HP 一致',
     JSON.stringify(hAfterT1.hp) === JSON.stringify(gAfterT1.hp)
