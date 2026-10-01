@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { CameraMode } from '../camera/CameraMode';
 import { ART } from '../config/ArtAssets';
+import { SfxBus, SFX } from '../audio/SfxBus';
 import { touchAimRect } from './touchControlLayout';
 import type { ViewportService } from '../platform/ViewportService';
 import type { InputRouter } from '../input/InputRouter';
@@ -51,6 +52,8 @@ export class AimButton {
   private layoutPlayerId: PlayerId | null = null;
   /** Phase 14：本地回合外（对手回合）隐藏并失活 zone */
   private interactable = true;
+  /** 机械点击反馈（按下时随 zone 触发；音量/开关门禁在 SfxBus 内） */
+  private readonly sfx: SfxBus;
   private readonly unsubscribeViewport: () => void;
 
   /** 游戏像素命中矩形，供浏览器验证使用真实按钮位置。 */
@@ -95,13 +98,17 @@ export class AimButton {
 
     this.width = DESKTOP_SIZE.width;
     this.height = DESKTOP_SIZE.height;
+    this.sfx = new SfxBus(scene);
 
     this.deps.router.registerZone({
       id: 'aim-button',
       kind: 'UI',
       isActive: () => this.interactable,
       contains: (x, y) => this.contains(x, y),
-      onDown: () => deps.onTap(),
+      onDown: () => {
+        this.sfx.play(SFX.click);
+        deps.onTap();
+      },
       onHover: (inside) => {
         this.hovered = inside;
       },

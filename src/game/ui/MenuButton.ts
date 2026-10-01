@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import type { ViewportService } from '../platform/ViewportService';
 import type { InputRouter } from '../input/InputRouter';
 import { ART } from '../config/ArtAssets';
+import { SfxBus, SFX } from '../audio/SfxBus';
 
 /** 屏幕手感常量（CSS px，运行时 ×uiScale）；默认高度 64；紧凑图标保持 48 触控目标下限 */
 const DEFAULT_WIDTH = 320;
@@ -64,10 +65,13 @@ export class MenuButton {
   private iconActive = false;
   /** 可见性驱动 zone 命中：不可见 = 不可点（防止重叠布局下不可见按钮抢走点击） */
   private visible = true;
+  /** 机械点击反馈（按下时随 zone 触发；音量/开关门禁在 SfxBus 内） */
+  private readonly sfx: SfxBus;
   private readonly unsubscribeViewport: () => void;
 
   constructor(scene: Phaser.Scene, deps: MenuButtonDeps) {
     this.deps = deps;
+    this.sfx = new SfxBus(scene);
 
     const baseWidth = deps.baseWidth ?? DEFAULT_WIDTH;
     this.baseWidth = baseWidth;
@@ -98,6 +102,7 @@ export class MenuButton {
       contains: (x, y) => this.contains(x, y),
       onDown: () => {
         // 按下即触发（菜单语义）：pressed 反馈闪现一拍后由动作接管
+        this.sfx.play(SFX.click);
         this.pressed = true;
         this.draw();
         deps.onTap();

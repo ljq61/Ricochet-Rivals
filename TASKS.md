@@ -2830,6 +2830,41 @@ pc.close() 根因修复——SCTP close 送达后 CHANNEL_CLOSED 即时路径恢
 
 ---
 
+# Juice 补充轮：界面按钮 + 章鱼激光音效（2026-10-01）✅
+
+用户需求：界面按钮加机械风格点击音；章鱼激光补音效（粒子聚集 + 激光扫射）。
+
+- [x] **3 个新音效素材**（generate_sound_effect，sonilo；`public/assets/sfx/`）：
+  - `click.mp3`（机械金属按钮：按下-释放-锁扣动作序列，多模态频谱复核
+    判机械开关声；本地裁掉 0.127s 前导静音 → 按下即响）
+  - `laser-charge.mp3`（电弧噼啪聚集声；裁到 **0.70s** = 蓄力 500ms +
+    hold 200ms 窗口，扫射进入即让位，戛然而止即「释放出射」）
+  - `laser-sweep.mp3`（下行光束 + 电滋声；去 0.06s 前导静音，0.93s
+    覆盖 800ms 扫射段 + 命中余韵；与既有 `hit.mp3` 命中反馈衔接）
+  - 校验：md5 三文件全不同（fileSize 元数据不可信，沿用实测口径）；
+    ffmpeg silencedetect 客观包络 + 频谱图多模态复核
+- [x] **SfxBus 扩容**：`SFX.click / laserCharge / laserSweep` 三键入
+  SFX_FILES（BootScene 预加载零改动）+ 音量基线 0.4 / 0.5 / 0.55；
+  组件自持实例改述（无状态，场景/UI/系统组件各持一例等价）
+- [x] **界面按钮机械点击**：`MenuButton`（菜单/联机/结算/断线按钮全量
+  19 处）+ `AimButton`（瞄准/取消）zone `onDown` 先播 click 再动作；
+  不可见/失活 zone 本就不触发，SOUND 开关门禁沿用 SfxBus（按下时口径）
+- [x] **章鱼激光双段音效**：`OctopusTentacle.playLaser` 相位切换处
+  一次性触发——charging 进入播 charge、sweeping 进入播 sweep（标志位
+  守卫 tween 逐帧推进不重复）；focusing 段保持安静；每段攻击重置；
+  本地动画驱动 = 联机双端各播一次（与发射/爆炸同口径，权威结果路径
+  不触发）
+- [x] **测试**：OctopusTentacle 测试 fixture 补 `cache.audio.exists` /
+  `sound.play` 桩；激光相位用例断言音效键序列
+  `[laserCharge, laserSweep]`、focusing 段零播放、整段攻击各只一次、
+  结束后 refresh 不再触发
+- 验证：typecheck ✅ / test **767/767** ✅ / build ✅
+- 已知取舍：charge 为恒定电弧质感（无音高爬升），粒子聚集语义可用；
+  click 为 0.55s 机械动作序列（非单发短 click）——两者手感随试玩反馈
+  迭代；TouchControls 移动钮（按住型玩法控件）未加点击音，待用户反馈
+
+---
+
 # V0.1 RELEASE GATE
 
 以下全部通过才能称为 V0.1：

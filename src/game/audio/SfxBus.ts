@@ -14,6 +14,12 @@ export const SFX = {
   victory: 'sfx-victory',
   defeat: 'sfx-defeat',
   load: 'sfx-load',
+  /** 界面按钮机械点击（MenuButton / AimButton zone onDown） */
+  click: 'sfx-click',
+  /** 章鱼激光：粒子聚集蓄力（charging 阶段进入时） */
+  laserCharge: 'sfx-laser-charge',
+  /** 章鱼激光：光束扫射（sweeping 阶段进入时） */
+  laserSweep: 'sfx-laser-sweep',
 } as const;
 
 /** 音效缓存 key（= SFX 的值口径，'sfx-launch' …） */
@@ -27,6 +33,9 @@ export const SFX_FILES = [
   [SFX.victory, 'victory.mp3'],
   [SFX.defeat, 'defeat.mp3'],
   [SFX.load, 'load.mp3'],
+  [SFX.click, 'click.mp3'],
+  [SFX.laserCharge, 'laser-charge.mp3'],
+  [SFX.laserSweep, 'laser-sweep.mp3'],
 ] as const;
 
 /** 首版音量基线（手感调参随试玩反馈迭代） */
@@ -38,14 +47,19 @@ const SFX_VOLUME: Record<SfxKey, number> = {
   [SFX.victory]: 0.55,
   [SFX.defeat]: 0.55,
   [SFX.load]: 0.5,
+  [SFX.click]: 0.4,
+  [SFX.laserCharge]: 0.5,
+  [SFX.laserSweep]: 0.55,
 };
 
 /**
- * 轻量音效总线（每场景一实例；无跨场景共享状态）。
+ * 轻量音效总线（无状态：仅持 scene 引用；场景与 UI/系统组件可各持一实例）。
  *
  * - UserSettings.soundEnabled 播放时门禁（主菜单 SOUND 开关即时生效）
  * - 素材缺失静默跳过（加载失败不炸 —— 与美术 Graphics 回退同原则）
  * - 全部音效单次播放；炮弹飞行保持安静，发射与命中各播一次
+ * - 界面按钮（MenuButton / AimButton）onDown 播机械 click
+ * - 章鱼激光动画（OctopusTentacle）按阶段播 charge / sweep，双端各播自己的本地动画
  * - 联机不双播：发射/爆炸均挂本地模拟事件（双端各播一次自己的），
  *   权威 TURN_RESULT 路径不重复触发音频
  * - 场景 SHUTDOWN：Phaser 随场景销毁声音管理器，无跨场景泄漏

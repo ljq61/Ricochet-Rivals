@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type Phaser from 'phaser';
 import { GAME_CONFIG } from '../../src/game/config/GameConfig';
+import { SFX } from '../../src/game/audio/SfxBus';
 import { createInitialGameState, TurnPhase } from '../../src/game/state/GameState';
 import { OctopusTentacle } from '../../src/game/systems/OctopusTentacle';
 
@@ -46,6 +47,9 @@ function fixture() {
       text: () => { const obj = fakeObject(); objects.push(obj); return obj; },
     },
     textures: { exists: () => false },
+    // SfxBus 素材门禁放行；play 出口即断言目标（音效键名序列）
+    cache: { audio: { exists: () => true } },
+    sound: { play: vi.fn() },
     time: {
       delayedCall: vi.fn((delay: number, callback: () => void) => {
         const timer = { due: now + delay, callback, canceled: false };
@@ -170,7 +174,7 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
   });
 
   it.each(['P1', 'P2'] as const)('focuses before charging, holds, then continuously sweeps to %s and hits only at the endpoint', async (target) => {
-    const { tentacle, hit, focus, complete, tick } = fixture();
+    const { scene, tentacle, hit, focus, complete, tick } = fixture();
     const state = activeState();
     state.octopus.lastAttackTurnId = 6;
     state.octopus.lastAttackTarget = target;
@@ -180,6 +184,7 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     expect(tentacle.hasPendingLaserHit(state)).toBe(true);
     expect(focus).toHaveBeenCalledTimes(1);
     expect(focus.mock.calls[0]?.[2]).toBe(450);
+    expect(scene.sound.play).not.toHaveBeenCalled();
     tick(449);
     expect(tentacle.attackPhase).toBe('focusing');
     expect(tentacle.laserVisual?.end).toBeNull();
@@ -187,6 +192,8 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     tentacle.refresh(state);
     tick(1);
     expect(tentacle.attackPhase).toBe('charging');
+    // 粒子聚集开始 → 蓄力音效（focusing 段保持安静）
+    expect(scene.sound.play.mock.calls.map((call) => call[0])).toEqual([SFX.laserCharge]);
     tick(499);
     expect(tentacle.attackPhase).toBe('charging');
     expect(tentacle.laserVisual?.end).toBeNull();
@@ -199,6 +206,9 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     expect(focus).toHaveBeenCalledTimes(1);
     tick(1);
     expect(tentacle.attackPhase).toBe('sweeping');
+    // 光束出射 → 扫射音效追加（蓄力不重复触发）
+    expect(scene.sound.play.mock.calls.map((call) => call[0]))
+      .toEqual([SFX.laserCharge, SFX.laserSweep]);
     const start = structuredClone(tentacle.laserVisual!);
     expect(start.end).not.toBeNull();
     expect(start.progress).toBe(0);
@@ -239,6 +249,8 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     tentacle.refresh(state);
     tick(5000);
     expect(hit).toHaveBeenCalledTimes(1);
+    // 整段攻击蓄力/扫射各只播一次；攻击结束后的 refresh 不再触发音效
+    expect(scene.sound.play).toHaveBeenCalledTimes(2);
   });
 
   it.each([[100, 'focusing'], [1000, 'holding']] as const)(

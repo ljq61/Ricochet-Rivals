@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { ART, SHEET_GRID } from '../config/ArtAssets';
 import { GAME_CONFIG } from '../config/GameConfig';
+import { SfxBus, SFX } from '../audio/SfxBus';
 import { COLLISION_CATEGORY } from '../physics/collisionCategories';
 import { TurnPhase, type GameState } from '../state/GameState';
 import { baseDockGeometry } from './WorldBuilder';
@@ -33,6 +34,10 @@ export class OctopusTentacle {
   private lingeringFx: Phaser.GameObjects.Graphics | null = null;
   private idlePromise: Promise<void> = Promise.resolve();
   private phase: 'idle' | 'focusing' | 'charging' | 'holding' | 'sweeping' = 'idle';
+  /** 蓄力/扫射音效每段攻击只触发一次（tween 逐帧推进，相位切换按标志守卫） */
+  private chargeSoundPlayed = false;
+  private sweepSoundPlayed = false;
+  private readonly sfx: SfxBus;
   private visual: LaserVisual = { tip: { x: 0, y: 0 }, end: null, angle: null, progress: 0, target: null };
 
   constructor(
@@ -40,7 +45,9 @@ export class OctopusTentacle {
     private readonly onLaserHit: (target: PlayerId) => void = () => {},
     private readonly onLaserFocus: (x: number, y: number, durationMs: number) => void = () => {},
     private readonly onLaserComplete: () => void = () => {},
-  ) {}
+  ) {
+    this.sfx = new SfxBus(scene);
+  }
 
   get isActive(): boolean { return this.active; }
   get attackPhase(): string { return this.phase; }
@@ -127,6 +134,8 @@ export class OctopusTentacle {
   private playLaser(turn: number, target: PlayerId): void {
     this.lastShownAttackTurn = turn;
     this.laserHit = false;
+    this.chargeSoundPlayed = false;
+    this.sweepSoundPlayed = false;
     this.phase = 'focusing';
     const cfg = GAME_CONFIG.octopus;
     const baseX = baseDockGeometry(target).center;
@@ -163,6 +172,11 @@ export class OctopusTentacle {
       fx.clear();
       if (t < cfg.focusDurationMs) return;
       if (t < sweepStart) {
+        // 粒子聚集开始 → 蓄力音效（一次性触发，跨越 hold 段直到扫射）
+        if (!this.chargeSoundPlayed) {
+          this.chargeSoundPlayed = true;
+          this.sfx.play(SFX.laserCharge);
+        }
         this.phase = t < chargeEnd ? 'charging' : 'holding';
         const q = Math.min(1, (t - cfg.focusDurationMs) / cfg.chargeDurationMs);
         // Inward particles arrive from all directions; the charged core stays still during the hold.
@@ -183,6 +197,11 @@ export class OctopusTentacle {
         return;
       }
       this.phase = 'sweeping';
+      // 光束出射 → 扫射音效（一次性触发，覆盖整个 800ms 扫射段）
+      if (!this.sweepSoundPlayed) {
+        this.sweepSoundPlayed = true;
+        this.sfx.play(SFX.laserSweep);
+      }
       const q = Math.min(1, (t - sweepStart) / cfg.sweepDurationMs);
       // 30° from vertically downward towards the chosen base, then rotate outwards.
       const startAngle = target === 'P1' ? Math.PI * 2 / 3 : Math.PI / 3;
