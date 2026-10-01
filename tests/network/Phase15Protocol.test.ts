@@ -62,13 +62,13 @@ describe('Phase 15 — normalizePosition', () => {
   });
 });
 
-describe('Phase 15 — computeStateHash v2', () => {
-  it('① 确定性 + 8 位十六进制 + v2 前缀契约', () => {
+describe('Phase 15 — computeStateHash v3', () => {
+  it('① 确定性 + 8 位十六进制 + v3 前缀契约', () => {
     const state = makeState();
     const a = computeStateHash(state);
     expect(a).toBe(computeStateHash(state));
     expect(a).toMatch(/^[0-9a-f]{8}$/);
-    expect(STATE_HASH_VERSION).toBe('v2');
+    expect(STATE_HASH_VERSION).toBe('v3');
   });
 
   it('② 浮点微差（<0.01）→ hash 相同（不触发假 desync）', () => {

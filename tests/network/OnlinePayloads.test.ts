@@ -73,6 +73,7 @@ const GAME_SNAPSHOT = {
   phase: 'START',
   players: { P1: PLAYER_SNAPSHOT_P1, P2: PLAYER_SNAPSHOT_P2 },
   items: [] as unknown[],
+  octopus: { hp: 10, spawnTurnId: null, lastResolvedTurnId: 0, lastAttackTurnId: null, lastAttackTarget: null },
   gameOver: false,
   winnerId: null,
 };
@@ -95,6 +96,7 @@ const TURN_RESULT = {
   impact: { x: 4000, y: 900 },
   players: TURN_RESULT_PLAYERS,
   damages: { P1: 0, P2: 2 },
+  octopus: { hp: 10, spawnTurnId: null, lastResolvedTurnId: 1, lastAttackTurnId: null, lastAttackTarget: null },
   gameOver: false,
   winnerId: null,
   nextPlayerId: 'P2',

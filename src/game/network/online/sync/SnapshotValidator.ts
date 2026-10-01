@@ -78,6 +78,7 @@ export function validateAuthoritativeSnapshot(
     phase: snapshot.phase,
     players: snapshot.players,
     items: [...snapshot.items],
+    octopus: { ...snapshot.octopus },
     gameOver: snapshot.gameOver,
     winnerId: snapshot.winnerId,
   });

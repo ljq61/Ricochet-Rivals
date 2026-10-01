@@ -1,9 +1,11 @@
 import { PLAYER_IDS } from '../../state/ids';
+import { GAME_CONFIG } from '../../config/GameConfig';
 import type { PlayerId, WeaponId } from '../../state/ids';
 import { TurnPhase } from '../../state/TurnPhase';
 import type { CommandRejectedReason } from './CommandRejectedReason';
 import type {
   AuthoritativeGameSnapshot,
+  AuthoritativeOctopusSnapshot,
   AuthoritativePlayerSnapshot,
   CommandRejectedPayload,
   DisconnectPayload,
@@ -26,8 +28,8 @@ import type {
  * Phase 14 入站 payload 形状守卫 —— Untrusted Input 第一道防线。
  *
  * * 消费规则（OnlineTypes 安全边界）：Coordinator 收到的任何网络 payload
- *   必须先过对应守卫，不通过即丢弃并计数；本文件只判定形状，不做语义
- *   校验（回合归属 / 预算 / seed 比对等归 Host 权威逻辑）。
+ *   必须先过对应守卫，不通过即丢弃并计数；本文件判定形状及触手字段
+ *   自洽（HP / 出生 / 攻击历史）。回合归属 / 预算 / seed 比对归 Host 权威逻辑。
  * * 与 NetworkProtocol.validateEnvelope 同防御风格（拒 null / 数组 /
  *   原始值），但网络收到垃圾是预期情况 —— 这里返回 boolean，不抛错。
  * * 数值字段一律 Number.isFinite（拒 NaN / ±Infinity）；计数类字段
@@ -132,6 +134,44 @@ export function isAuthoritativePlayerSnapshot(
   );
 }
 
+/** Hazard counters are required; malformed or contradictory history cannot revive a dead tentacle. */
+export function isAuthoritativeOctopusSnapshot(
+  value: unknown,
+  turnId: number,
+): value is AuthoritativeOctopusSnapshot {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  const fields = ['hp', 'spawnTurnId', 'lastResolvedTurnId', 'lastAttackTurnId', 'lastAttackTarget'];
+  if (fields.some((field) => !Object.prototype.hasOwnProperty.call(value, field))) {
+    return false;
+  }
+  if (
+    !isIntegerNumber(value.hp) || value.hp < 0 || value.hp > GAME_CONFIG.octopus.maxHp ||
+    !isIntegerNumber(value.lastResolvedTurnId) || !Number.isSafeInteger(value.lastResolvedTurnId) ||
+    value.lastResolvedTurnId < 0 || value.lastResolvedTurnId > turnId
+  ) {
+    return false;
+  }
+  if (value.spawnTurnId === null) {
+    return value.hp === GAME_CONFIG.octopus.maxHp &&
+      value.lastAttackTurnId === null && value.lastAttackTarget === null;
+  }
+  if (
+    !isIntegerNumber(value.spawnTurnId) || !Number.isSafeInteger(value.spawnTurnId) ||
+    value.spawnTurnId < 1 || value.spawnTurnId > value.lastResolvedTurnId
+  ) {
+    return false;
+  }
+  if (value.lastAttackTurnId === null) {
+    return value.lastAttackTarget === null;
+  }
+  return isIntegerNumber(value.lastAttackTurnId) && Number.isSafeInteger(value.lastAttackTurnId) &&
+    value.lastAttackTurnId >= value.spawnTurnId + GAME_CONFIG.octopus.attackAfterTurns &&
+    value.lastAttackTurnId <= value.lastResolvedTurnId && isPlayerId(value.lastAttackTarget) &&
+    (value.hp > 0 || value.lastAttackTurnId < value.lastResolvedTurnId);
+}
+
 /**
  * AuthoritativeGameSnapshot 深校验。items 仅校验数组（V0.1 恒空；
  * 元素结构待 Phase 17 Item Gameplay 定型后再收紧）。
@@ -148,6 +188,7 @@ export function isAuthoritativeGameSnapshot(value: unknown): value is Authoritat
     isTurnPhaseValue(value.phase) &&
     isPlayerIdRecord(value.players, isAuthoritativePlayerSnapshot) &&
     Array.isArray(value.items) &&
+    isAuthoritativeOctopusSnapshot(value.octopus, value.turnId) &&
     isBoolean(value.gameOver) &&
     (value.winnerId === null || isPlayerId(value.winnerId))
   );
@@ -287,6 +328,7 @@ export function isTurnResultPayload(value: unknown): value is TurnResultPayload 
     (value.impact === null || isImpactPoint(value.impact)) &&
     isPlayerIdRecord(value.players, isTurnResultPlayerPayload) &&
     isDamageRecord(value.damages) &&
+    isAuthoritativeOctopusSnapshot(value.octopus, value.turnId) &&
     isBoolean(value.gameOver) &&
     (value.winnerId === null || isPlayerId(value.winnerId)) &&
     (value.nextPlayerId === null || isPlayerId(value.nextPlayerId)) &&

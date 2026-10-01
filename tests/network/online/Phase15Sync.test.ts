@@ -169,7 +169,7 @@ describe('Phase 15 — Desync 检测与快照恢复', () => {
       snapshot: {
         matchId: 'm', seed: 7, turnId: h.hostState.turnId,
         currentPlayerId: h.hostState.currentPlayerId, phase: h.hostState.phase,
-        players: h.hostState.players, items: [], gameOver: false, winnerId: null,
+        players: h.hostState.players, items: [], octopus: { ...h.hostState.octopus }, gameOver: false, winnerId: null,
       },
       stateHash: computeStateHash(h.hostState),
       generatedAtTurnId: h.hostState.turnId,
@@ -197,7 +197,7 @@ describe('Phase 15 — Desync 检测与快照恢复', () => {
     h.hostNm.send(NetworkMessageType.STATE_SNAPSHOT, {
       snapshot: {
         matchId: 'WRONG', seed: 7, turnId: 1, currentPlayerId: 'P1',
-        phase: 'ACTION', players: h.hostState.players, items: [],
+        phase: 'ACTION', players: h.hostState.players, items: [], octopus: { ...h.hostState.octopus },
         gameOver: false, winnerId: null,
       },
       stateHash: 'whatever',
@@ -396,7 +396,7 @@ describe('Phase 15 — 失败收敛', () => {
         ({
           snapshot: {
             matchId: `WRONG-${n}`, seed: 7, turnId: 1, currentPlayerId: 'P1',
-            phase: 'ACTION', players: hf.hostState.players, items: [],
+            phase: 'ACTION', players: hf.hostState.players, items: [], octopus: { ...hf.hostState.octopus },
             gameOver: false, winnerId: null,
           },
           stateHash: 'whatever',

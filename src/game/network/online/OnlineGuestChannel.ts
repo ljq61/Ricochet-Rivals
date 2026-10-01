@@ -3,6 +3,7 @@ import type { TurnManager } from '../../systems/TurnManager';
 import type { CommandBus } from '../../commands/CommandBus';
 import type { DamageResult } from '../../state/DamageResult';
 import type { GameState } from '../../state/GameState';
+import { TurnPhase } from '../../state/TurnPhase';
 import type { PlayerId } from '../../state/ids';
 import { NetworkMessageType } from '../NetworkMessageType';
 import type { NetworkEnvelope } from '../NetworkEnvelope';
@@ -73,7 +74,13 @@ export class OnlineGuestChannel {
 
   /** 权威伤害展示双条件 */
   private pendingTurnResult: TurnResultPayload | null = null;
+  /** Host may finish first; preserve local flight and verify its phase at local resolution. */
+  private pendingHashResult: TurnResultPayload | null = null;
+  /** Recovery discards flight simulations; a PROJECTILE snapshot cannot reconstruct one. */
+  private snapshotWithoutLocalFlight = false;
   private pendingLocalResolve: { impact: ProjectileImpact | null } | null = null;
+  /** New envelope sequences may retransmit the same already-presented result. */
+  private lastPresentedTurnId = 0;
   /** Turn Barrier 双条件 */
   private pendingTurnEnd: TurnEndPayload | null = null;
   private dwellComplete = false;
@@ -95,6 +102,8 @@ export class OnlineGuestChannel {
   private finalConfirmedValue = false;
   /** 重发快照的语义去重：新恢复 episode 可重新应用同一快照。 */
   private lastAppliedSnapshotKey: string | null = null;
+  /** Last trusted Host turn, independent of a possibly corrupted local turn counter. */
+  private latestAuthoritativeTurnId = 0;
 
   constructor(
     nm: NetworkManager,
@@ -174,6 +183,11 @@ export class OnlineGuestChannel {
   /** Guest：本地结算完成（display / Barrier 的本地半条件） */
   notifyLocalResolve(impact: ProjectileImpact | null): void {
     this.pendingLocalResolve = { impact };
+    if (this.pendingHashResult !== null) {
+      const payload = this.pendingHashResult;
+      this.pendingHashResult = null;
+      this.finishTurnResult(payload);
+    }
     if (this.pendingTurnResult !== null) {
       this.flushAuthoritativeDamage();
     }
@@ -238,16 +252,56 @@ export class OnlineGuestChannel {
       return;
     }
     const payload = envelope.payload;
-    const { hashMatch } = applyTurnResult(this.deps.getState(), payload);
-    this.hashMatch = hashMatch;
+    // A replay with a newer sequence must not restore old hazard HP/history or replay a laser.
+    // Force-desync uses a wrong local turn and still recovers through STATE_SNAPSHOT.
+    if (payload.turnId !== envelope.turnId) {
+      this.beginRecovery('INVALID_LOCAL_STATE', 'TURN_RESULT_TURN_MISMATCH');
+      return;
+    }
+    if (
+      payload.turnId < this.latestAuthoritativeTurnId ||
+      (payload.turnId <= this.latestAuthoritativeTurnId && payload.turnId < this.deps.getState().turnId)
+    ) {
+      return;
+    }
+    applyTurnResult(this.deps.getState(), payload);
     this.receivedTurnResult = true;
     this.hostHashValue = payload.stateHash;
-    this.localHashValue = computeStateHash(this.deps.getState());
-    this.pendingTurnResult = payload;
+    if (payload.turnId > this.lastPresentedTurnId) {
+      this.pendingTurnResult = payload;
+    }
+    if (this.snapshotWithoutLocalFlight && this.deps.getState().phase === TurnPhase.PROJECTILE) {
+      // No impact callback can arrive after recovery discarded the simulation.
+      // This new authoritative result closes that flight and presents its damage once.
+      this.deps.getState().phase = payload.gameOver ? TurnPhase.GAME_OVER : TurnPhase.RESOLVE;
+      this.snapshotWithoutLocalFlight = false;
+      this.pendingLocalResolve = { impact: null };
+    }
+    if (this.deps.getState().phase === TurnPhase.PROJECTILE) {
+      // HP/history are authoritative immediately, but a phase-only discrepancy is
+      // expected while the Guest projectile is still flying. Do not cancel it via
+      // snapshot recovery or confirm a final state before local impact/out-of-bounds.
+      this.pendingHashResult = payload;
+      this.hashMatch = null;
+      return;
+    }
+    this.finishTurnResult(payload);
     if (this.pendingLocalResolve !== null) {
       this.flushAuthoritativeDamage();
     }
+  }
+
+  /** Called after local resolution, including a late result whose laser ended the match. */
+  private finishTurnResult(payload: TurnResultPayload): void {
+    const state = this.deps.getState();
+    if (payload.gameOver && (state.phase === TurnPhase.RESOLVE || state.phase === TurnPhase.END)) {
+      state.phase = TurnPhase.GAME_OVER;
+    }
+    this.localHashValue = computeStateHash(state);
+    const hashMatch = this.localHashValue === payload.stateHash;
+    this.hashMatch = hashMatch;
     if (hashMatch) {
+      this.latestAuthoritativeTurnId = payload.turnId;
       // gameOver 确认按契约带 recovered:true（B.4：终局 ACK(recovered) +
       // SYNCED_AFTER_RECOVERY）；常规确认为 recovered:false
       this.sendAck(payload.turnId, payload.stateHash, payload.gameOver);
@@ -318,6 +372,9 @@ export class OnlineGuestChannel {
       return;
     }
     const snapshotKey = `${validation.snapshot.turnId}:${envelope.payload.stateHash}`;
+    if (validation.snapshot.turnId < this.latestAuthoritativeTurnId) {
+      return; // New sequence does not make an older snapshot fresh.
+    }
     if (
       !this.recoveryInFlight &&
       this.snapshotRetryCount === 0 &&
@@ -333,6 +390,13 @@ export class OnlineGuestChannel {
       `turn:${envelope.payload.generatedAtTurnId}`,
     );
     const { stateHash } = applyAuthoritativeSnapshot(this.deps.getState(), validation.snapshot);
+    this.pendingHashResult = null;
+    this.pendingTurnResult = null;
+    this.pendingLocalResolve = null;
+    this.snapshotWithoutLocalFlight = validation.snapshot.phase === TurnPhase.PROJECTILE;
+    this.lastPresentedTurnId = Math.max(this.lastPresentedTurnId,
+      validation.snapshot.phase === TurnPhase.RESOLVE || validation.snapshot.phase === TurnPhase.GAME_OVER
+        ? validation.snapshot.turnId : validation.snapshot.turnId - 1);
     if (stateHash !== envelope.payload.stateHash) {
       // validator 已验自洽，apply 后仍不符 = hash/apply 契约破裂 —— 重试无意义
       this.recoveryInFlight = false;
@@ -366,6 +430,7 @@ export class OnlineGuestChannel {
     // 必须先于表现回调：END 转场收尾可能立即把本地 phase 改为 ACTION。
     this.sendAck(validation.snapshot.turnId, stateHash, true);
     this.lastAppliedSnapshotKey = snapshotKey;
+    this.latestAuthoritativeTurnId = validation.snapshot.turnId;
     this.deps.onSnapshotApplied?.(validation.snapshot);
   }
 
@@ -434,6 +499,9 @@ export class OnlineGuestChannel {
       return false;
     }
     this.dwellComplete = false;
+    this.snapshotWithoutLocalFlight = false;
+    this.pendingTurnResult = null;
+    this.pendingLocalResolve = null;
     this.pendingTurnEnd = null;
     this.receivedTurnResult = false;
     this.deps.resumeNextTurn();
@@ -447,6 +515,7 @@ export class OnlineGuestChannel {
     if (result === null || local === null) {
       return;
     }
+    this.lastPresentedTurnId = result.turnId;
     this.deps.showAuthoritativeDamage(
       synthesizeAuthoritativeDamage(result, local.impact, this.remotePlayerId),
     );

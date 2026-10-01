@@ -83,6 +83,15 @@ export interface AuthoritativePlayerSnapshot {
   readonly weaponId: WeaponId;
 }
 
+/** Explicit hazard projection; also identifies the last laser for presentation deduplication. */
+export interface AuthoritativeOctopusSnapshot {
+  readonly hp: number;
+  readonly spawnTurnId: number | null;
+  readonly lastResolvedTurnId: number;
+  readonly lastAttackTurnId: number | null;
+  readonly lastAttackTarget: PlayerId | null;
+}
+
 /**
  * 权威对局快照。V0.1 items 恒为空数组（Phase 17 才有 Item Gameplay），
  * 但保留字段保证快照形状与 GameState 对齐、Phase 15 desync 对比可用。
@@ -95,6 +104,7 @@ export interface AuthoritativeGameSnapshot {
   readonly phase: TurnPhase;
   readonly players: Readonly<Record<PlayerId, AuthoritativePlayerSnapshot>>;
   readonly items: readonly WorldItemState[];
+  readonly octopus: AuthoritativeOctopusSnapshot;
   readonly gameOver: boolean;
   readonly winnerId: PlayerId | null;
 }
@@ -156,7 +166,7 @@ export interface TurnResultPlayerPayload {
  * TURN_RESULT：Host 权威结算。Guest 收到后必须 reconcile（覆盖本地
  * prediction）：HP / 位置 / 存活 / gameOver / winner 一律以 Host 为准；
  * damage number 也以本 payload 的 damages 展示（不显示本地预测值）。
- * impact 为 null = 出界（无爆炸无伤害）。gameOver=true 时 nextPlayerId
+ * impact 为 null = 出界（无炮弹爆炸，但触手激光仍可造成伤害）。gameOver=true 时 nextPlayerId
  * 为 null（无下一回合，Host 不再发 TURN_END）。
  */
 export interface TurnResultPayload {
@@ -165,6 +175,7 @@ export interface TurnResultPayload {
   readonly players: Readonly<Record<PlayerId, TurnResultPlayerPayload>>;
   /** 本回合每个玩家的最终伤害（0 = 未命中） */
   readonly damages: Readonly<Record<PlayerId, number>>;
+  readonly octopus: AuthoritativeOctopusSnapshot;
   readonly gameOver: boolean;
   readonly winnerId: PlayerId | null;
   readonly nextPlayerId: PlayerId | null;
@@ -399,7 +410,7 @@ export interface OnlineGameCoordinatorApi {
    * Host → 构建并发送 TURN_RESULT；Guest → 记录 pending（伤害展示
    * 与 Turn Barrier 的本地半条件）。result 为本地 ExplosionSystem
    * 结算产物（Host = 权威结果；Guest = 仅预测，供 display 合成），
-   * 出界传 (null, null)。
+   * Host 必须先完成触手规则并合并伤害；出界仍可传 (null, 激光结果)。
    */
   notifyTurnResolved(impact: ProjectileImpact | null, result: DamageResult | null): void;
   /**

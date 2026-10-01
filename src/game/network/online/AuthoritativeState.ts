@@ -54,6 +54,13 @@ export function buildSnapshot(state: GameState): AuthoritativeGameSnapshot {
     phase: state.phase,
     players,
     items: state.items.map((item) => ({ ...item })),
+    octopus: {
+      hp: state.octopus.hp,
+      spawnTurnId: state.octopus.spawnTurnId,
+      lastResolvedTurnId: state.octopus.lastResolvedTurnId,
+      lastAttackTurnId: state.octopus.lastAttackTurnId,
+      lastAttackTarget: state.octopus.lastAttackTarget,
+    },
     gameOver: state.gameOver,
     winnerId: state.winnerId,
   };
@@ -90,6 +97,7 @@ export function stateFromSnapshot(snapshot: AuthoritativeGameSnapshot): GameStat
     phase: snapshot.phase,
     players,
     items,
+    octopus: { ...snapshot.octopus },
     gameOver: snapshot.gameOver,
     winnerId: snapshot.winnerId,
   };
@@ -97,8 +105,8 @@ export function stateFromSnapshot(snapshot: AuthoritativeGameSnapshot): GameStat
 
 /**
  * Host：本地结算（ExplosionSystem.explode 已 apply）后构建 TURN_RESULT。
- * * impact = null 表示出界（无爆炸无伤害）；result = null 同上（防御：
- *   出界路径不该传 result，null 保证 damages 全 0 语义）。
+ * * impact = null 表示炮弹出界；触手激光仍可通过 result 携带伤害。
+ *   result = null 表示本回合无任何伤害；触手规则必须先于本函数结算。
  * * damages / hpBefore 从本地 DamageResult 逐玩家提取（无 entry 回退
  *   当前 hp / 0 伤害）；nextPlayerId 在 gameOver 时为 null —— Host 不再
  *   发 TURN_END，Guest 由 update 循环 gameOver 检测接管收口。
@@ -130,6 +138,13 @@ export function buildTurnResultPayload(
     impact: impact === null ? null : { x: impact.x, y: impact.y },
     players,
     damages,
+    octopus: {
+      hp: state.octopus.hp,
+      spawnTurnId: state.octopus.spawnTurnId,
+      lastResolvedTurnId: state.octopus.lastResolvedTurnId,
+      lastAttackTurnId: state.octopus.lastAttackTurnId,
+      lastAttackTarget: state.octopus.lastAttackTarget,
+    },
     gameOver: state.gameOver,
     winnerId: state.winnerId,
     nextPlayerId: state.gameOver
@@ -166,6 +181,7 @@ export function applyTurnResult(
   }
   state.gameOver = payload.gameOver;
   state.winnerId = payload.winnerId;
+  copyOctopusState(state, payload.octopus);
   return { hashMatch: computeStateHash(state) === payload.stateHash };
 }
 
@@ -215,11 +231,11 @@ export function normalizePosition(value: number): number {
 }
 
 /**
- * hash 契约版本前缀。v2 = 位置归一化版（Phase 15）；v1 = Phase 14 无
+ * hash 契约版本前缀。v3 = 触手权威状态；v2 = 位置归一化版（Phase 15）；v1 = Phase 14 无
  * 归一化版（已废弃）。未来新增 authoritative 字段进 hash 必须递增本
  * 版本 —— 两端不同 build 会显式 mismatch 而非静默不同源。
  */
-export const STATE_HASH_VERSION = 'v2';
+export const STATE_HASH_VERSION = 'v3';
 
 /**
  * Guest：原子应用权威快照（Phase 15 desync 恢复）。与 applyTurnResult
@@ -259,7 +275,17 @@ export function applyAuthoritativeSnapshot(
   }
   state.gameOver = snapshot.gameOver;
   state.winnerId = snapshot.winnerId;
+  copyOctopusState(state, snapshot.octopus);
   return { stateHash: computeStateHash(state) };
+}
+
+/** Keep the scene's hazard state reference stable and copy only validated wire fields. */
+function copyOctopusState(state: GameState, octopus: AuthoritativeGameSnapshot['octopus']): void {
+  state.octopus.hp = octopus.hp;
+  state.octopus.spawnTurnId = octopus.spawnTurnId;
+  state.octopus.lastResolvedTurnId = octopus.lastResolvedTurnId;
+  state.octopus.lastAttackTurnId = octopus.lastAttackTurnId;
+  state.octopus.lastAttackTarget = octopus.lastAttackTarget;
 }
 
 /**
@@ -277,7 +303,7 @@ export function applyAuthoritativeSnapshot(
  * 不纳入 matchId / seed / items：matchId+seed 已由 GAME_START 锁定双方
  * 同源；items V0.1 恒空（Phase 17 定型后再评估纳入）。
  * 覆盖字段：turnId / currentPlayerId / phase / 每玩家(x,y,hp,isAlive,
- * moveRemaining,hasFired) / gameOver / winnerId。
+ * moveRemaining,hasFired) / gameOver / winnerId / 触手 HP 与回合历史。
  */
 export function computeStateHash(state: GameState): string {
   const parts: string[] = [
@@ -294,6 +320,8 @@ export function computeStateHash(state: GameState): string {
   }
   parts.push(`over=${state.gameOver ? 1 : 0}`);
   parts.push(`win=${state.winnerId === null ? 'null' : state.winnerId}`);
+  const octopus = state.octopus;
+  parts.push(`octopus=${octopus.hp},${octopus.spawnTurnId},${octopus.lastResolvedTurnId},${octopus.lastAttackTurnId},${octopus.lastAttackTarget}`);
   const canonical = parts.join('|');
 
   // FNV-1a 32 位（Math.imul 保持 32 位乘法语义，双端一致）

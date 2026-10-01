@@ -194,6 +194,14 @@ export class TurnBanner {
     });
   }
 
+  /** Clear a transient turn notice when a hazard needs the center of the screen. */
+  hideTransient(): void {
+    if (this.winnerActive) return;
+    this.turnTween?.stop();
+    this.turnTween = null;
+    this.container.setVisible(false).setAlpha(0);
+  }
+
   destroy(): void {
     this.unsubscribeViewport();
     this.turnTween?.stop();

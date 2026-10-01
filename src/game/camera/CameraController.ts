@@ -192,6 +192,13 @@ export class CameraController implements GestureClaimant {
     this.setCenterX(worldX);
   }
 
+  /** Laser presentation shares RESOLVE without starting another turn transition. */
+  focusResolution(target: { x: number; y: number }): void {
+    if (this.mode === CameraMode.IMPACT) this.impactTarget = target;
+    this.centerOnX(target.x);
+    this.anchorVerticalToGround();
+  }
+
   /**
    * 爆炸反馈：相机抖动（Phase 7）。
    * Phaser Shake 是渲染矩阵偏移（preRender 阶段应用），

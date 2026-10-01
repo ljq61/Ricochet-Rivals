@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "node scripts/e2e.mjs"
+    "e2e": "node scripts/e2e.mjs",
+    "e2e:octopus": "node scripts/e2e-octopus.mjs",
+    "e2e:octopus-online": "node scripts/e2e-octopus-online.mjs"
   },
   "dependencies": {
     "phaser": "^4.2.1"

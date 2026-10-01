@@ -13,6 +13,10 @@ import { ExplosionSystem } from '../systems/ExplosionSystem';
 import { TurnManager } from '../systems/TurnManager';
 import { WorldBuilder } from '../systems/WorldBuilder';
 import { BaseDamageEffects } from '../systems/BaseDamageEffects';
+import { resolveOctopusTurn } from '../systems/OctopusHazardSystem';
+import { GAME_CONFIG } from '../config/GameConfig';
+import type { DamageResult } from '../state/DamageResult';
+import type { OctopusState } from '../state/OctopusState';
 import { OctopusTentacle } from '../systems/OctopusTentacle';
 import { Player } from '../entities/Player';
 import { detectDeviceProfile, type DeviceProfile } from '../platform/DeviceProfile';
@@ -229,7 +233,16 @@ export class BattleScene extends Phaser.Scene {
     this.baseDamageEffects = new BaseDamageEffects(this);
 
     // Phase 17 玩法特性：中央章鱼触手（任一方 HP ≤ 4 升起；create 无条件重建）
-    this.octopusTentacle = new OctopusTentacle(this);
+    this.octopusTentacle = new OctopusTentacle(this,
+      (target) => this.showLaserHit(target),
+      (x, y) => {
+        if (!this.syncLocked && !this.connectionRecoveryActive && !this.connectionLost && !this.syncFailed) {
+          this.turnBanner.hideTransient();
+        }
+        this.cameraController.focusResolution({ x, y });
+      },
+    );
+    this.octopusTentacle.restore(this.state);
 
     // 4. 系统初始化：CommandBus → GameLogic → Systems
     this.projectileSystem = new ProjectileSystem(this);
@@ -262,7 +275,7 @@ export class BattleScene extends Phaser.Scene {
           this.beginNextTurnTransition();
         },
         showAuthoritativeDamage: (result) =>
-          this.damageNumbers.show(result, this.state.players),
+          this.showProjectileDamage(result),
         showRejected: (payload) => this.showOnlineRejected(payload),
         onDisconnected: () => this.handleOnlineDisconnected(),
         // Phase 15：Guest 恢复期间锁 Move/Aim/Fire（复用远程回合输入锁口径，
@@ -397,7 +410,9 @@ export class BattleScene extends Phaser.Scene {
       // Phase 7：ExplosionEvent → DamageSystem → DamageResult → GameState，
       // 再驱动反馈（相机抖动 / 伤害数字 / 受击闪烁 / HP HUD 动画）
       const result = this.explosionSystem.explode(this.state, impact);
-      this.turnManager.notifyProjectileResolved(result);
+      const resolved = this.online?.role === 'guest' ? result
+        : resolveOctopusTurn(this.state, impact, result);
+      this.turnManager.notifyProjectileResolved(resolved);
       this.cameraController.shake();
       // Phase 17 Juice：爆炸；有命中再加 hit 反馈音
       this.sfx.play(SFX.explosion);
@@ -410,7 +425,7 @@ export class BattleScene extends Phaser.Scene {
         }
       }
       // Phase 14：Host 广播权威 TURN_RESULT；Guest 记录本地结算
-      this.online?.notifyTurnResolved(impact, result);
+      this.online?.notifyTurnResolved(impact, resolved);
       // 伤害数字：Host / 离线 = 本地结算即权威，立即展示；
       // Guest = 等 TURN_RESULT（showAuthoritativeDamage 用 Host 数值，
       // 不展示本地预测 —— 避免先弹 2 再改 1 的双跳）
@@ -430,8 +445,10 @@ export class BattleScene extends Phaser.Scene {
     this.projectileSystem.onOutOfBounds(() => {
       this.logCameraEvent('outOfBounds');
       // 出界：无爆炸无伤害，同样进入 RESOLVE 并收口回合
-      this.turnManager.notifyProjectileResolved(null);
-      this.online?.notifyTurnResolved(null, null);
+      const resolved = this.online?.role === 'guest' ? null
+        : resolveOctopusTurn(this.state, null, null);
+      this.turnManager.notifyProjectileResolved(resolved);
+      this.online?.notifyTurnResolved(null, resolved);
       this.onAttackResolved();
     });
 
@@ -466,8 +483,10 @@ export class BattleScene extends Phaser.Scene {
     this.projectileSystem.update(this.state, delta);
 
     // 视觉同步：State 是唯一数据源
-    this.playerViews.P1.update(this.state.players.P1, delta);
-    this.playerViews.P2.update(this.state.players.P2, delta);
+    this.octopusTentacle.refresh(this.state);
+    const displayedPlayers = this.laserDisplayPlayers();
+    this.playerViews.P1.update(displayedPlayers.P1, delta);
+    this.playerViews.P2.update(displayedPlayers.P2, delta);
 
     this.cameraController.update(delta);
     this.aimRenderer.update(this.aimController.aimState);
@@ -478,9 +497,8 @@ export class BattleScene extends Phaser.Scene {
     const localControls = this.isLocalControlledTurn();
     this.aimButton.refresh(this.cameraController.currentMode, localControls);
     this.touchControls?.refresh(localControls);
-    this.playerHud.refresh(this.state.players);
-    this.baseDamageEffects.refresh(this.state.players);
-    this.octopusTentacle.refresh(this.state.players);
+    this.playerHud.refresh(displayedPlayers);
+    this.baseDamageEffects.refresh(displayedPlayers);
 
     // Phase 9：回合横幅 —— 新回合进入 ACTION 时短暂提示轮到谁
     // （开场与每次 TURN_TRANSITION 完成后各触发一次；取消瞄准回到
@@ -510,6 +528,8 @@ export class BattleScene extends Phaser.Scene {
       }
     }
     if (!this.bannerGameOverShown && this.state.gameOver) {
+      if (this.state.phase === TurnPhase.PROJECTILE ||
+          this.octopusTentacle.isAttacking || this.octopusTentacle.hasPendingLaserHit(this.state)) return;
       // Phase 15：Guest 终局 hash 门 —— 未确认前不收口（避免双端胜负
       // 显示不一致；确认路径：gameOver TURN_RESULT hash 匹配或快照恢复）
       if (this.online !== null && this.online.role === 'guest' && !this.online.isFinalStateConfirmed()) {
@@ -724,12 +744,17 @@ export class BattleScene extends Phaser.Scene {
    * endTurn）；Guest 'waiting' 时挂起（TURN_END 到达且本地 dwell 完成
    * 后经 resumeNextTurn 补驱），回合切换始终由 Host 控制。
    */
-  private onAttackResolved(): void {
+  private async onAttackResolved(): Promise<void> {
     const mode = this.cameraController.currentMode;
     if (mode !== CameraMode.IMPACT && mode !== CameraMode.PROJECTILE_FOLLOW) {
       this.logCameraEvent(`attackResolved-guarded(cam=${mode})`);
       return;
     }
+    this.octopusTentacle.refresh(this.state);
+    const epoch = this.presentationEpoch;
+    const turnId = this.state.turnId;
+    await this.octopusTentacle.whenIdle();
+    if (epoch !== this.presentationEpoch || turnId !== this.state.turnId) return;
     if (this.state.gameOver) {
       this.logCameraEvent('attackResolved-gameOver');
       this.cameraController.enableFreeView();
@@ -756,6 +781,38 @@ export class BattleScene extends Phaser.Scene {
     this.beginNextTurnTransition();
   }
 
+  /** Keep the authoritative HP, but reveal laser damage at the beam crossing. */
+  private laserDisplayPlayers(): GameState['players'] {
+    const target = this.state.octopus.lastAttackTarget;
+    if (target === null || !this.octopusTentacle.hasPendingLaserHit(this.state)) return this.state.players;
+    const player = this.state.players[target];
+    return { ...this.state.players, [target]: { ...player,
+      hp: Math.min(player.maxHp, player.hp + GAME_CONFIG.octopus.laserDamage), isAlive: true } };
+  }
+
+  /** Guest authoritative results contain both explosion and laser damage. */
+  private showProjectileDamage(result: DamageResult): void {
+    const octopus = this.state.octopus;
+    const hasLaser = octopus.lastAttackTurnId === result.explosion.turnId;
+    this.damageNumbers.show({ ...result, players: result.players.map((entry) =>
+      hasLaser && entry.playerId === octopus.lastAttackTarget
+        ? { ...entry, damage: Math.max(0, entry.damage - GAME_CONFIG.octopus.laserDamage) }
+        : entry) }, this.state.players);
+  }
+
+  private showLaserHit(target: PlayerId): void {
+    this.sfx.play(SFX.hit);
+    this.playerViews[target].playHitReaction();
+    const player = this.state.players[target];
+    this.damageNumbers.show({
+      explosion: { sourcePlayerId: this.state.currentPlayerId, weaponId: 'normal',
+        x: player.x, y: player.y, radius: 0,
+        turnId: this.state.octopus.lastAttackTurnId ?? this.state.turnId },
+      players: [{ playerId: target, distance: 0, damage: GAME_CONFIG.octopus.laserDamage,
+        hpBefore: player.hp + GAME_CONFIG.octopus.laserDamage, hpAfter: player.hp }],
+    }, this.state.players);
+  }
+
   /**
    * Phase 17 Juice：胜负 jingle（本地视角）—— 联机/单机按本机胜负；
    * Local 2P 任一方获胜都在本机庆祝；同归于尽按 defeat 收场。
@@ -775,9 +832,12 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /** 相机 TURN_TRANSITION 到新玩家 → ACTION（Host/离线/Guest 共用收尾） */
-  private beginNextTurnTransition(): void {
+  private async beginNextTurnTransition(): Promise<void> {
     const epoch = this.presentationEpoch;
     const turnId = this.state.turnId;
+    this.octopusTentacle.refresh(this.state);
+    await this.octopusTentacle.whenIdle();
+    if (epoch !== this.presentationEpoch || turnId !== this.state.turnId) return;
     this.logCameraEvent(
       `beginTransition→cam=${this.cameraController.currentMode}`
     );
@@ -804,6 +864,7 @@ export class BattleScene extends Phaser.Scene {
   /** Guest 快照已经应用并 ACK；此处只恢复表现，不再次切换玩家或重置预算。 */
   private restoreSnapshotPresentation(): void {
     this.presentationEpoch += 1;
+    this.octopusTentacle.restore(this.state);
     this.inputRouter.releaseAll();
     this.aimController.cancel();
     this.cameraController.enableFreeView();
@@ -1073,6 +1134,20 @@ export class BattleScene extends Phaser.Scene {
       get octopus(): boolean {
         return self.octopusTentacle.isActive;
       },
+      get octopusState(): object {
+        const display = self.laserDisplayPlayers();
+        return { ...self.state.octopus, active: self.octopusTentacle.isActive,
+          attackPhase: self.octopusTentacle.attackPhase,
+          pendingHit: self.octopusTentacle.hasPendingLaserHit(self.state),
+          bodyCount: (self.matter.world?.getAllBodies() ?? []).filter((body) => body.label === 'octopus-tentacle').length,
+          displayHp: { P1: display.P1.hp, P2: display.P2.hp } };
+      },
+      /** QA setup; normal projectiles and networking still perform resolution. */
+      prepareOctopus(octopus: OctopusState, turnId?: number): void {
+        Object.assign(self.state.octopus, octopus);
+        if (turnId !== undefined) self.state.turnId = turnId;
+        self.octopusTentacle.restore(self.state);
+      },
       /** Phase 18 性能观测：全场景存活粒子数（QA / E2E 粒子预算断言） */
       get particles(): number {
         return self.countAliveParticles();
@@ -1203,6 +1278,9 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private onShutdown(): void {
+    if (DEBUG_GAME) {
+      (window as unknown as Record<string, unknown>).__RR_DEBUG__ = { scene: 'Transition' };
+    }
     this.presentationEpoch += 1;
     this.game.renderer.off(Phaser.Renderer.Events.RENDER, this.onMiniMapRender, this);
     this.viewportService.destroy();
@@ -1218,6 +1296,7 @@ export class BattleScene extends Phaser.Scene {
     this.miniMap.destroy();
     this.turnBanner.destroy();
     this.projectileSystem.destroy();
+    this.octopusTentacle.destroy();
     this.disconnectButton?.destroy();
     this.disconnectButton = null;
     // SG-8：恢复控制器全清理（transport / session 信令归 SessionManager dispose 链）

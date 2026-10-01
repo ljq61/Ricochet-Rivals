@@ -3,6 +3,7 @@ import type { MatchId, PlayerId, TurnId } from './ids';
 import type { PlayerState } from './PlayerState';
 import { TurnPhase } from './TurnPhase';
 import type { WorldItemState } from './WorldItemState';
+import { createOctopusState, type OctopusState } from './OctopusState';
 
 export { TurnPhase };
 
@@ -18,6 +19,7 @@ export interface GameState {
   phase: TurnPhase;
   players: Record<PlayerId, PlayerState>;
   items: WorldItemState[];
+  octopus: OctopusState;
   gameOver: boolean;
   winnerId: PlayerId | null;
 }
@@ -63,6 +65,7 @@ export function createInitialGameState(
       P2: createPlayerState('P2'),
     },
     items: [],
+    octopus: createOctopusState(),
     gameOver: false,
     winnerId: null,
   };
