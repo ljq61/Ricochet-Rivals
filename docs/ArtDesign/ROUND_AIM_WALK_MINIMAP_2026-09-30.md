@@ -81,3 +81,17 @@ Use case: precise-object-edit. Edit ONLY ROW2 COLUMN3, bottom-row third characte
 预览：[灰色待机](previews/round-aim-mobile-ready.png)、[红方彩色激活](previews/round-aim-mobile-red-active.png)、[炮弹与白色视野框](previews/minimap-shell-view.png)、[红方行走](previews/red-walk-v3-mobile.png)、[实际左右行走录像](previews/red-walk-v3-mobile.webm)。
 
 手机画面采用 Chrome 触控与 DPR 模拟，真实手机及 Safari 仍需试玩确认。本地手机试玩服务为 `http://192.168.71.34:5173/`，需与电脑同 Wi-Fi，横屏打开；地址随电脑局域网 IP 变化。
+
+## 2026-10-01 待机银框彩色与光晕修正
+
+当前 READY 使用 `public/assets/art/aim-gesture-ready-color.png`：内图彩色，银色边框，无取消 X；AIMING 沿用金框彩色图和取消 X。两态图标本体均不闪烁。可进入瞄准时外侧冷白光晕以 600 ms 往复变化透明度，激活、对手回合、攻击演出或销毁时停止并隐藏，取消瞄准后恢复。桌面也采用银/金边框和相同光晕状态；手机 64 CSS px 命中及蓝右红左位置保持。
+
+新图使用内置 `image_gen` 编辑原 READY，ACTIVE 仅作内图配色参考；1254×1254 RGBA，alpha > 16 的有效裁切为 x=46、y=50、w=1161、h=1155。原灰色文件保留作为历史素材，加载表改为新图。
+
+验证：767 单测 / 64 文件、类型检查与构建通过；手机 E2E 59/59、桌面 48/48，三种尺寸的画面与交互检查 16/16。光晕时间变化、点击激活消失及取消恢复均通过；手机/桌面两态和 740×360 小屏截图已检查，独立审查无 P0/P1/P2。iPhone 真机闪烁观感待试玩。
+
+最终编辑提示词：
+
+```text
+Edit image 1, the silver-framed ready/aim UI button for Ricochet Rivals. Image 2 is ONLY a color palette reference for the interior. Keep the outer circular metal rim and all bolts SILVER/STEEL exactly like image 1. Colorize ONLY the interior illustration using image 2's palette: teal dark sea-blue inset, warm peach skin, orange jacket, olive hat and gun, brown boots, cream-white aiming arrow and pointing hand. Preserve image 1's exact character pose, layout, circular outline, margins, heavy black contours, texture style, hand and dotted arrow. Do NOT add image 2's top-left X or any other cancel mark. No glow outside the rim, no added text. Full square asset, centered same circle and padding, transparent background outside the circle. This is the inactive button but its character and interior must be fully colorful; only the outer rim is silver. Save the edit as a transparent PNG.
+```

@@ -34,7 +34,7 @@ export const ART = {
 export const ART_FILES = [
   [ART.harbor, 'harbor.png'],
   [ART.moveArrow, 'move-arrow.png'],
-  [ART.aimReady, 'aim-gesture-ready.png'],
+  [ART.aimReady, 'aim-gesture-ready-color.png'],
   [ART.aimActive, 'aim-gesture-active.png'],
   [ART.platform, 'dock-platform-tall.png'],
   [ART.portraitFrame, 'portrait-frame.png'],
@@ -60,7 +60,7 @@ export const ART_FILES = [
 /** Generated controls: measured alpha bounds, so visible art matches the input layout. */
 export const CONTROL_ART_FRAMES = {
   [ART.moveArrow]: { x: 55, y: 76, width: 1143, height: 1113 },
-  [ART.aimReady]: { x: 46, y: 50, width: 1162, height: 1154 },
+  [ART.aimReady]: { x: 46, y: 50, width: 1161, height: 1155 },
   [ART.aimActive]: { x: 46, y: 54, width: 1160, height: 1148 },
 } as const;
 

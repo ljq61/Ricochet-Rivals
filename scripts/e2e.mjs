@@ -705,6 +705,16 @@ async function runMobile(browser) {
   const firstAudio = await page.evaluate(() => window.__RR_AUDIO_E2E__.contexts.map((context) => context.state));
   check('首次触摸进游戏即恢复音频，无需切换声音开关', firstAudio.length > 0 && firstAudio.every((state) => state === 'running'));
   check('蓝方回合瞄准按钮位于右侧', d0.aimButtonBounds.x / d0.uiScale > 844 / 2);
+  check('未瞄准时显示外侧光晕点击提示', !d0.aimIcon.active && d0.aimIcon.hintVisible);
+  const hintSamples = await page.evaluate(async () => {
+    const alpha = [];
+    for (let i = 0; i < 10; i++) {
+      alpha.push(window.__RR_DEBUG__.aimIcon.hintAlpha);
+      await new Promise((resolve) => setTimeout(resolve, 90));
+    }
+    return alpha;
+  });
+  check('待机光晕随时间明暗闪烁', Math.max(...hintSamples) - Math.min(...hintSamples) > 0.4);
   check('控制档位 = touch（coarse pointer / 不可悬停）', d0.controlProfile === 'touch');
   check(
     `UI 缩放 = DPR 2（游戏坐标 = 物理像素）`,
@@ -785,6 +795,8 @@ async function runMobile(browser) {
   await page.touchscreen.touchEnd();
   await waitFor(page, async () => (await dbg(page)).cameraMode === 'AIMING', 1500, 'AIMING');
   check('点击 AimButton → RETURN_HOME → AIMING', true);
+  const activeIcon = (await dbg(page)).aimIcon;
+  check('激活金框图标时光晕立即消失', activeIcon.active && !activeIcon.hintVisible);
   check(
     'Phase 9：AIMING 中 ◀/▶ 移动按钮隐藏（点击瞄准即位置锁定）',
     (await dbg(page)).moveButtonsVisible === false
@@ -794,6 +806,8 @@ async function runMobile(browser) {
   await page.touchscreen.touchEnd();
   await waitFor(page, async () => (await dbg(page)).cameraMode === 'FREE_VIEW', 1000, 'FREE_VIEW');
   check('AIMING 时点击按钮 = 取消瞄准（触屏无 Esc）', true);
+  const readyIcon = (await dbg(page)).aimIcon;
+  check('取消瞄准后恢复待机图标和点击光晕', !readyIcon.active && readyIcon.hintVisible);
   check(
     '取消瞄准后 ◀/▶ 移动按钮恢复显示',
     (await dbg(page)).moveButtonsVisible === true

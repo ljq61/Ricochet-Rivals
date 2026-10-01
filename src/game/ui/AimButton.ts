@@ -24,8 +24,8 @@ export interface AimButtonDeps {
  * - 命中走 InputRouter zone（UI 最高优先级），不再用 Phaser
  *   setInteractive —— 一次手势生命周期只有一个 Owner
  * - AIMING 时点击 = 取消瞄准（触屏没有 Esc / 右键，按钮即取消入口）
- * - 圆形两态图片：READY 灰色 / AIMING 彩色，
- *   简化持枪角色与右上向左下的手指箭头；红方水平镜像，激活态加呼吸脉冲，
+ * - 圆形两态图片：READY 彩色银框 / AIMING 彩色金框，
+ *   简化持枪角色与右上向左下的手指箭头；红方水平镜像，待机外侧光晕提示点击，
  *   素材缺失回退程序绘制）
  * - 跟随 ViewportService 变化重定位（resize / 旋转 / DPR 变化）
  *
@@ -35,11 +35,12 @@ export interface AimButtonDeps {
 export class AimButton {
   private readonly deps: AimButtonDeps;
   private readonly container: Phaser.GameObjects.Container;
+  private readonly halo: Phaser.GameObjects.Graphics;
   private readonly bg: Phaser.GameObjects.Graphics;
   private readonly label: Phaser.GameObjects.Text;
   /** 真机反馈轮：触屏两态生成图标（缺失 = null → Graphics 回退） */
   private readonly icon: Phaser.GameObjects.Image | null;
-  /** AIMING 呼吸脉冲（icon alpha；离开激活 / destroy 时停） */
+  /** 可瞄准时的外侧光晕；激活、隐藏或 destroy 时停。 */
   private pulseTween: Phaser.Tweens.Tween | null = null;
   /** 游戏像素尺寸（物理像素口径，随 uiScale 变化重算） */
   private width: number;
@@ -57,8 +58,9 @@ export class AimButton {
     return { x: this.screenX, y: this.screenY, width: this.width, height: this.height };
   }
 
-  get visualState(): { flipped: boolean; active: boolean } {
-    return { flipped: this.icon?.flipX ?? false, active: this.icon?.texture.key === ART.aimActive };
+  get visualState(): { flipped: boolean; active: boolean; hintVisible: boolean; hintAlpha: number } {
+    return { flipped: this.icon?.flipX ?? false, active: this.icon?.texture.key === ART.aimActive,
+      hintVisible: this.halo.visible, hintAlpha: this.halo.alpha };
   }
 
   constructor(
@@ -67,6 +69,7 @@ export class AimButton {
   ) {
     this.deps = deps;
 
+    this.halo = scene.add.graphics().setVisible(false);
     this.bg = scene.add.graphics();
 
     this.label = scene.add
@@ -83,7 +86,7 @@ export class AimButton {
         : null;
 
     this.container = scene.add
-      .container(0, 0, [this.bg, this.label])
+      .container(0, 0, [this.halo, this.bg, this.label])
       .setScrollFactor(0)
       .setDepth(900);
     if (this.icon) {
@@ -112,7 +115,7 @@ export class AimButton {
 
   /**
    * 根据相机模式刷新按钮外观与文案（两态，Phase 17 真机反馈轮）。
-   * READY = 灰色（点击发起瞄准）；AIMING = 彩色 + 呼吸脉冲（点击取消）。
+   * READY = 彩色银框 + 外侧光晕（点击发起瞄准）；AIMING = 彩色金框（点击取消）。
    * interactable（Phase 14 联机）：本地玩家回合 = true；对手回合 = false
    * → 按钮隐藏且 zone 失活（对手回合 Move/Aim/Fire 全部禁用，
    * 相机 Free View 仍可用）。离线不传 = 恒可交互，行为不变。
@@ -129,6 +132,7 @@ export class AimButton {
     const aiming = mode === CameraMode.AIMING;
     const inFlow =
       mode === CameraMode.FREE_VIEW || mode === CameraMode.RETURN_HOME;
+    this.updateHint(!aiming && inFlow);
 
     if (this.deps.isTouchProfile) {
       this.drawTouchIcon(aiming, inFlow);
@@ -137,7 +141,7 @@ export class AimButton {
     this.drawDesktopButton(aiming, inFlow);
   }
 
-  /** 桌面态：金属药丸（MenuButton 同语言），灰色待机 / 彩色激活。 */
+  /** 桌面态：金属药丸（MenuButton 同语言），银色待机 / 金色激活。 */
   private drawDesktopButton(aiming: boolean, inFlow: boolean): void {
     const ui = this.deps.viewport.current.uiScale;
     const { width, height } = this;
@@ -166,7 +170,7 @@ export class AimButton {
       radius
     );
     // 顶高光线 + 四角铆钉（与菜单金属按钮同款）
-    this.bg.lineStyle(2 * ui, 0xffe19a, 0.55);
+    this.bg.lineStyle(2 * ui, aiming ? 0xffe19a : 0xd5dce3, 0.55);
     this.bg.lineBetween(
       -width / 2 + 10 * ui,
       -height / 2 + 7 * ui,
@@ -183,7 +187,7 @@ export class AimButton {
         );
       }
     }
-    this.bg.lineStyle(2 * ui, active ? 0xffe19a : 0xb4b6ad, 1);
+    this.bg.lineStyle(2 * ui, aiming ? 0xffe19a : 0xd5dce3, 1);
     this.bg.strokeRoundedRect(-width / 2, -height / 2, width, height, radius);
 
     this.container.setAlpha(inFlow || aiming ? 1 : 0.5);
@@ -191,8 +195,8 @@ export class AimButton {
 
   /**
    * 触屏态：生成图标两态（真机反馈轮）——
-   * READY = 灰色圆形操作示意图（点击发起瞄准）；
-   * AIMING = 彩色操作示意图 + 呼吸脉冲（点击取消）。
+   * READY = 彩色银框操作示意图 + 外侧光晕（点击发起瞄准）；
+   * AIMING = 彩色金框操作示意图，光晕消失（点击取消）。
    * 图标缺失时回退程序绘制（金属盘 + 准星，无斜杠禁止语义）。
    */
   private drawTouchIcon(aiming: boolean, inFlow: boolean): void {
@@ -205,11 +209,6 @@ export class AimButton {
       this.bg.clear();
       this.updateIcon(aiming);
       this.container.setAlpha(alpha);
-      if (aiming) {
-        this.startPulse();
-      } else {
-        this.stopPulse();
-      }
       return;
     }
     this.drawTouchFallback(aiming, inFlow, alpha);
@@ -221,14 +220,35 @@ export class AimButton {
     this.icon.setTexture(key, 'button');
   }
 
-  /** 激活态呼吸脉冲：图标 alpha 1 ↔ 0.7（600ms 往复）—— 远处一眼可辨 */
+  /** 提示只绘在按钮外侧，不改变图案或边框的透明度。 */
+  private updateHint(show: boolean): void {
+    if (!show) {
+      this.stopPulse();
+      return;
+    }
+    const ui = this.deps.viewport.current.uiScale;
+    this.halo.clear();
+    for (const [thickness, alpha] of [[16, 0.12], [10, 0.2], [4, 0.5]] as const) {
+      this.halo.lineStyle(thickness * ui, 0xd4edff, alpha);
+      if (this.deps.isTouchProfile) {
+        this.halo.strokeCircle(0, 0, this.width / 2 + 3 * ui);
+      } else {
+        this.halo.strokeRoundedRect(-this.width / 2 - 3 * ui, -this.height / 2 - 3 * ui,
+          this.width + 6 * ui, this.height + 6 * ui, 7 * ui);
+      }
+    }
+    this.halo.setVisible(true);
+    this.startPulse();
+  }
+
+  /** 待机外侧光晕 alpha 0.25 ↔ 1，图标始终不闪烁。 */
   private startPulse(): void {
     if (this.pulseTween !== null) {
       return;
     }
     this.pulseTween = this.scene.tweens.add({
-      targets: this.icon,
-      alpha: { from: 1, to: 0.7 },
+      targets: this.halo,
+      alpha: { from: 0.25, to: 1 },
       duration: 600,
       yoyo: true,
       repeat: -1,
@@ -239,7 +259,7 @@ export class AimButton {
   private stopPulse(): void {
     this.pulseTween?.stop();
     this.pulseTween = null;
-    this.icon?.setAlpha(1);
+    this.halo.setVisible(false).setAlpha(1);
   }
 
   /** Graphics 回退：金属盘 + 准星刻线（灰=可瞄准 / 金=瞄准中） */
