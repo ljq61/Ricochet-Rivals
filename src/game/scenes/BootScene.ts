@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { MainMenuScene } from './MainMenuScene';
 import { ART, ART_FILES, AIM_POSE_FILES, SHEET_GRID, WALK_ART, DOCK_ART_FRAME, CONTROL_ART_FRAMES } from '../config/ArtAssets';
 import { SFX_FILES } from '../audio/SfxBus';
+import { updateStartupLoading } from '../ui/StartupLoadingScreen';
 
 /**
  * Load first-look art once. Consumers retain playable fallback visuals.
@@ -14,11 +15,10 @@ export class BootScene extends Phaser.Scene {
   }
 
   preload(): void {
-    const label = this.add.text(32, 32, 'LOADING HARBOR…', {
-      fontFamily: 'monospace', fontSize: '22px', color: '#ffe19a',
-    });
-    this.load.on('progress', (progress: number) => {
-      label.setText(`LOADING HARBOR… ${Math.round(progress * 100)}%`);
+    updateStartupLoading(0);
+    this.load.on('progress', updateStartupLoading);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.load.off('progress', updateStartupLoading);
     });
     for (const [key, file] of ART_FILES) {
       this.load.image(key, `assets/art/${file}`);

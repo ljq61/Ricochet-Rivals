@@ -11,6 +11,8 @@ Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
 战斗设置美术与主菜单统一：齿轮使用与移动按钮配套的透明手绘钢铜素材，弹窗使用铆钉框、金/钢按钮底纹和机械声音滑槽，见[素材、生成提示词与验证记录](docs/ArtDesign/BATTLE_SETTINGS_REFINEMENT_2026-10-01.md)。
 
+程序启动即显示新生成的海港双角色插画、现有标志和实际资源进度；主菜单首次渲染后收起，手机横竖屏适配。素材与完整提示词见[启动加载图记录](docs/ArtDesign/STARTUP_LOADING_2026-10-01.md)。
+
 ## 在线试玩与部署状态
 
 - 游戏：[GitHub Pages](https://ljq61.github.io/Ricochet-Rivals/)。手机建议横屏，发布更新后刷新页面。
@@ -25,6 +27,8 @@ Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 - Pages 构建使用公网信令地址，仓库 Actions 变量 `VITE_SIGNALING_URL` 可覆盖；改地址后需重新发布。本地开发默认 `ws://127.0.0.1:8787`。详见 [信令服务配置](server/signaling/README.md)。
 
 ## 最近验证记录
+
+2026-10-01 启动加载图：**788 单测 / 66 文件**、类型检查与构建通过；加载浏览器 **59/59**、设置回归 **74/74**。覆盖代码下载前首屏、待加载资源时真实进度、首次菜单绘制后退场、暖缓存、缺图/缺 Logo、横竖屏旋转，以及退出返回菜单不重新显示加载层。已检查浏览器截图和生产子路径，独立审查无剩余问题；iPhone 真机观感待试玩。专项命令 `npm run e2e:loading`，先 build。
 
 2026-10-01 设置美术打磨：客户端 **784 单测 / 65 文件**、类型检查与构建通过；设置手机/小屏/桌面 **74/74**、真实 WebRTC 双端 **33/33**。对照主菜单检查素材与文字颜色，额外验证安全区、568×260 / 568×240 的弹窗滚动和 Pages 素材子路径；独立审查无剩余问题。新齿轮为内置生图素材，交付 256×256 透明 PNG 约117 KiB；声音、二次确认和联机清理行为保持。iPhone 真机观感及扬声器仍需试玩。
 
@@ -66,7 +70,7 @@ npm install --include=dev   # 本机 npm 全局 omit=dev，必须带 --include=d
 
 npm run dev        # 启动开发服务器
 npm run typecheck  # tsc --noEmit（strict）
-npm run test       # vitest run（663 项；不含信令服务器测试）
+npm run test       # vitest run（788 项；不含信令服务器测试）
 npm run build      # 类型检查 + 生产构建
 npm run preview    # 预览构建产物
 npm run e2e        # 全量 E2E（desktop / mobile / sp / online 配对 / online 对战 / online-room 房间码）
@@ -147,7 +151,7 @@ src/
     random/               # SeededRandom（Mulberry32）
     ui/                   # AimButton / AimRenderer / TurnBanner / PlayerHud / DebugOverlay
     utils/                # MathUtils
-tests/                    # Vitest 纯逻辑测试（57 文件 663 项，含双端 loopback 集成、
+tests/                    # Vitest 纯逻辑测试（66 文件 788 项，含双端 loopback 集成、
                           #   Phase 15 desync 恢复全链与 Phase 16 Rematch 握手）
 server/signaling/         # 自托管 WebSocket 信令服务器（SG-2：房间管理 + SDP/ICE 转发
                           #   + coturn REST 凭据下发；独立 workspace，41 项单测）

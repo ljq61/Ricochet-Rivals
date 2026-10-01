@@ -3,13 +3,16 @@ import { createPhaserGameConfig } from './game/config/PhaserGameConfig';
 import { OrientationGate } from './game/platform/OrientationGate';
 import { ONLINE_SESSION_MANAGER_KEY, OnlineSessionManager } from './game/network/OnlineSession';
 import { AudioUnlock } from './game/audio/AudioUnlock';
+import { removeStartupLoading, updateStartupLoading } from './game/ui/StartupLoadingScreen';
 
 const root = document.getElementById('game-root');
 if (!root) {
   throw new Error('#game-root element not found in index.html');
 }
 
+updateStartupLoading(0, '正在唤醒海港…');
 const game = new Phaser.Game(createPhaserGameConfig(root));
+game.events.once(Phaser.Core.Events.DESTROY, removeStartupLoading);
 const audioUnlock = new AudioUnlock(game.sound);
 game.events.once(Phaser.Core.Events.DESTROY, () => audioUnlock.destroy());
 

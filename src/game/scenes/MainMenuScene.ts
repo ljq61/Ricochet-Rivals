@@ -10,6 +10,7 @@ import { getUserSettings, toggleSound } from '../settings/UserSettings';
 import { MenuButton, type ButtonRect } from '../ui/MenuButton';
 import { BattleScene } from './BattleScene';
 import { OnlineConnectionScene } from './OnlineConnectionScene';
+import { finishStartupLoadingAfterRender, isStartupLoadingVisible } from '../ui/StartupLoadingScreen';
 
 const TITLE_FONT = 44;
 const MODE_GAP = 10;
@@ -62,7 +63,8 @@ export class MainMenuScene extends Phaser.Scene {
     // 菜单按钮命中走 InputRouter zone（与 Battle HUD 同管线；
     // Phaser GameObject interactive 在本项目 Scale 配置下指针坐标失效）
     this.inputRouter = new InputRouter(this);
-    this.cameras.main.fadeIn(220, 0, 0, 0);
+    // The startup illustration hands directly to a painted menu, avoiding a black fade frame.
+    if (!isStartupLoadingVisible()) this.cameras.main.fadeIn(220, 0, 0, 0);
     this.artwork = new MenuArtwork(this);
 
     // 真机反馈轮：生成 Logo（concept_UI 标题页风格）替代文字标题；
@@ -162,6 +164,7 @@ export class MainMenuScene extends Phaser.Scene {
     this.installDebugHandles();
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
+    finishStartupLoadingAfterRender(this);
   }
 
   // ---- 动作 --------------------------------------------------------------

@@ -13,6 +13,7 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>Ricochet Rivals</title>
+    <link rel="preload" as="image" href="%BASE_URL%assets/art/loading-harbor.jpg" fetchpriority="high" />
     <style>
       html,
       body {
@@ -46,6 +47,97 @@
         /* 长按不弹出系统 callout（移动端长按菜单） */
         -webkit-touch-callout: none;
         -webkit-tap-highlight-color: transparent;
+      }
+      /* Present before the application module downloads; loader progress is filled by BootScene. */
+      #startup-loading {
+        position: fixed;
+        inset: 0;
+        z-index: 120;
+        overflow: hidden;
+        background: radial-gradient(ellipse at 50% 42%, #245974, #0b2035 72%);
+        color: #f3e8cb;
+        font-family: system-ui, sans-serif;
+        touch-action: none;
+      }
+      #startup-loading [hidden] { display: none; }
+      #startup-loading-art {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: center;
+      }
+      #startup-loading::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(#06142a44, transparent 35%, #04152922 65%, #031023eb);
+        pointer-events: none;
+      }
+      .startup-brand {
+        position: absolute;
+        z-index: 1;
+        top: max(12px, env(safe-area-inset-top));
+        left: max(18px, env(safe-area-inset-left));
+        right: max(18px, env(safe-area-inset-right));
+        text-align: center;
+      }
+      .startup-logo {
+        display: block;
+        width: clamp(190px, 28vw, 380px);
+        max-width: 80%;
+        max-height: 28vh;
+        object-fit: contain;
+        margin: auto;
+        filter: drop-shadow(0 4px 4px #07142399);
+      }
+      #startup-title { margin: 12px 0; font: 900 clamp(25px, 4vw, 42px) Georgia, serif; color: #ffe1a0; text-shadow: 0 3px #0c1e31; }
+      .startup-console {
+        position: absolute;
+        z-index: 1;
+        bottom: max(18px, env(safe-area-inset-bottom));
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(360px, calc(100% - max(24px, env(safe-area-inset-left)) - max(24px, env(safe-area-inset-right))));
+        padding: 12px 18px 13px;
+        background: linear-gradient(#182d3fe8, #071729ee);
+        border: 2px solid #9fa6a0;
+        outline: 2px solid #081426;
+        box-shadow: inset 0 0 0 3px #243b50, 0 4px 12px #0008;
+        clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px);
+        box-sizing: border-box;
+      }
+      #startup-loading-status { margin: 0 0 9px; font-size: 13px; font-weight: 700; text-align: center; letter-spacing: 1px; text-shadow: 0 1px #000; }
+      #startup-loading-progress { height: 12px; overflow: hidden; border: 1px solid #74643e; background: #081321; box-shadow: inset 0 2px 2px #000; }
+      #startup-loading-fill { height: 100%; width: 0%; background: repeating-linear-gradient(90deg, #fff1 0 1px, transparent 1px 8px), linear-gradient(#ffe08f, #c08b36); box-shadow: inset 0 2px #fff4; }
+      @media (orientation: portrait) {
+        #startup-loading::before {
+          content: '';
+          position: absolute;
+          inset: -20px;
+          background: url('/assets/art/loading-harbor.jpg') center / cover no-repeat;
+          filter: blur(18px) brightness(.3);
+          transform: scale(1.08);
+        }
+        #startup-loading-art {
+          top: 50%;
+          bottom: auto;
+          height: auto;
+          object-fit: contain;
+          transform: translateY(-50%);
+          -webkit-mask-image: linear-gradient(transparent, #000 9%, #000 91%, transparent);
+          mask-image: linear-gradient(transparent, #000 9%, #000 91%, transparent);
+        }
+        #startup-loading::after { background: linear-gradient(#071b310d, transparent 65%, #03102399); }
+        .startup-brand { top: max(5vh, env(safe-area-inset-top)); }
+        .startup-logo { width: min(300px, 78vw); max-height: 19vh; }
+        .startup-console { bottom: max(11vh, env(safe-area-inset-bottom)); }
+      }
+      @media (max-height: 360px) and (orientation: landscape) {
+        .startup-logo { max-height: 25vh; }
+        .startup-console { bottom: max(12px, env(safe-area-inset-bottom)); padding: 9px 16px 10px; }
+        #startup-loading-status { margin-bottom: 6px; }
       }
       /* 竖屏门禁：触屏设备竖屏时提示旋转（OrientationGate 切换 is-visible） */
       #rotate-overlay {
@@ -83,6 +175,19 @@
   </head>
   <body>
     <div id="game-root"></div>
+    <div id="startup-loading" aria-label="Ricochet Rivals 正在加载">
+      <img id="startup-loading-art" src="%BASE_URL%assets/art/loading-harbor.jpg" alt="" fetchpriority="high" onerror="this.hidden=true" />
+      <div class="startup-brand">
+        <h1 id="startup-title" hidden>RICOCHET RIVALS</h1>
+        <img class="startup-logo" src="%BASE_URL%assets/art/logo.png" alt="Ricochet Rivals" onerror="this.hidden=true;document.getElementById('startup-title').hidden=false" />
+      </div>
+      <div class="startup-console">
+        <p id="startup-loading-status" role="status" aria-live="polite">正在准备出航… 0%</p>
+        <div id="startup-loading-progress" role="progressbar" aria-label="游戏资源加载进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="startup-loading-fill"></div>
+        </div>
+      </div>
+    </div>
     <div id="rotate-overlay">
       <div class="rotate-icon">📱</div>
       <div>请将设备横过来游玩</div>
