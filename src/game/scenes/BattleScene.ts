@@ -1139,6 +1139,7 @@ export class BattleScene extends Phaser.Scene {
         const display = self.laserDisplayPlayers();
         return { ...self.state.octopus, active: self.octopusTentacle.isActive,
           attackPhase: self.octopusTentacle.attackPhase,
+          deathProgress: self.octopusTentacle.deathProgress,
           visual: self.octopusTentacle.laserVisual,
           pendingHit: self.octopusTentacle.hasPendingLaserHit(self.state),
           bodyCount: (self.matter.world?.getAllBodies() ?? []).filter((body) => body.label === 'octopus-tentacle').length,

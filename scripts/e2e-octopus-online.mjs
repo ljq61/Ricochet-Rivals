@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer-core';
+import { installRoarProbe, roarStarts } from './e2e-audio-probe.mjs';
 
 const WIDTH = 844, HEIGHT = 390;
 const browserPath = [
@@ -79,6 +80,7 @@ async function trace(page) {
       const hazard = d.octopusState, visual = hazard.visual;
       window.__RR_ONLINE_OCTOPUS_TRACE__.push({
         t: performance.now(), turn: d.turnId, phase: hazard.attackPhase,
+        deathProgress: hazard.deathProgress, bodyCount: hazard.bodyCount,
         turnPhase: d.phase, cameraMode: d.cameraMode,
         cameraScrollX: d.cameraScrollX, cameraZoom: d.cameraZoom, uiScale: d.uiScale,
         pending: hazard.pendingHit, target: hazard.lastAttackTarget,
@@ -234,7 +236,9 @@ async function pair(host, guest) {
 async function run(pages) {
   const [host, guest] = pages;
   await pair(host, guest);
-  await setBoth(pages, 10, 6, { hp: 10, spawnTurnId: 1, lastResolvedTurnId: 5,
+  check('both new matches begin with an unspawned twenty-HP tentacle', (await Promise.all(pages.map(debug)))
+    .every((d) => d.octopusState.hp === 20 && d.octopusState.spawnTurnId === null));
+  await setBoth(pages, 10, 6, { hp: 20, spawnTurnId: 1, lastResolvedTurnId: 5,
     lastAttackTurnId: null, lastAttackTarget: null });
   await pause(1600); // The emergence animation is presentation only.
   let [h, g] = await laserRound(pages, host, 19, 0);
@@ -247,8 +251,23 @@ async function run(pages) {
   const history = { hp: 2, spawnTurnId: 1, lastResolvedTurnId: h.turnId - 1,
     lastAttackTurnId: h.octopusState.lastAttackTurnId, lastAttackTarget: h.octopusState.lastAttackTarget };
   await setBoth(pages, null, h.turnId, history);
+  for (const page of pages) await trace(page);
   let turn = await fireTouch(host, 2500);
+  await Promise.all(pages.map((page) => waitFor(page, (d) =>
+    d.octopusState.attackPhase === 'dissolving' && d.octopusState.deathProgress >= 0.3, 'peer dissolves')));
+  await host.screenshot({ path: '/private/tmp/rr-octopus-death-online.png' });
   [h, g] = await nextTurn(pages, turn);
+  const deathTraces = await Promise.all(pages.map(stopTrace));
+  for (const [i, peer] of ['Host', 'Guest'].entries()) {
+    const samples = deathTraces[i].filter((s) => s.phase === 'dissolving');
+    check(`${peer}: collision removed immediately and dissolution advances gradually`, samples.length >= 10 &&
+      samples[0].deathProgress < 0.15 && samples.at(-1).deathProgress > 0.85 &&
+      samples.every((s, j) => s.bodyCount === 0 && (j === 0 || s.deathProgress >= samples[j - 1].deathProgress)));
+    check(`${peer}: turn and camera transition wait for the death animation`, samples.every((s) =>
+      s.turn === turn && s.turnPhase !== 'ACTION' && s.cameraMode !== 'TURN_TRANSITION'));
+    const roar = await roarStarts(pages[i]);
+    check(`${peer}: actual monster roar plays once`, roar.length === 1 && roar[0].state === 'running' && roar[0].duration > 1);
+  }
   sameBoundary(h, g, 'tentacle destroyed');
   check('normal center hit removes 2 HP, tentacle art and Matter obstacle on both peers', [h, g].every((d) =>
     d.octopusState.hp === 0 && !d.octopusState.active && d.octopusState.bodyCount === 0));
@@ -274,8 +293,11 @@ async function run(pages) {
     g.octopusState.lastAttackTurnId === history.lastAttackTurnId &&
     g.octopusState.attackPhase === 'idle' && !g.octopusState.pendingHit);
 
+  check('state recovery never replays the death roar on either peer',
+    (await Promise.all(pages.map(roarStarts))).every((starts) => starts.length === 1));
+
   // Test the actual final laser animation/confirmation path after recovery.
-  await setBoth(pages, 1, h.turnId, { hp: 10, spawnTurnId: 1, lastResolvedTurnId: h.turnId - 1,
+  await setBoth(pages, 1, h.turnId, { hp: 20, spawnTurnId: 1, lastResolvedTurnId: h.turnId - 1,
     lastAttackTurnId: history.lastAttackTurnId, lastAttackTarget: history.lastAttackTarget });
   await pause(1600);
   for (const page of pages) await trace(page);
@@ -323,6 +345,7 @@ async function main() {
       page.on('pageerror', (error) => errors.push(`${role}: ${error.message}`));
       page.on('console', (message) => { if (message.type() === 'error') console.error(`[${role}] ${message.text().slice(0, 300)}`); });
       await page.setViewport({ width: WIDTH, height: HEIGHT, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+      await installRoarProbe(page);
       await page.goto(url.toString(), { waitUntil: 'load' });
     }
     await run(pages);

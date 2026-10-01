@@ -10,7 +10,10 @@ vi.mock('phaser', () => ({ default: { Math: { Clamp: (v: number, min: number, ma
 
 /** A small rendering adapter: visual drawing calls are inert, lifetime is observable. */
 function fakeObject() {
-  const object = { name: '', destroyed: false, destroy: vi.fn(() => { object.destroyed = true; }) };
+  const object = { name: '', destroyed: false, x: 0, y: 0, rotation: 0, alpha: 1,
+    frame: { width: 512, height: 512 }, cropCalls: [] as unknown[][],
+    roundedRectCalls: [] as number[][],
+    destroy: vi.fn(() => { object.destroyed = true; }) };
   const methods = new Map<string, unknown>();
   const proxy = new Proxy(object, {
     get(target, key) {
@@ -18,6 +21,9 @@ function fakeObject() {
       if (typeof key !== 'string') return undefined;
       if (!methods.has(key)) methods.set(key, vi.fn((...args: unknown[]) => {
         if (key === 'setName') target.name = String(args[0]);
+        if (key === 'setAlpha') target.alpha = Number(args[0]);
+        if (key === 'setCrop') target.cropCalls.push(args);
+        if (key === 'fillRoundedRect') target.roundedRectCalls.push(args as number[]);
         return proxy;
       }));
       return methods.get(key);
@@ -27,7 +33,7 @@ function fakeObject() {
 }
 
 /** Deterministic linear tween clock; no browser or Phaser-global DOM is required. */
-function fixture() {
+function fixture(withSprite = false) {
   const objects: ReturnType<typeof fakeObject>[] = [];
   const bodies = new Set<object>();
   let now = 0;
@@ -43,10 +49,14 @@ function fixture() {
     props: { key: string; from: number; to: number }[]; stop: () => void }[] = [];
   const scene = {
     add: {
+      sprite: (x: number, y: number) => {
+        const obj = fakeObject(); obj.x = x; obj.y = y; objects.push(obj); return obj;
+      },
       graphics: () => { const obj = fakeObject(); objects.push(obj); return obj; },
       text: () => { const obj = fakeObject(); objects.push(obj); return obj; },
     },
-    textures: { exists: () => false },
+    textures: { exists: () => withSprite },
+    anims: { exists: () => true },
     // SfxBus 素材门禁放行；play 出口即断言目标（音效键名序列）
     cache: { audio: { exists: () => true } },
     sound: { play: vi.fn() },
@@ -111,7 +121,7 @@ function activeState() {
   const state = createInitialGameState({ matchId: 'tentacle-render', seed: 1 });
   state.turnId = 6;
   state.phase = TurnPhase.RESOLVE;
-  state.octopus = { hp: 10, spawnTurnId: 1, lastResolvedTurnId: 6,
+  state.octopus = { hp: GAME_CONFIG.octopus.maxHp, spawnTurnId: 1, lastResolvedTurnId: 6,
     lastAttackTurnId: null, lastAttackTarget: null };
   return state;
 }
@@ -164,6 +174,7 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     expect(tentacle.isActive).toBe(true);
     expect(bodies.size).toBe(1);
     expect(scene.matter.world?.remove).not.toHaveBeenCalled();
+    expect(scene.sound.play).not.toHaveBeenCalled();
     state.phase = TurnPhase.RESOLVE;
     tentacle.refresh(state);
     expect(tentacle.isActive).toBe(false);
@@ -171,6 +182,104 @@ describe('OctopusTentacle lifecycle and laser presentation', () => {
     expect(scene.matter.world?.remove).toHaveBeenCalledTimes(1);
     tentacle.refresh(state);
     expect(scene.matter.world?.remove).toHaveBeenCalledTimes(1);
+    expect(scene.sound.play).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps every HP segment inside the original health bar width', () => {
+    const { tentacle, objects } = fixture();
+    tentacle.restore(activeState());
+    const rects = objects.find((obj) => obj.name === 'octopus-health')!.roundedRectCalls.slice(1);
+    expect(rects).toHaveLength(GAME_CONFIG.octopus.maxHp);
+    expect(rects.every(([x, , width]) => x! >= -109 && width! > 0 && x! + width! <= 109.001)).toBe(true);
+  });
+
+  it.each([false, true])('defeat dissolves once and holds the turn until all visuals finish (sprite: %s)', async (withSprite) => {
+    const { scene, tentacle, tick, objects, bodies } = fixture(withSprite);
+    const state = activeState();
+    tentacle.restore(state);
+    tick(1500); // finish emergence before defeat
+    state.octopus.hp = 0;
+    tentacle.refresh(state);
+    let idle = false;
+    const wait = tentacle.whenIdle().then(() => { idle = true; });
+    expect(tentacle.isActive).toBe(false);
+    expect(tentacle.isAttacking).toBe(true);
+    expect(tentacle.attackPhase).toBe('dissolving');
+    expect(bodies.size).toBe(0);
+    expect(objects.some((obj) => obj.name === 'octopus-dissolve' && !obj.destroyed)).toBe(true);
+    expect(scene.sound.play).toHaveBeenCalledExactlyOnceWith(SFX.octopusDeath, expect.any(Object));
+    for (let frame = 0; frame < 5; frame++) tentacle.refresh(state);
+    tick(GAME_CONFIG.octopus.deathDurationMs / 2);
+    await Promise.resolve();
+    expect(idle).toBe(false);
+    expect(tentacle.deathProgress).toBeCloseTo(0.5);
+    if (withSprite) {
+      const sprite = objects.find((obj) => obj.name === 'octopus-visual')!;
+      expect(sprite.cropCalls.at(-1)).toEqual([0, 256, 512, 256]);
+    }
+    tick(GAME_CONFIG.octopus.deathDurationMs / 2 - 1);
+    expect(tentacle.isAttacking).toBe(true);
+    tick(1);
+    await wait;
+    expect(idle).toBe(true);
+    expect(tentacle.isAttacking).toBe(false);
+    expect(tentacle.deathProgress).toBe(1);
+    expect(objects.every((obj) => obj.destroyed)).toBe(true);
+    tentacle.refresh(state);
+    tick(5000);
+    expect(scene.sound.play).toHaveBeenCalledTimes(1);
+    expect(bodies.size).toBe(0);
+  });
+
+  it.each(['dead', 'alive', 'destroy'] as const)('cancels defeat on %s recovery/cleanup without replay or ghost visuals', async (kind) => {
+    const { scene, tentacle, tick, objects, bodies } = fixture(true);
+    const state = activeState();
+    tentacle.restore(state);
+    tick(1500);
+    state.octopus.hp = 0;
+    tentacle.refresh(state);
+    const oldIdle = tentacle.whenIdle();
+    tick(200);
+    const oldObjects = [...objects];
+    if (kind === 'destroy') {
+      scene.matter.world = null; // Phaser may have already shut down its Matter world.
+      tentacle.destroy();
+    }
+    else {
+      if (kind === 'alive') state.octopus.hp = GAME_CONFIG.octopus.maxHp;
+      tentacle.restore(state);
+    }
+    await oldIdle;
+    tick(5000);
+    expect(oldObjects.every((obj) => obj.destroyed)).toBe(true);
+    expect(tentacle.isAttacking).toBe(false);
+    expect(tentacle.deathProgress).toBe(0);
+    expect(tentacle.isActive).toBe(kind === 'alive');
+    expect(bodies.size).toBe(kind === 'alive' ? 1 : 0);
+    expect(scene.sound.play).toHaveBeenCalledTimes(1);
+    if (kind === 'dead') {
+      tentacle.refresh(state);
+      expect(tentacle.hasPendingLaserHit(state)).toBe(false);
+      expect(scene.sound.play).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each([false, true])('restoring an already defeated snapshot stays silent with a prior visual: %s', async (priorVisual) => {
+    const { scene, tentacle, tick, objects, hit } = fixture();
+    const state = activeState();
+    if (priorVisual) tentacle.restore(state);
+    state.octopus.hp = 0;
+    state.octopus.lastAttackTurnId = 6;
+    state.octopus.lastAttackTarget = 'P2';
+    tentacle.restore(state);
+    tentacle.refresh(state);
+    await tentacle.whenIdle();
+    tick(5000);
+    expect(tentacle.isActive).toBe(false);
+    expect(tentacle.hasPendingLaserHit(state)).toBe(false);
+    expect(objects.every((obj) => obj.destroyed)).toBe(true);
+    expect(scene.sound.play).not.toHaveBeenCalled();
+    expect(hit).not.toHaveBeenCalled();
   });
 
   it.each(['P1', 'P2'] as const)('focuses before charging, holds, then continuously sweeps to %s and hits only at the endpoint', async (target) => {

@@ -3,7 +3,8 @@ import { getUserSettings } from '../settings/UserSettings';
 
 /**
  * Phase 17 Juice —— 音效 key / 素材清单（BootScene 预加载）。
- * 素材由 generate_sound_effect 生成（复古街机卡通风，与像素海港美术同调），
+ * 既有素材由 generate_sound_effect 生成，章鱼吼叫由低频谐波/噪声程序合成，
+ * 保持复古街机卡通风，与像素海港美术同调；
  * 位于 public/assets/sfx/。
  */
 export const SFX = {
@@ -20,6 +21,8 @@ export const SFX = {
   laserCharge: 'sfx-laser-charge',
   /** 章鱼激光：光束扫射（sweeping 阶段进入时） */
   laserSweep: 'sfx-laser-sweep',
+  /** 章鱼被击败：低沉怪兽吼叫，与消融开始同步。 */
+  octopusDeath: 'sfx-octopus-death',
 } as const;
 
 /** 音效缓存 key（= SFX 的值口径，'sfx-launch' …） */
@@ -36,6 +39,7 @@ export const SFX_FILES = [
   [SFX.click, 'click.mp3'],
   [SFX.laserCharge, 'laser-charge.mp3'],
   [SFX.laserSweep, 'laser-sweep.mp3'],
+  [SFX.octopusDeath, 'octopus-death.mp3'],
 ] as const;
 
 /** 首版音量基线（手感调参随试玩反馈迭代） */
@@ -50,6 +54,7 @@ const SFX_VOLUME: Record<SfxKey, number> = {
   [SFX.click]: 0.4,
   [SFX.laserCharge]: 0.5,
   [SFX.laserSweep]: 0.55,
+  [SFX.octopusDeath]: 0.65,
 };
 
 /**

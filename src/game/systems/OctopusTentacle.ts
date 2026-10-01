@@ -26,14 +26,18 @@ export class OctopusTentacle {
   private body: MatterJS.BodyType | null = null;
   private objects: Phaser.GameObjects.GameObject[] = [];
   private sprite: Phaser.GameObjects.Sprite | null = null;
+  private fallback: Phaser.GameObjects.Graphics | null = null;
   private healthBar: Phaser.GameObjects.Graphics | null = null;
+  private deathTween: Phaser.Tweens.Tween | null = null;
+  private finishDeath: (() => void) | null = null;
+  private dissolveProgress = 0;
   private lastShownAttackTurn = 0;
   private laserHit = true;
   private laserTween: Phaser.Tweens.Tween | null = null;
   private finishLaser: ((keepLastFrame?: boolean) => void) | null = null;
   private lingeringFx: Phaser.GameObjects.Graphics | null = null;
   private idlePromise: Promise<void> = Promise.resolve();
-  private phase: 'idle' | 'focusing' | 'charging' | 'holding' | 'sweeping' = 'idle';
+  private phase: 'idle' | 'focusing' | 'charging' | 'holding' | 'sweeping' | 'dissolving' = 'idle';
   /** 蓄力/扫射音效每段攻击只触发一次（tween 逐帧推进，相位切换按标志守卫） */
   private chargeSoundPlayed = false;
   private sweepSoundPlayed = false;
@@ -52,12 +56,14 @@ export class OctopusTentacle {
   get isActive(): boolean { return this.active; }
   get attackPhase(): string { return this.phase; }
   get isAttacking(): boolean { return this.phase !== 'idle'; }
+  get deathProgress(): number { return this.dissolveProgress; }
   get laserVisual(): LaserVisual {
     return { ...this.visual, tip: { ...this.visual.tip },
       end: this.visual.end === null ? null : { ...this.visual.end } };
   }
 
   hasPendingLaserHit(state: GameState): boolean {
+    if (!isOctopusActive(state.octopus)) return false;
     const turn = state.octopus.lastAttackTurnId;
     return turn !== null && (turn > this.lastShownAttackTurn || !this.laserHit);
   }
@@ -79,43 +85,128 @@ export class OctopusTentacle {
   /** Recovery shows the restored state without replaying historical attacks. */
   restore(state: GameState): void {
     this.cancelLaser();
+    this.cancelDeath();
     this.lastShownAttackTurn = state.octopus.lastAttackTurnId ?? 0;
-    this.syncObstacle(state);
+    this.syncObstacle(state, false);
   }
 
   destroy(): void {
     this.cancelLaser();
+    this.cancelDeath();
     this.removeObstacle();
   }
 
-  private syncObstacle(state: GameState): void {
+  private syncObstacle(state: GameState, animateDeath = true): void {
     if (!isOctopusActive(state.octopus)) {
-      this.removeObstacle();
+      if (animateDeath && this.active && state.octopus.hp === 0) this.playDeath();
+      else if (this.phase !== 'dissolving') this.removeObstacle();
       return;
     }
+    if (this.phase === 'dissolving') this.cancelDeath();
     if (!this.active) this.activate();
     const cfg = GAME_CONFIG.octopus;
     const bar = this.healthBar!;
     bar.clear().fillStyle(0x10172c, 0.9).fillRoundedRect(-117, -14, 234, 28, 10);
+    const gap = 3;
+    const segmentWidth = (218 - (cfg.maxHp - 1) * gap) / cfg.maxHp;
     for (let i = 0; i < cfg.maxHp; i++) {
       bar.fillStyle(i < state.octopus.hp ? 0xe970cf : 0x4a405d, 1)
-        .fillRoundedRect(-109 + i * 22, -7, 19, 14, 3);
+        .fillRoundedRect(-109 + i * (segmentWidth + gap), -7, segmentWidth, 14, 2);
     }
   }
 
   private removeObstacle(): void {
-    // Matter's SHUTDOWN listener may already have cleared the scene world.
-    const world = this.scene.matter?.world;
-    if (this.body !== null && world) world.remove(this.body);
-    this.body = null;
+    this.removeCollider();
     for (const object of this.objects) {
       this.scene.tweens.killTweensOf(object);
       object.destroy();
     }
     this.objects = [];
     this.sprite = null;
+    this.fallback = null;
     this.healthBar = null;
     this.active = false;
+  }
+
+  private removeCollider(): void {
+    // Matter's SHUTDOWN listener may already have cleared the scene world.
+    const world = this.scene.matter?.world;
+    if (this.body !== null && world) world.remove(this.body);
+    this.body = null;
+  }
+
+  /** Presentation only: collision disappears immediately, ash completes before the next turn. */
+  private playDeath(): void {
+    this.cancelLaser();
+    this.removeCollider();
+    this.active = false;
+    this.phase = 'dissolving';
+    this.dissolveProgress = 0;
+    const cfg = GAME_CONFIG.octopus;
+    const sprite = this.sprite;
+    for (const object of this.objects) this.scene.tweens.killTweensOf(object);
+    sprite?.stop();
+    this.healthBar?.setAlpha(0);
+    const visible = sprite === null ? 1 : Phaser.Math.Clamp(
+      (cfg.baseY - sprite.y + cfg.height) / cfg.height, 0, 1);
+    const top = (sprite?.y ?? cfg.baseY) - cfg.height;
+    const fx = this.scene.add.graphics().setDepth(-4).setName('octopus-dissolve');
+    this.objects.push(fx);
+    this.sfx.play(SFX.octopusDeath);
+    const progress = { value: 0 };
+    this.idlePromise = new Promise<void>((resolve) => {
+      this.finishDeath = () => {
+        this.removeObstacle();
+        this.phase = 'idle';
+        resolve();
+      };
+    });
+    const draw = (): void => {
+      const q = progress.value;
+      this.dissolveProgress = q;
+      const edge = top + cfg.height * visible * q;
+      if (sprite !== null) {
+        sprite.setCrop(0, sprite.frame.height * visible * q,
+          sprite.frame.width, sprite.frame.height * visible * (1 - q));
+        sprite.setTint(0xf6b5ef).setAlpha(1 - q * 0.35);
+      } else {
+        this.fallback?.clear().lineStyle(cfg.width * cfg.collisionWidthRatio, 0xa766b8, 1 - q)
+          .lineBetween(cfg.x, cfg.baseY, cfg.x, edge);
+      }
+      // Existing wake/label fade away; only the tentacle itself is cropped top to bottom.
+      for (const object of this.objects) {
+        if (object !== sprite && object !== this.fallback && object !== fx && object !== this.healthBar) {
+          (object as Phaser.GameObjects.Graphics).setAlpha(1 - q);
+        }
+      }
+      fx.clear();
+      // A ragged glowing edge and upward drifting ash hide the crop seam without a mask pipeline.
+      for (let i = 0; i < 42; i++) {
+        const x = cfg.x + Math.sin(i * 2.4) * cfg.width * 0.24;
+        const drift = (q * 3 + i * 0.137) % 1;
+        const y = edge - drift * 110 + Math.sin(i * 1.7 + q * 18) * 12;
+        const alpha = (1 - drift) * Math.min(1, (1 - q) * 6);
+        fx.fillStyle(i % 3 === 0 ? 0xffe3f9 : 0xdb83ef, alpha)
+          .fillCircle(x + drift * Math.sin(i) * 38, y, 2 + (i % 4));
+      }
+      fx.lineStyle(9, 0xef8bff, (1 - q) * 0.25)
+        .lineBetween(cfg.x - cfg.width * 0.2, edge, cfg.x + cfg.width * 0.2, edge);
+    };
+    draw();
+    this.deathTween = this.scene.tweens.add({ targets: progress, value: 1,
+      duration: cfg.deathDurationMs, onUpdate: draw, onComplete: () => {
+        this.deathTween = null;
+        this.finishDeath?.();
+        this.finishDeath = null;
+      } });
+  }
+
+  private cancelDeath(): void {
+    this.deathTween?.stop();
+    this.deathTween = null;
+    this.finishDeath?.();
+    this.finishDeath = null;
+    this.dissolveProgress = 0;
   }
 
   private cancelLaser(): void {
@@ -269,7 +360,7 @@ export class OctopusTentacle {
       this.objects.push(sprite);
     } else {
       // Asset failure still needs a visible obstacle on both peers.
-      const fallback = this.scene.add.graphics().setDepth(-6);
+      const fallback = this.fallback = this.scene.add.graphics().setDepth(-6);
       fallback.lineStyle(cfg.width * cfg.collisionWidthRatio, 0x894b9b, 1)
         .lineBetween(cfg.x, cfg.baseY, cfg.x, cfg.baseY - cfg.height);
       fallback.lineStyle(18, 0xd18cc1, 1)

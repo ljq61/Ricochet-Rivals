@@ -30,14 +30,14 @@ function tentacleImpact(turnId: number, distance = 0): ProjectileImpact {
 }
 
 describe('OctopusHazardSystem', () => {
-  it('initial states have independent ten-HP tentacles, not yet spawned', () => {
+  it('initial states have independent twenty-HP tentacles, not yet spawned', () => {
     const a = createOctopusState();
     const b = createOctopusState();
-    expect(a).toEqual({ hp: 10, spawnTurnId: null, lastResolvedTurnId: 0,
+    expect(a).toEqual({ hp: 20, spawnTurnId: null, lastResolvedTurnId: 0,
       lastAttackTurnId: null, lastAttackTarget: null });
     expect(isOctopusActive(a)).toBe(false);
     a.hp = 1;
-    expect(b.hp).toBe(10);
+    expect(b.hp).toBe(20);
   });
 
   it('only spawns once a player reaches the threshold', () => {
@@ -56,7 +56,7 @@ describe('OctopusHazardSystem', () => {
     const state = makeState();
     state.players.P1.hp = 4;
     resolveOctopusTurn(state, tentacleImpact(1), null);
-    expect(state.octopus.hp).toBe(10);
+    expect(state.octopus.hp).toBe(20);
     expect(state.octopus.lastAttackTurnId).toBeNull();
   });
 
@@ -64,7 +64,7 @@ describe('OctopusHazardSystem', () => {
     'tentacle AABB explosion distance %s deals %s HP', (distance, damage) => {
       const state = activeState();
       resolveOctopusTurn(state, tentacleImpact(2, distance), null);
-      expect(state.octopus.hp).toBe(10 - damage);
+      expect(state.octopus.hp).toBe(20 - damage);
     }
   );
 
@@ -74,7 +74,7 @@ describe('OctopusHazardSystem', () => {
     impact.x = cfg.x;
     impact.y = cfg.baseY - cfg.height * cfg.collisionHeightRatio - 60;
     resolveOctopusTurn(state, impact, null);
-    expect(state.octopus.hp).toBe(8);
+    expect(state.octopus.hp).toBe(18);
   });
 
   it('turns before age five do not attack; the fifth and each later turn attack once', () => {
@@ -109,17 +109,23 @@ describe('OctopusHazardSystem', () => {
     expect(state.octopus.lastAttackTurnId).toBe(7);
   });
 
-  it('the fifth direct hit kills the tentacle before its laser and it never respawns', () => {
+  it('ten direct hits defeat twenty HP, the killing hit suppresses its laser and it never respawns', () => {
     const state = activeState();
-    for (let turn = 2; turn <= 6; turn++) {
+    state.players.P1.hp = 10;
+    state.players.P2.hp = 10;
+    for (let turn = 2; turn <= 10; turn++) {
       state.turnId = turn;
       resolveOctopusTurn(state, tentacleImpact(turn), null);
     }
+    expect(state.octopus.hp).toBe(2);
+    const hp = state.players.P1.hp + state.players.P2.hp;
+    state.turnId = 11;
+    resolveOctopusTurn(state, tentacleImpact(11), null);
     expect(state.octopus.hp).toBe(0);
     expect(isOctopusActive(state.octopus)).toBe(false);
-    expect(state.octopus.lastAttackTurnId).toBeNull();
-    const hp = state.players.P1.hp + state.players.P2.hp;
-    state.turnId = 7;
+    expect(state.octopus.lastAttackTurnId).toBe(10);
+    expect(state.players.P1.hp + state.players.P2.hp).toBe(hp);
+    state.turnId = 12;
     resolveOctopusTurn(state, null, null);
     expect(state.octopus.spawnTurnId).toBe(1);
     expect(state.octopus.hp).toBe(0);
