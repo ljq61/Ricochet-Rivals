@@ -1,5 +1,7 @@
 # Ricochet Rivals
 
+当前版本：**0.1.0**（0.1 版本基线，Git 标签 `v0.1.0`）。更新记录见 [CHANGELOG](CHANGELOG.md)，版本升级与发布流程见 [版本管理](docs/VERSIONING.md)。
+
 横版 2D 回合制弹道对战网页游戏。
 Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
