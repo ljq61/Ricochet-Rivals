@@ -247,6 +247,14 @@ async function run(pages) {
   await pause(1600); // The emergence animation is presentation only.
   let [h, g] = await laserRound(pages, host, 19, 0);
   check('Host shot changes authority to Guest for the next action', h.currentPlayerId === 'P2');
+  for (let i = 0; i < 2; i++) {
+    const actor = h.currentPlayerId === 'P1' ? host : guest;
+    const skippedTurn = await fireTouch(actor);
+    [h, g] = await nextTurn(pages, skippedTurn);
+    sameBoundary(h, g, `skipped laser turn ${skippedTurn}`);
+    check(`both peers skip intervening action ${i + 1}`, h.hp.P1 + h.hp.P2 === 19 &&
+      g.hp.P1 + g.hp.P2 === 19 && h.octopusState.lastAttackTurnId === skippedTurn - i - 1);
+  }
   [h, g] = await laserRound(pages, guest, 18, 0);
   check('Guest fire intent was accepted and returned the next action to Host', h.currentPlayerId === 'P1');
   await host.screenshot({ path: '/private/tmp/rr-octopus-online-mobile.png' });

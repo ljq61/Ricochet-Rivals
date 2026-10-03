@@ -1,3 +1,4 @@
+import type { TurnPhase } from '../state/TurnPhase';
 import type { PlayerId, TurnId, WeaponId } from '../state/ids';
 
 /**
@@ -23,6 +24,7 @@ export interface FireCommand {
   velocityX: number;
   velocityY: number;
   seed: number;
+  itemId?: string;
 }
 
 export interface ReadyCommand {
@@ -30,4 +32,14 @@ export interface ReadyCommand {
   playerId: PlayerId;
 }
 
-export type GameCommand = MoveCommand | FireCommand | ReadyCommand;
+export interface UseItemCommand {
+  /** Guest aim is local presentation until a command commits its continuation. */
+  resumePhase?: TurnPhase.ACTION | TurnPhase.AIM;
+  type: 'USE_ITEM';
+  playerId: PlayerId;
+  turnId: TurnId;
+  itemId: string;
+  operationId?: string;
+}
+
+export type GameCommand = MoveCommand | FireCommand | UseItemCommand | ReadyCommand;

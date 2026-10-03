@@ -7,6 +7,7 @@ export enum TurnPhase {
   ACTION = 'ACTION',
   RETURN_HOME = 'RETURN_HOME',
   AIM = 'AIM',
+  AIRSTRIKE = 'AIRSTRIKE',
   PROJECTILE = 'PROJECTILE',
   RESOLVE = 'RESOLVE',
   END = 'END',

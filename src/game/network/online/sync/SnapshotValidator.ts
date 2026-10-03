@@ -1,6 +1,6 @@
 import { TurnPhase } from '../../../state/TurnPhase';
 import { PLAYER_IDS, type PlayerId } from '../../../state/ids';
-import { computeStateHash } from '../AuthoritativeState';
+import { computeStateHash, stateFromSnapshot } from '../AuthoritativeState';
 import { isStateSnapshotPayload } from '../OnlinePayloads';
 import type { AuthoritativeGameSnapshot } from '../OnlineTypes';
 
@@ -70,18 +70,7 @@ export function validateAuthoritativeSnapshot(
   }
   // 快照自洽：payload.stateHash 必须等于对 snapshot 重算的 hash
   // （坏数据 / 版本漂移 / 篡改在此拦截）
-  const recomputed = computeStateHash({
-    matchId: snapshot.matchId,
-    seed: snapshot.seed,
-    turnId: snapshot.turnId,
-    currentPlayerId: snapshot.currentPlayerId,
-    phase: snapshot.phase,
-    players: snapshot.players,
-    items: [...snapshot.items],
-    octopus: { ...snapshot.octopus },
-    gameOver: snapshot.gameOver,
-    winnerId: snapshot.winnerId,
-  });
+  const recomputed = computeStateHash(stateFromSnapshot(snapshot));
   if (recomputed !== payload.stateHash) {
     return { ok: false, reason: `HASH_NOT_SELF_CONSISTENT(${recomputed}!=${payload.stateHash})` };
   }

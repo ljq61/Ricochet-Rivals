@@ -5,6 +5,7 @@ import { TurnPhase } from '../../state/TurnPhase';
 import type {
   FireRequestPayload,
   MoveRequestPayload,
+  UseItemRequestPayload,
 } from './OnlineTypes';
 import type { PlayerId } from '../../state/ids';
 
@@ -34,12 +35,32 @@ export interface GuestIntentBusDeps {
   readonly getState: () => GameState;
   readonly sendMoveRequest: (payload: MoveRequestPayload) => void;
   readonly sendFireRequest: (payload: FireRequestPayload) => void;
+  readonly sendUseItemRequest?: (payload: UseItemRequestPayload) => void;
+  readonly onItemUsePendingChange?: (pending: boolean) => void;
+  readonly onItemUseTimeout?: () => void;
 }
 
 export class GuestIntentBus implements CommandBus {
   private readonly localPlayerId: PlayerId;
   private readonly remotePlayerId: PlayerId;
   private readonly deps: GuestIntentBusDeps;
+
+  private pendingOperationId: string | null = null;
+  private operationCounter = 0;
+  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+  get itemUsePending(): boolean { return this.pendingOperationId !== null; }
+
+  clearPendingItemUse(operationId?: string): void {
+    if (operationId !== undefined && operationId !== this.pendingOperationId) return;
+    if (this.pendingTimer !== null) clearTimeout(this.pendingTimer);
+    this.pendingTimer = null;
+    if (this.pendingOperationId === null) return;
+    this.pendingOperationId = null;
+    this.deps.onItemUsePendingChange?.(false);
+  }
+
+  destroy(): void { this.clearPendingItemUse(); }
 
   constructor(deps: GuestIntentBusDeps) {
     this.deps = deps;
@@ -60,6 +81,29 @@ export class GuestIntentBus implements CommandBus {
       console.warn(`[GuestIntentBus] dropped command with unknown player ${String(command.playerId)}`);
       return;
     }
+    if (command.type === 'USE_ITEM') {
+      const state = this.deps.getState();
+      const phaseAllows = state.phase === TurnPhase.ACTION || state.phase === TurnPhase.AIM;
+      if (this.itemUsePending || !this.deps.sendUseItemRequest || !phaseAllows ||
+        command.turnId !== state.turnId || state.currentPlayerId !== this.localPlayerId ||
+        state.gameOver || state.players[this.localPlayerId].hasFired || state.players[this.localPlayerId].itemUsedThisTurn) return;
+      const operationId = command.operationId ?? `item:${state.turnId}:${++this.operationCounter}`;
+      if (command.itemId.length === 0 || command.itemId.length > 128 || operationId.length === 0 || operationId.length > 128) return;
+      this.pendingOperationId = operationId;
+      this.deps.onItemUsePendingChange?.(true);
+      this.pendingTimer = setTimeout(() => {
+        this.pendingTimer = null;
+        this.deps.onItemUseTimeout?.();
+      }, 8_000);
+      try {
+        this.deps.sendUseItemRequest({ playerId: command.playerId, itemId: command.itemId, operationId, resumePhase: state.phase as TurnPhase.ACTION | TurnPhase.AIM });
+      } catch (error) {
+        this.clearPendingItemUse();
+        throw error;
+      }
+      return;
+    }
+    if (this.itemUsePending) return;
     if (command.type === 'MOVE') {
       const state = this.deps.getState();
       if (
@@ -98,6 +142,7 @@ export class GuestIntentBus implements CommandBus {
           velocityX: command.velocityX,
           velocityY: command.velocityY,
           seed: command.seed,
+          ...(command.itemId === undefined ? {} : { itemId: command.itemId }),
         });
       }
       return;

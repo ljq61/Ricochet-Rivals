@@ -1,9 +1,12 @@
 import { GAME_CONFIG } from '../config/GameConfig';
+import { SeededRandom } from '../random/SeededRandom';
+import type { ItemGenerationState, ShotContext } from './ItemState';
 import type { MatchId, PlayerId, TurnId } from './ids';
 import type { PlayerState } from './PlayerState';
 import { TurnPhase } from './TurnPhase';
 import type { WorldItemState } from './WorldItemState';
 import { createOctopusState, type OctopusState } from './OctopusState';
+import type { AirstrikeContext } from './AirstrikeState';
 
 export { TurnPhase };
 
@@ -19,6 +22,9 @@ export interface GameState {
   phase: TurnPhase;
   players: Record<PlayerId, PlayerState>;
   items: WorldItemState[];
+  itemGeneration: ItemGenerationState;
+  acceptedShot: ShotContext | null;
+  pendingAirstrike: AirstrikeContext | null;
   octopus: OctopusState;
   gameOver: boolean;
   winnerId: PlayerId | null;
@@ -38,6 +44,8 @@ export function createPlayerState(id: PlayerId): PlayerState {
     hasFired: false,
     isAlive: true,
     weaponId: 'normal',
+    inventory: Array.from({ length: GAME_CONFIG.items.inventoryCapacity }, () => null),
+    itemUsedThisTurn: false,
   };
 }
 
@@ -65,6 +73,14 @@ export function createInitialGameState(
       P2: createPlayerState('P2'),
     },
     items: [],
+    itemGeneration: {
+      firstWindowParity: new SeededRandom(options.seed ^ 0x51a7e).integer(0, 1) as 0 | 1,
+      lastWindowTurnId: 0,
+      misses: 0,
+      nextId: 1,
+    },
+    acceptedShot: null,
+    pendingAirstrike: null,
     octopus: createOctopusState(),
     gameOver: false,
     winnerId: null,

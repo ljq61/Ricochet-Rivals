@@ -1,7 +1,7 @@
 {
   "name": "ricochet-rivals",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "横版 2D 回合制弹道对战网页游戏 (Side-scrolling turn-based artillery PvP web game)",
   "scripts": {
@@ -17,6 +17,7 @@
     "e2e:octopus-online": "node scripts/e2e-octopus-online.mjs",
     "e2e:settings": "node scripts/e2e-settings.mjs",
     "e2e:loading": "node scripts/e2e-loading.mjs",
+    "e2e:items": "node scripts/e2e-items.mjs",
     "e2e:settings-online": "node scripts/e2e-settings-online.mjs"
   },
   "dependencies": {

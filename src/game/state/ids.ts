@@ -12,8 +12,8 @@ export type TurnId = number;
 /** V0.1 只有 normal；未来扩展 split / heavy / bounce */
 export type WeaponId = 'normal';
 
-/** V0.1 只定义 Item 类型，不实现 Gameplay（见 CODELY.md §17） */
-export type WorldItemType = 'heal' | 'damage_boost' | 'split' | 'shield';
+/** V0.2 public item rule contract. */
+export type WorldItemType = 'heal' | 'damage_boost' | 'range_boost' | 'homing' | 'airstrike';
 
 /** 玩家阵营 */
 export type Side = 'left' | 'right';

@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { createInitialGameState, TurnPhase, type GameState } from '../state/GameState';
-import type { PlayerId } from '../state/ids';
+import type { PlayerId, WorldItemType } from '../state/ids';
+import type { WorldItemState } from '../state/WorldItemState';
 import { CameraMode } from '../camera/CameraMode';
 import { CameraController } from '../camera/CameraController';
 import { InMemoryCommandBus, type CommandBus } from '../commands/CommandBus';
@@ -30,6 +31,12 @@ import { SeededRandom } from '../random/SeededRandom';
 import { createMatchSetup } from '../match/MatchFactory';
 import type { BattleSceneData, MatchSetup } from '../match/MatchSetup';
 import { AimController } from '../input/AimController';
+import { ItemInputController } from '../input/ItemInputController';
+import { ItemHud } from '../ui/ItemHud';
+import { AirstrikeView } from '../entities/AirstrikeView';
+import type { AirstrikeContext } from '../state/AirstrikeState';
+import { WorldItemView } from '../entities/WorldItemView';
+import type { ScreenRect } from '../ui/touchControlLayout';
 import { AimButton } from '../ui/AimButton';
 import { AimRenderer } from '../ui/AimRenderer';
 import { SfxBus, SFX, type SfxKey } from '../audio/SfxBus';
@@ -114,6 +121,16 @@ export class BattleScene extends Phaser.Scene {
   private aiInput: AIInputSource | null = null;
   private touchControls: TouchControls | null = null;
   private aimController!: AimController;
+  private itemInput!: ItemInputController;
+  private itemHud!: ItemHud;
+  private worldItemView!: WorldItemView;
+  private knownItems = new Map<string, WorldItemState>();
+  private itemEntryUntil = 0;
+  private airstrikeView!: AirstrikeView;
+  private airstrikeContext: AirstrikeContext | null = null;
+  private airstrikeAnimationDone = false;
+  private airstrikeImpactReached = false;
+  private airstrikeReturning = false;
   private playerViews!: Record<PlayerId, Player>;
   private cameraController!: CameraController;
   private aimButton!: AimButton;
@@ -210,6 +227,12 @@ export class BattleScene extends Phaser.Scene {
     this.disconnectButton = null;
     this.roomRecovery = null;
     this.lastRejectedToastMs = 0;
+    this.knownItems = new Map();
+    this.itemEntryUntil = 0;
+    this.airstrikeContext = null;
+    this.airstrikeAnimationDone = false;
+    this.airstrikeImpactReached = false;
+    this.airstrikeReturning = false;
   }
 
   create(): void {
@@ -221,7 +244,7 @@ export class BattleScene extends Phaser.Scene {
         ? stateFromSnapshot(this.onlineBootstrap.gameStart.initialState)
         : createInitialGameState({
             matchId: `${this.setup.mode}-match`,
-            seed: 1,
+            seed: crypto.getRandomValues(new Uint32Array(1))[0]!,
           });
 
     // 2. 静态世界
@@ -252,6 +275,8 @@ export class BattleScene extends Phaser.Scene {
 
     // 4. 系统初始化：CommandBus → GameLogic → Systems
     this.projectileSystem = new ProjectileSystem(this);
+    this.projectileSystem.setAuthority(this.online?.role !== 'guest');
+    this.worldItemView = new WorldItemView(this);
     this.commandBus = new InMemoryCommandBus();
     this.gameLogic = new GameLogic(this.state, this.commandBus, {
       movement: new MovementSystem(),
@@ -259,7 +284,7 @@ export class BattleScene extends Phaser.Scene {
       projectile: this.projectileSystem,
     });
     // Phase 8：回合状态机（startMatch → P1 ACTION，重置预算 / hasFired）
-    this.turnManager = new TurnManager(this.state);
+    this.turnManager = new TurnManager(this.state, this.online?.role !== 'guest');
     // Phase 14：联机协调器 attach（必须先于爆炸系统 / 输入源接线 ——
     // damageSystem 与 inputBus 均由协调器提供）。Host 的本地输入与
     // Guest 请求走同一条 Bus → GameLogic → Systems 权威路径；Guest 的
@@ -277,13 +302,41 @@ export class BattleScene extends Phaser.Scene {
         resumeNextTurn: () => {
           if (this.leavingToMenu) return;
           if (this.online?.role === 'host') {
-            this.turnManager.endTurn();
+            this.advanceTurn();
           }
           this.beginNextTurnTransition();
         },
         showAuthoritativeDamage: (result) =>
           this.showProjectileDamage(result),
         showRejected: (payload) => this.showOnlineRejected(payload),
+        onItemUsePendingChange: (pending) => {
+          if (pending) {
+            this.inputRouter?.releaseAll();
+            this.aimController?.cancel();
+          }
+        },
+        onItemStateApplied: (payload) => {
+          if (payload.kind === 'heal') this.sfx?.play(SFX.itemHeal);
+          if (payload.kind === 'pickup') {
+            this.sfx?.play(SFX.itemPickup);
+            const item = payload.playerId
+              ? this.state.players[payload.playerId].inventory.find(item => item?.id === payload.itemId)
+              : null;
+            if (item && payload.x !== undefined && payload.y !== undefined) {
+              const slot = this.state.players[payload.playerId!].inventory.findIndex(entry => entry?.id === item.id);
+              this.worldItemView.pickupFeedback(item.type, payload.x, payload.y,
+                this.itemHud.inventoryTarget(payload.playerId!, slot), this.viewportService.current.uiScale);
+            }
+          }
+          if (payload.kind === 'homing') {
+            const target = this.state.acceptedShot?.homingTarget;
+            if (target) this.worldItemView.homingFeedback(target.x, target.y);
+          }
+          if (payload.kind === 'airstrike_start' && payload.airstrike) {
+            this.startAirstrikePresentation(payload.airstrike);
+          }
+          this.itemInput?.refresh();
+        },
         onDisconnected: () => this.handleOnlineDisconnected(),
         // Phase 15：Guest 恢复期间锁 Move/Aim/Fire（复用远程回合输入锁口径，
         // syncLocked 并入 isRemoteControlledTurn —— 相机自由观察保留）
@@ -346,8 +399,14 @@ export class BattleScene extends Phaser.Scene {
     //    控制目标 = 当前回合玩家（Phase 8 热座）。
     //    Phase 14 联机：输入总线换协调器 inputBus（Host = 真实执行总线，
     //    广播由 outcome 钩子负责；Guest = 意图拦截 → *_REQUEST）
-    const inputBus: CommandBus =
+    const executionBus: CommandBus =
       this.online !== null ? this.online.inputBus : this.commandBus;
+    this.itemInput = new ItemInputController({
+      bus: executionBus, getState: () => this.state,
+      canControl: () => this.isLocalControlledTurn() && !this.isAiControlledTurn(),
+      canUse: () => this.canUseItem(),
+    });
+    const inputBus: CommandBus = this.itemInput;
     if (isTouch) {
       this.touchControls = new TouchControls(this, {
         getState: () => this.state,
@@ -397,12 +456,38 @@ export class BattleScene extends Phaser.Scene {
     this.aimRenderer = new AimRenderer(this);
     // Phase 17 Juice：音效总线（事件驱动，规则层零感知）
     this.sfx = new SfxBus(this);
+    this.projectileSystem.onInventoryFull(() => {
+      if (!this.syncLocked && !this.connectionRecoveryActive) {
+        this.turnBanner.showMessage('背包已满 · 木箱保留', 0xe2af4e);
+      }
+    });
+    this.projectileSystem.onPickup((pickup) => {
+      const crate = this.knownItems.get(pickup.itemId);
+      const position = crate ?? this.projectileSystem.activeProjectiles[0];
+      this.sfx.play(SFX.itemPickup);
+      if (position) this.worldItemView.pickupFeedback(pickup.type, position.x, position.y,
+        this.itemHud.inventoryTarget(pickup.playerId, pickup.slot), this.viewportService.current.uiScale);
+      if (this.online?.role === 'host') {
+        this.online.notifyItemStateChanged('pickup', { itemId: pickup.itemId,
+          playerId: pickup.playerId, ...(position ? { x: position.x, y: position.y } : {}) });
+      }
+    });
+    this.projectileSystem.onItemChanged((kind, itemId) => {
+      if (kind !== 'homing') return;
+      const target = this.state.acceptedShot?.homingTarget;
+      if (target) this.worldItemView.homingFeedback(target.x, target.y);
+      if (this.online?.role === 'host') this.online.notifyItemStateChanged('homing', { itemId });
+    });
 
     // 11. 相机 ↔ 投射物事件连接（Phase 6/7/8）：
     //     发射 → PROJECTILE 相位 + 相机跟随；
     //     碰撞 → 伤害结算 → RESOLVE 相位 → 反馈 → 锁定爆炸点停留；
     //     停留结束 / 出界 → 回合收口（endTurn / TURN_TRANSITION / GAME_OVER）
     this.projectileSystem.onLaunched((projectile) => {
+      // A late Guest cinematic must yield to a new authoritative normal shot.
+      // Restore the hazard collider immediately, without replaying an old entrance.
+      if (this.airstrikeContext) this.octopusTentacle.restore(this.state);
+      this.cancelAirstrikePresentation();
       this.playerViews[projectile.ownerId].playFireReaction();
       this.logCameraEvent(`launched`);
       // 只播放发射音；飞行口哨按本轮试玩反馈移除。
@@ -462,6 +547,32 @@ export class BattleScene extends Phaser.Scene {
 
     // 12. HUD：HP 血条（伤害动画由 State 变化驱动）+ 回合横幅（Phase 9 热座）
     this.playerHud = new PlayerHud(this, this.viewportService);
+    this.itemHud = new ItemHud(this, {
+      router: this.inputRouter, viewport: this.viewportService,
+      getState: () => this.state,
+      getPlayerId: () => this.online?.localPlayerId ??
+        (this.setup.p2Controller === 'ai' ? 'P1' : this.state.currentPlayerId),
+      canUse: () => this.canUseItem(),
+      getSelectedItemId: () => this.itemInput.selectedItemId,
+      isPending: () => this.online?.itemUsePending ?? false,
+      getReservedRects: () => this.itemReservedRects(),
+      onSlotTap: (itemId) => {
+        const previous = this.itemInput.selectedItemId;
+        this.itemInput.select(itemId);
+        if (this.itemInput.selectedItemId && this.itemInput.selectedItemId !== previous) {
+          this.sfx.play(SFX.itemReady);
+        }
+      },
+    });
+    this.airstrikeView = new AirstrikeView(this);
+    this.gameLogic.onAirstrikeStarted(context => this.startAirstrikePresentation(context));
+    this.gameLogic.onAirstrikeResolved(result => this.showProjectileDamage(result.damage));
+    this.gameLogic.onOutcome((outcome) => {
+      if (outcome.kind === 'USE_ITEM' && outcome.result.accepted) {
+        this.itemInput.refresh();
+        if (!outcome.result.airstrike) this.sfx.play(SFX.itemHeal);
+      }
+    });
     this.battleSettings = new BattleSettings({
       onOpenChange: (open) => this.handleSettingsOpen(open),
       onLeave: () => this.leaveToMainMenu(),
@@ -484,6 +595,9 @@ export class BattleScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     if (this.leavingToMenu) return;
+    this.updateAirstrikePresentation();
+    this.refreshItems();
+    this.itemInput.refresh();
     this.battleSettings?.setAnchor(this.playerHud.settingsAnchor);
     // Phase 10 SP：按回合归属接线（AI 回合静默人类输入）。
     // 必须先于 controls.update —— 热座 playerId 跟随 currentPlayerId，
@@ -499,7 +613,7 @@ export class BattleScene extends Phaser.Scene {
     this.projectileSystem.update(this.state, delta);
 
     // 视觉同步：State 是唯一数据源
-    this.octopusTentacle.refresh(this.state);
+    if (!this.airstrikeContext || this.airstrikeImpactReached) this.octopusTentacle.refresh(this.state);
     const displayedPlayers = this.laserDisplayPlayers();
     this.playerViews.P1.update(displayedPlayers.P1, delta);
     this.playerViews.P2.update(displayedPlayers.P2, delta);
@@ -509,11 +623,12 @@ export class BattleScene extends Phaser.Scene {
     // Phase 17 修复轮：瞄准时角色朝向跟随发射方向（抛物线反向拖拽）+
     // 抬枪姿态序列（15–75°）；瞄准结束 / 发射后由本方法自动复位 idle
     this.updateAimPoseVisual();
-    // Phase 14：联机对手回合隐藏瞄准 / 移动按钮（相机 Free View 仍可用）
+    // 人类控制回合才显示瞄准 / 移动按钮；AI 与联机对手回合仍可自由观察。
     const localControls = this.isLocalControlledTurn();
     this.aimButton.refresh(this.cameraController.currentMode, localControls);
     this.touchControls?.refresh(localControls);
     this.playerHud.refresh(displayedPlayers);
+    this.itemHud.refresh();
     this.baseDamageEffects.refresh(displayedPlayers);
 
     // Phase 9：回合横幅 —— 新回合进入 ACTION 时短暂提示轮到谁
@@ -544,7 +659,7 @@ export class BattleScene extends Phaser.Scene {
       }
     }
     if (!this.bannerGameOverShown && this.state.gameOver) {
-      if (this.state.phase === TurnPhase.PROJECTILE ||
+      if (this.airstrikeContext || this.state.phase === TurnPhase.PROJECTILE ||
           this.octopusTentacle.isAttacking || this.octopusTentacle.hasPendingLaserHit(this.state)) return;
       // Phase 15：Guest 终局 hash 门 —— 未确认前不收口（避免双端胜负
       // 显示不一致；确认路径：gameOver TURN_RESULT hash 匹配或快照恢复）
@@ -715,6 +830,100 @@ export class BattleScene extends Phaser.Scene {
     view.setAimPose(elevation);
   }
 
+  private startAirstrikePresentation(context: AirstrikeContext): void {
+    if (this.leavingToMenu || !this.airstrikeView || context.turnId !== this.state.turnId) return;
+    if (this.airstrikeContext?.itemId === context.itemId && this.airstrikeContext.turnId === context.turnId) return;
+    this.cancelAirstrikePresentation();
+    this.airstrikeContext = structuredClone(context);
+    this.airstrikeAnimationDone = false;
+    this.airstrikeImpactReached = false;
+    const epoch = this.presentationEpoch;
+    this.inputRouter.releaseAll();
+    this.aimController.cancel();
+    this.turnBanner.hideTransient();
+    this.cameraController.releaseResolutionFocus();
+    this.airstrikeView.play(context, () => {
+      if (epoch !== this.presentationEpoch || this.leavingToMenu) return;
+      this.airstrikeImpactReached = true;
+      if (this.online?.role !== 'guest') this.gameLogic.resolveAirstrike(context);
+    }, () => {
+      if (epoch === this.presentationEpoch && !this.leavingToMenu) this.airstrikeAnimationDone = true;
+    });
+    this.cameraController.followProjectile(() => this.airstrikeView.followTarget);
+    this.syncInputOwnership();
+  }
+
+  private updateAirstrikePresentation(): void {
+    if (!this.airstrikeContext && this.state.pendingAirstrike && !this.syncLocked && !this.connectionRecoveryActive) {
+      this.startAirstrikePresentation(this.state.pendingAirstrike);
+    }
+    const context = this.airstrikeContext;
+    if (context && (context.turnId !== this.state.turnId || context.ownerId !== this.state.currentPlayerId ||
+        (this.state.phase !== TurnPhase.AIRSTRIKE && this.state.phase !== context.resumePhase && this.state.phase !== TurnPhase.GAME_OVER))) {
+      this.cancelAirstrikePresentation();
+      return;
+    }
+    // Apply newly received birth before deciding to return, even when end arrived
+    // after the local bomb animation finished.
+    if (context && this.airstrikeImpactReached) this.octopusTentacle.refresh(this.state);
+    if (!context || this.airstrikeReturning || !this.airstrikeAnimationDone || this.state.pendingAirstrike) return;
+    if (this.syncLocked || this.connectionRecoveryActive || this.connectionLost || this.syncFailed || this.octopusTentacle.isAttacking) return;
+    this.airstrikeReturning = true;
+    const epoch = this.presentationEpoch;
+    void this.cameraController.transitionToPlayer(() => this.state.players[context.ownerId].x).then(() => {
+      if (epoch !== this.presentationEpoch || this.leavingToMenu || this.airstrikeContext !== context) return;
+      this.airstrikeContext = null;
+      this.airstrikeReturning = false;
+      if (!this.state.gameOver && this.state.phase === TurnPhase.AIM) {
+        this.cameraController.requestAim(() => this.state.players[context.ownerId].x);
+      }
+      this.syncInputOwnership();
+    });
+  }
+
+  private cancelAirstrikePresentation(): void {
+    this.airstrikeView?.cancel();
+    this.airstrikeContext = null;
+    this.airstrikeAnimationDone = false;
+    this.airstrikeImpactReached = false;
+    this.airstrikeReturning = false;
+  }
+
+  private canUseItem(): boolean {
+    const player = this.state.players[this.state.currentPlayerId];
+    return this.isLocalControlledTurn() && !this.isAiControlledTurn() &&
+      !this.state.gameOver && player.isAlive && !player.hasFired && !player.itemUsedThisTurn &&
+      !this.aimController?.isDragging &&
+      (this.state.phase === TurnPhase.ACTION || this.state.phase === TurnPhase.AIM) &&
+      this.viewportService.current.orientation === 'landscape';
+  }
+
+  private itemReservedRects(): (ScreenRect & { radius?: number })[] {
+    // Fixed item docks own their UI area; moving dock buttons avoid them instead.
+    // The larger invisible launcher gesture radius must not relocate visible inventory.
+    return [this.aimButton.screenBounds];
+  }
+
+  private refreshItems(): void {
+    const active = this.state.items.filter(item => item.active);
+    const newItems = active.filter(item => !this.knownItems.has(item.id));
+    if (newItems.length > 0) {
+      this.itemEntryUntil = this.time.now + 350;
+      if (this.online?.role === 'host') {
+        this.online.notifyItemStateChanged('spawn');
+      }
+    }
+    // Pickups have their own path-ordered event. Only disappearance at expiry
+    // is announced here, before the next action becomes controllable.
+    if (this.online?.role === 'host' && active.length < this.knownItems.size &&
+        this.state.phase !== TurnPhase.PROJECTILE && this.state.phase !== TurnPhase.RESOLVE) {
+      this.online.notifyItemStateChanged('expire');
+    }
+    this.knownItems = new Map(active.map(item => [item.id, { ...item }]));
+    this.worldItemView.refresh(active);
+    this.worldItemView.update(this.time.now);
+  }
+
   /**
    * Phase 14：当前回合是否不可由本地输入发起动作（对手回合或已断线）。
    * 离线恒 false。移动 / 瞄准入口据此静默；相机 Free View 不受影响
@@ -723,17 +932,20 @@ export class BattleScene extends Phaser.Scene {
   private isRemoteControlledTurn(): boolean {
     return (
       this.leavingToMenu ||
+      this.airstrikeContext !== null || this.state.phase === TurnPhase.AIRSTRIKE ||
       this.battleSettings?.isOpen === true ||
       this.connectionLost ||
       this.connectionRecoveryActive ||
       this.syncLocked || // Phase 15：desync 恢复期间锁 Move/Aim/Fire
+      this.online?.itemUsePending === true ||
+      this.time.now < this.itemEntryUntil ||
       (this.online !== null && !this.online.isLocalTurn())
     );
   }
 
-  /** Phase 14：本地输入源是否可交互（按钮可见性 / 输入锁共用口径） */
+  /** 本地人类输入是否可交互（单人 AI / 联机对手都不显示玩家控件）。 */
   private isLocalControlledTurn(): boolean {
-    return !this.isRemoteControlledTurn();
+    return !this.isRemoteControlledTurn() && !this.isAiControlledTurn();
   }
 
   /** SP：回合归属切换人类 / AI 输入（gameOver 后人类恢复自由观察） */
@@ -748,7 +960,7 @@ export class BattleScene extends Phaser.Scene {
         this.state.currentPlayerId === this.aiInput.playerId &&
         !this.state.gameOver;
       this.controls.setEnabled(!aiTurn && this.isLocalControlledTurn());
-      this.aiInput.setEnabled(aiTurn);
+      this.aiInput.setEnabled(aiTurn && !this.airstrikeContext && this.time.now >= this.itemEntryUntil);
       return;
     }
     this.controls.setEnabled(this.isLocalControlledTurn());
@@ -778,6 +990,11 @@ export class BattleScene extends Phaser.Scene {
    * endTurn）；Guest 'waiting' 时挂起（TURN_END 到达且本地 dwell 完成
    * 后经 resumeNextTurn 补驱），回合切换始终由 Host 控制。
    */
+  private advanceTurn(): void {
+    this.turnManager.endTurn();
+    if (this.online?.role === 'host') this.online.notifyItemStateChanged('turn_start');
+  }
+
   private async onAttackResolved(): Promise<void> {
     if (this.leavingToMenu) return;
     const mode = this.cameraController.currentMode;
@@ -802,7 +1019,7 @@ export class BattleScene extends Phaser.Scene {
         return; // Guest：TURN_END 未到 —— resumeNextTurn 回调补驱转场
       }
       if (this.online.role === 'host') {
-        this.turnManager.endTurn(); // Host 本地权威推进
+        this.advanceTurn(); // Host 本地权威推进
         this.beginNextTurnTransition();
         return;
       }
@@ -812,7 +1029,7 @@ export class BattleScene extends Phaser.Scene {
       // 后续 requestAim 被 aimFlow 静默拒绝 —— P2P E2E 实测）
       return;
     }
-    this.turnManager.endTurn();
+    this.advanceTurn();
     this.beginNextTurnTransition();
   }
 
@@ -883,14 +1100,22 @@ export class BattleScene extends Phaser.Scene {
         () => this.state.players[this.state.currentPlayerId].x
       )
       .then(() => {
-        if (epoch === this.presentationEpoch && turnId === this.state.turnId) {
-          this.turnManager.notifyTurnTransitionComplete();
-        }
+        const finish = (): void => {
+          if (epoch !== this.presentationEpoch || turnId !== this.state.turnId || this.leavingToMenu) return;
+          const remaining = Math.max(this.itemEntryUntil, this.worldItemView.enteringUntil) - this.time.now;
+          if (remaining > 0) {
+            this.time.delayedCall(remaining, finish);
+          } else {
+            this.turnManager.notifyTurnTransitionComplete();
+          }
+        };
+        finish();
       });
   }
 
   /** 取消旧手势和回家 Tween；锁由每帧统一门禁持续维持。 */
   private freezeOnlineInput(): void {
+    this.itemInput?.clear();
     this.controls.setEnabled(false);
     this.inputRouter.releaseAll();
     this.aimController.cancel();
@@ -902,11 +1127,17 @@ export class BattleScene extends Phaser.Scene {
   private restoreSnapshotPresentation(): void {
     if (this.leavingToMenu) return;
     this.presentationEpoch += 1;
+    this.cancelAirstrikePresentation();
     this.octopusTentacle.restore(this.state);
     this.inputRouter.releaseAll();
     this.aimController.cancel();
     this.cameraController.enableFreeView();
-    if (this.state.phase === TurnPhase.END) {
+    if (this.state.phase === TurnPhase.AIRSTRIKE && this.state.pendingAirstrike) {
+      this.startAirstrikePresentation(this.state.pendingAirstrike);
+    } else if (this.state.phase === TurnPhase.AIM) {
+      this.cameraController.centerOnX(this.state.players[this.state.currentPlayerId].x);
+      this.cameraController.requestAim(() => this.state.players[this.state.currentPlayerId].x);
+    } else if (this.state.phase === TurnPhase.END) {
       this.beginNextTurnTransition();
     } else if (this.state.phase === TurnPhase.ACTION) {
       this.cameraController.centerOnX(this.state.players[this.state.currentPlayerId].x);
@@ -1043,6 +1274,7 @@ export class BattleScene extends Phaser.Scene {
       // 路径 → 永久滞留（E2E 全量复现：cam=IMPACT 而 phase=ACTION）
       this.projectileSystem.clearInFlightSimulations();
       this.presentationEpoch += 1;
+      this.cancelAirstrikePresentation();
       this.turnBanner.showMessage('SYNCHRONIZING…', 0xffc24d);
     } else if (state === OnlineSyncState.APPLYING_SNAPSHOT) {
       // Host ACK 超时阶梯可在 Guest 未走 DESYNC/SYNC_REQUESTED 时直推
@@ -1053,6 +1285,7 @@ export class BattleScene extends Phaser.Scene {
       // 与 DESYNC 分支幂等重复清场；横幅仍按 APPLYING 静默设计。
       this.projectileSystem.clearInFlightSimulations();
       this.presentationEpoch += 1;
+      this.cancelAirstrikePresentation();
     } else if (state === OnlineSyncState.SYNC_FAILED) {
       this.handleOnlineSyncFailure();
     }
@@ -1090,6 +1323,7 @@ export class BattleScene extends Phaser.Scene {
     if (this.leavingToMenu || this.handedToResult) return;
     this.leavingToMenu = true;
     this.presentationEpoch += 1;
+    this.cancelAirstrikePresentation();
     this.inputRouter.releaseAll();
     this.input.keyboard?.resetKeys();
     this.aimController.cancel();
@@ -1159,6 +1393,36 @@ export class BattleScene extends Phaser.Scene {
       get projectileCount(): number {
         return self.projectileSystem.activeProjectiles.length;
       },
+      get itemState(): object {
+        return { world: self.state.items.map(item => ({ ...item })),
+          inventory: structuredClone({ P1: self.state.players.P1.inventory, P2: self.state.players.P2.inventory }),
+          used: { P1: self.state.players.P1.itemUsedThisTurn, P2: self.state.players.P2.itemUsedThisTurn },
+          generation: { ...self.state.itemGeneration }, shot: structuredClone(self.state.acceptedShot),
+          pendingAirstrike: structuredClone(self.state.pendingAirstrike),
+          airstrike: { ...self.airstrikeView.debugState, busy: self.airstrikeContext !== null, returning: self.airstrikeReturning },
+          hud: self.itemHud.debugState, selected: self.itemInput.selectedItemId,
+          projectiles: self.projectileSystem.activeProjectiles.map(p => ({ ...p })) };
+      },
+      pauseAirstrikeFlight(): void {
+        const planes = self.children.list.filter(child => child instanceof Phaser.GameObjects.Image &&
+          child.texture.key === 'art-airstrike-plane-v03');
+        self.tweens.getTweensOf(planes).forEach(tween => tween.pause());
+      },
+      /** QA fixture only: use the real UI and command rules after preparation. */
+      prepareItems(inventory: Partial<Record<PlayerId, WorldItemType[]>>, world?: WorldItemState[]): void {
+        for (const id of ['P1', 'P2'] as const) {
+          const types = inventory[id];
+          if (!types) continue;
+          self.state.players[id].inventory = [0, 1, 2].map(slot => {
+            const type = types[slot];
+            return type ? { id: `qa-${self.state.matchId}-${self.state.turnId}-${id}-${slot}`, type } : null;
+          });
+          self.state.players[id].itemUsedThisTurn = false;
+        }
+        if (world) self.state.items = world.map(item => ({ ...item }));
+        self.itemInput.clear();
+        if (self.online?.role === 'host') self.online.notifyItemStateChanged('spawn');
+      },
       get players(): { P1: number; P2: number } {
         return {
           P1: self.state.players.P1.x,
@@ -1187,7 +1451,7 @@ export class BattleScene extends Phaser.Scene {
           .filter((item) => /art-(blue|red|base-fire|octopus)/.test(item.texture.key))
           .map((item) => ({ key: item.texture.key, frame: item.frame.name,
             x: item.x, y: item.y, width: item.displayWidth, height: item.displayHeight,
-            flipX: item.flipX, alpha: item.alpha,
+            flipX: item.flipX, alpha: item.alpha, depth: item.depth,
             animation: item instanceof Phaser.GameObjects.Sprite ? item.anims.currentAnim?.key : null }));
       },
       /** Phase 17 玩法特性：中央章鱼触手是否已升起（E2E/调试观测口） */
@@ -1347,6 +1611,11 @@ export class BattleScene extends Phaser.Scene {
       (window as unknown as Record<string, unknown>).__RR_DEBUG__ = { scene: 'Transition' };
     }
     this.presentationEpoch += 1;
+    this.cancelAirstrikePresentation();
+    this.airstrikeView?.destroy();
+    this.itemInput?.clear();
+    this.itemHud?.destroy();
+    this.worldItemView?.destroy();
     this.battleSettings?.destroy();
     this.battleSettings = null;
     this.game.renderer.off(Phaser.Renderer.Events.RENDER, this.onMiniMapRender, this);

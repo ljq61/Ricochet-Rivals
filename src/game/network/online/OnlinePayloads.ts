@@ -1,6 +1,9 @@
 import { PLAYER_IDS } from '../../state/ids';
 import { GAME_CONFIG } from '../../config/GameConfig';
-import type { PlayerId, WeaponId } from '../../state/ids';
+import type { InventoryItem, ItemGenerationState, ShotContext } from '../../state/ItemState';
+import type { AirstrikeContext } from '../../state/AirstrikeState';
+import type { WorldItemState } from '../../state/WorldItemState';
+import type { PlayerId, WeaponId, WorldItemType } from '../../state/ids';
 import { TurnPhase } from '../../state/TurnPhase';
 import type { CommandRejectedReason } from './CommandRejectedReason';
 import type {
@@ -13,6 +16,8 @@ import type {
   FireRequestPayload,
   GameStartPayload,
   MovePayload,
+  ItemStatePayload,
+  UseItemRequestPayload,
   MoveRequestPayload,
   PlayerReadyPayload,
   StateSnapshotPayload,
@@ -130,7 +135,9 @@ export function isAuthoritativePlayerSnapshot(
     isBoolean(value.isAlive) &&
     isFiniteNumber(value.moveRemaining) &&
     isBoolean(value.hasFired) &&
-    isWeaponId(value.weaponId)
+    isWeaponId(value.weaponId) &&
+    isInventory(value.inventory) &&
+    isBoolean(value.itemUsedThisTurn)
   );
 }
 
@@ -159,7 +166,9 @@ export function isAuthoritativeOctopusSnapshot(
   }
   if (
     !isIntegerNumber(value.spawnTurnId) || !Number.isSafeInteger(value.spawnTurnId) ||
-    value.spawnTurnId < 1 || value.spawnTurnId > value.lastResolvedTurnId
+    value.spawnTurnId < 1 || value.spawnTurnId > turnId ||
+    (value.spawnTurnId > value.lastResolvedTurnId &&
+      !(value.spawnTurnId === turnId && value.hp === GAME_CONFIG.octopus.maxHp && value.lastAttackTurnId === null))
   ) {
     return false;
   }
@@ -172,9 +181,141 @@ export function isAuthoritativeOctopusSnapshot(
     (value.hp > 0 || value.lastAttackTurnId < value.lastResolvedTurnId);
 }
 
+export function isItemId(value: unknown): value is string {
+  return isNonEmptyString(value) && value.length <= 128;
+}
+
+function isItemType(value: unknown): value is WorldItemType {
+  return value === 'heal' || value === 'damage_boost' || value === 'range_boost' || value === 'homing' || value === 'airstrike';
+}
+
+function isInventoryItem(value: unknown): value is InventoryItem {
+  return isPlainObject(value) && isItemId(value.id) && isItemType(value.type);
+}
+
+export function isInventory(value: unknown): value is (InventoryItem | null)[] {
+  return Array.isArray(value) && value.length === 3 &&
+    value.every((item) => item === null || isInventoryItem(item)) &&
+    new Set(value.filter((item) => item !== null).map((item) => item.id)).size === value.filter((item) => item !== null).length;
+}
+
+function isWorldItems(value: unknown, turnId: number): value is WorldItemState[] {
+  return Array.isArray(value) && value.length <= 2 && value.every((item) =>
+    isPlainObject(item) && isItemId(item.id) && isItemType(item.type) &&
+    isFiniteNumber(item.x) && item.x >= 0 && item.x <= GAME_CONFIG.world.width &&
+    isFiniteNumber(item.y) && item.y >= 0 && item.y <= GAME_CONFIG.world.height &&
+    isBoolean(item.active) && Number.isSafeInteger(item.spawnTurnId) &&
+    (item.spawnTurnId as number) >= 3 && (item.spawnTurnId as number) <= turnId &&
+    item.expiresAtTurnId === (item.spawnTurnId as number) + 6
+  ) && new Set(value.map((item) => item.id)).size === value.length;
+}
+
+function isItemGeneration(value: unknown, turnId: number): value is ItemGenerationState {
+  return isPlainObject(value) && (value.firstWindowParity === 0 || value.firstWindowParity === 1) &&
+    Number.isSafeInteger(value.lastWindowTurnId) && (value.lastWindowTurnId as number) >= 0 &&
+    (value.lastWindowTurnId as number) <= turnId && Number.isSafeInteger(value.misses) &&
+    (value.misses as number) >= 0 && (value.misses as number) <= 2 &&
+    Number.isSafeInteger(value.nextId) && (value.nextId as number) >= 1;
+}
+
+function isShotContext(value: unknown, turnId: number): value is ShotContext | null {
+  if (value === null) return true;
+  if (!isPlainObject(value) || !isPlayerId(value.ownerId) || value.turnId !== turnId || !isBoolean(value.homingActivated)) return false;
+  const noItem = value.itemId === undefined && value.itemType === undefined;
+  const validItem = isItemId(value.itemId) && isItemType(value.itemType) && value.itemType !== 'heal' && value.itemType !== 'airstrike';
+  if (!noItem && !validItem) return false;
+  if (value.homingActivated && value.itemType !== 'homing') return false;
+  if (value.homingTarget !== undefined && (!value.homingActivated || value.itemType !== 'homing')) return false;
+  if (value.homingTarget !== undefined && (!isPlainObject(value.homingTarget) ||
+    !isFiniteNumber(value.homingTarget.x) || !isFiniteNumber(value.homingTarget.y))) return false;
+  return !value.homingActivated || value.homingTarget !== undefined;
+}
+
+/** Frozen target, legal resumable phase, and turn ownership are all public. */
+export function isAirstrikeContext(value: unknown, turnId: number): value is AirstrikeContext {
+  return isPlainObject(value) && isItemId(value.itemId) && isPlayerId(value.ownerId) &&
+    value.turnId === turnId && isPlainObject(value.target) &&
+    isFiniteNumber(value.target.x) && value.target.x >= 0 && value.target.x <= GAME_CONFIG.world.width &&
+    isFiniteNumber(value.target.y) && value.target.y >= 0 && value.target.y <= GAME_CONFIG.world.height &&
+    (value.resumePhase === TurnPhase.ACTION || value.resumePhase === TurnPhase.AIM);
+}
+
+type AirstrikeProjection = Pick<AuthoritativeGameSnapshot,
+  'turnId' | 'currentPlayerId' | 'phase' | 'gameOver' | 'acceptedShot' | 'pendingAirstrike' | 'items'> & {
+  players: Record<PlayerId, Pick<AuthoritativePlayerSnapshot,
+    'x' | 'y' | 'hp' | 'isAlive' | 'hasFired' | 'itemUsedThisTurn' | 'inventory'>>;
+};
+
+function validAirstrikeOwner(context: AirstrikeContext, state: AirstrikeProjection): boolean {
+  const owner = state.players[context.ownerId];
+  const target = state.players[context.ownerId === 'P1' ? 'P2' : 'P1'];
+  return context.ownerId === state.currentPlayerId && owner.isAlive && owner.hp > 0 &&
+    owner.itemUsedThisTurn && !owner.hasFired && state.acceptedShot === null &&
+    context.target.x === target.x && context.target.y === target.y - GAME_CONFIG.player.collision.height / 2 &&
+    !state.items.some((item) => item.id === context.itemId) &&
+    !PLAYER_IDS.some((id) => state.players[id].inventory.some((item) => item?.id === context.itemId));
+}
+
+function validPendingAirstrike(state: AirstrikeProjection): boolean {
+  if (state.pendingAirstrike === null) return state.phase !== TurnPhase.AIRSTRIKE;
+  return state.phase === TurnPhase.AIRSTRIKE && !state.gameOver &&
+    isAirstrikeContext(state.pendingAirstrike, state.turnId) && validAirstrikeOwner(state.pendingAirstrike, state);
+}
+
+/** An item cannot exist in two bags or be in a bag and simultaneously on the field. */
+function uniqueOwnedItems(value: { players: Record<PlayerId, { inventory: readonly (InventoryItem | null)[] }>; items: readonly WorldItemState[] }): boolean {
+  const ids = [...value.items.map((item) => item.id), ...PLAYER_IDS.flatMap((id) => value.players[id].inventory.flatMap((item) => item === null ? [] : [item.id]))];
+  return new Set(ids).size === ids.length;
+}
+
+export function isUseItemRequestPayload(value: unknown): value is UseItemRequestPayload {
+  return isPlainObject(value) && isPlayerId(value.playerId) && isItemId(value.itemId) && isItemId(value.operationId) &&
+    (value.resumePhase === undefined || value.resumePhase === TurnPhase.ACTION || value.resumePhase === TurnPhase.AIM);
+}
+
+export function isItemStatePayload(value: unknown): value is ItemStatePayload {
+  if (!isPlainObject(value)) return false;
+  const kind = value.kind;
+  const valid = (kind === 'spawn' || kind === 'expire' || kind === 'pickup' || kind === 'homing' ||
+    kind === 'heal' || kind === 'turn_start' || kind === 'airstrike_start' || kind === 'airstrike_end') &&
+    isIntegerNumber(value.turnId) && value.turnId >= 1 && isPlayerId(value.currentPlayerId) &&
+    isTurnPhaseValue(value.phase) && isBoolean(value.gameOver) &&
+    (value.winnerId === null || isPlayerId(value.winnerId)) &&
+    (value.itemId === undefined || isItemId(value.itemId)) &&
+    (value.playerId === undefined || isPlayerId(value.playerId)) &&
+    (value.x === undefined || isFiniteNumber(value.x)) && (value.y === undefined || isFiniteNumber(value.y)) &&
+    (value.operationId === undefined || isItemId(value.operationId)) &&
+    isPlayerIdRecord(value.players, (player): player is ItemStatePayload['players']['P1'] => isPlainObject(player) &&
+      isFiniteNumber(player.x) && isFiniteNumber(player.y) && isBoolean(player.hasFired) &&
+      isFiniteNumber(player.moveRemaining) && isBoolean(player.isAlive) &&
+      isIntegerNumber(player.hp) && player.hp >= 0 && player.hp <= GAME_CONFIG.player.maxHp &&
+      isInventory(player.inventory) && isBoolean(player.itemUsedThisTurn)) &&
+    isAuthoritativeOctopusSnapshot(value.octopus, value.turnId) &&
+    isWorldItems(value.items, value.turnId) && isItemGeneration(value.itemGeneration, value.turnId) &&
+    isShotContext(value.acceptedShot, value.turnId) && uniqueOwnedItems(value as unknown as ItemStatePayload);
+  if (!valid) return false;
+  const projection = value as unknown as ItemStatePayload;
+  if (!validPendingAirstrike(projection)) return false;
+  if (kind !== 'airstrike_start' && kind !== 'airstrike_end') return value.airstrike === undefined;
+  if (!isAirstrikeContext(value.airstrike, projection.turnId) ||
+    projection.itemId !== value.airstrike.itemId || projection.playerId !== value.airstrike.ownerId ||
+    !validAirstrikeOwner(value.airstrike, projection)) return false;
+  if (kind === 'airstrike_start') {
+    const pending = projection.pendingAirstrike;
+    return pending !== null && pending.itemId === value.airstrike.itemId &&
+      pending.ownerId === value.airstrike.ownerId && pending.turnId === value.airstrike.turnId &&
+      pending.target.x === value.airstrike.target.x && pending.target.y === value.airstrike.target.y &&
+      pending.resumePhase === value.airstrike.resumePhase && projection.winnerId === null;
+  }
+  if (projection.pendingAirstrike !== null ||
+    PLAYER_IDS.some((id) => projection.players[id].isAlive !== (projection.players[id].hp > 0))) return false;
+  const alive = PLAYER_IDS.filter((id) => projection.players[id].isAlive);
+  if (alive.length === 2) return !projection.gameOver && projection.winnerId === null && projection.phase === value.airstrike.resumePhase;
+  return projection.gameOver && projection.phase === TurnPhase.GAME_OVER && projection.winnerId === (alive[0] ?? null);
+}
+
 /**
- * AuthoritativeGameSnapshot 深校验。items 仅校验数组（V0.1 恒空；
- * 元素结构待 Phase 17 Item Gameplay 定型后再收紧）。
+ * V0.2 snapshot 深校验：有限坐标、类型、固定槽位、唯一拥有关系及生成/导引上下文。
  */
 export function isAuthoritativeGameSnapshot(value: unknown): value is AuthoritativeGameSnapshot {
   if (!isPlainObject(value)) {
@@ -187,10 +328,14 @@ export function isAuthoritativeGameSnapshot(value: unknown): value is Authoritat
     isPlayerId(value.currentPlayerId) &&
     isTurnPhaseValue(value.phase) &&
     isPlayerIdRecord(value.players, isAuthoritativePlayerSnapshot) &&
-    Array.isArray(value.items) &&
+    isWorldItems(value.items, value.turnId) &&
+    isItemGeneration(value.itemGeneration, value.turnId) &&
+    isShotContext(value.acceptedShot, value.turnId) &&
+    validPendingAirstrike(value as unknown as AuthoritativeGameSnapshot) &&
     isAuthoritativeOctopusSnapshot(value.octopus, value.turnId) &&
     isBoolean(value.gameOver) &&
-    (value.winnerId === null || isPlayerId(value.winnerId))
+    (value.winnerId === null || isPlayerId(value.winnerId)) &&
+    uniqueOwnedItems(value as unknown as AuthoritativeGameSnapshot)
   );
 }
 
@@ -200,7 +345,8 @@ export function isAuthoritativeGameSnapshot(value: unknown): value is Authoritat
 
 /** PLAYER_READY：{ readyAt }（epoch ms 整数，与 envelope.timestamp 同税制） */
 export function isPlayerReadyPayload(value: unknown): value is PlayerReadyPayload {
-  return isPlainObject(value) && isIntegerNumber(value.readyAt);
+  return isPlainObject(value) && isIntegerNumber(value.readyAt) &&
+    (value.rulesVersion === undefined || isNonEmptyString(value.rulesVersion));
 }
 
 /** GAME_START：深校验 initialState（Guest 重建本地状态的唯一依据） */
@@ -210,6 +356,7 @@ export function isGameStartPayload(value: unknown): value is GameStartPayload {
   }
   return (
     isNonEmptyString(value.matchId) &&
+    (value.rulesVersion === undefined || isNonEmptyString(value.rulesVersion)) &&
     isIntegerNumber(value.seed) &&
     value.hostPlayerId === 'P1' &&
     value.guestPlayerId === 'P2' &&
@@ -262,7 +409,8 @@ export function isFireRequestPayload(value: unknown): value is FireRequestPayloa
     isFiniteNumber(value.startY) &&
     isFiniteNumber(value.velocityX) &&
     isFiniteNumber(value.velocityY) &&
-    isIntegerNumber(value.seed)
+    isIntegerNumber(value.seed) &&
+    (value.itemId === undefined || isItemId(value.itemId))
   );
 }
 
@@ -279,7 +427,8 @@ export function isFirePayload(value: unknown): value is FirePayload {
     isFiniteNumber(value.startY) &&
     isFiniteNumber(value.velocityX) &&
     isFiniteNumber(value.velocityY) &&
-    isIntegerNumber(value.seed)
+    isIntegerNumber(value.seed) &&
+    (value.itemId === undefined || isItemId(value.itemId))
   );
 }
 
@@ -299,7 +448,8 @@ function isTurnResultPlayerPayload(value: unknown): value is TurnResultPlayerPay
     isIntegerNumber(value.hpBefore) &&
     isBoolean(value.isAlive) &&
     isFiniteNumber(value.moveRemaining) &&
-    isBoolean(value.hasFired)
+    isBoolean(value.hasFired) &&
+    isInventory(value.inventory) && isBoolean(value.itemUsedThisTurn)
   );
 }
 
@@ -329,6 +479,9 @@ export function isTurnResultPayload(value: unknown): value is TurnResultPayload 
     isPlayerIdRecord(value.players, isTurnResultPlayerPayload) &&
     isDamageRecord(value.damages) &&
     isAuthoritativeOctopusSnapshot(value.octopus, value.turnId) &&
+    isWorldItems(value.items, value.turnId) && isItemGeneration(value.itemGeneration, value.turnId) &&
+    isShotContext(value.acceptedShot, value.turnId) && value.pendingAirstrike === null &&
+    uniqueOwnedItems(value as unknown as TurnResultPayload) &&
     isBoolean(value.gameOver) &&
     (value.winnerId === null || isPlayerId(value.winnerId)) &&
     (value.nextPlayerId === null || isPlayerId(value.nextPlayerId)) &&
@@ -421,6 +574,9 @@ const COMMAND_REJECTED_REASON_FLAGS: Readonly<Record<CommandRejectedReason, true
   ALREADY_FIRED: true,
   INVALID_FIRE: true,
   STALE_TURN: true,
+  INVALID_ITEM: true,
+  ITEM_ALREADY_USED: true,
+  HP_FULL: true,
 };
 
 function isCommandRejectedReason(value: unknown): value is CommandRejectedReason {
@@ -436,7 +592,8 @@ export function isCommandRejectedPayload(value: unknown): value is CommandReject
     return false;
   }
   return (
-    (value.commandType === 'MOVE' || value.commandType === 'FIRE') &&
+    (value.commandType === 'MOVE' || value.commandType === 'FIRE' || value.commandType === 'USE_ITEM') &&
+    (value.operationId === undefined || isItemId(value.operationId)) &&
     isCommandRejectedReason(value.reason)
   );
 }

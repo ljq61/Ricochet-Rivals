@@ -1,3 +1,4 @@
+import { ItemSystem } from './ItemSystem';
 import { GAME_CONFIG } from '../config/GameConfig';
 import type { GameState } from '../state/GameState';
 import { TurnPhase } from '../state/TurnPhase';
@@ -24,7 +25,7 @@ import { type PlayerId } from '../state/ids';
  * - 非法转移一律忽略（幂等），与 aimFlow 的防御风格一致
  */
 export class TurnManager {
-  constructor(private readonly state: GameState) {}
+  constructor(private readonly state: GameState, private readonly authority = true) {}
 
   get currentPlayerId(): PlayerId {
     return this.state.currentPlayerId;
@@ -48,6 +49,7 @@ export class TurnManager {
   beginTurn(playerId: PlayerId): void {
     this.state.currentPlayerId = playerId;
     this.resetForTurn(playerId);
+    if (this.authority) new ItemSystem().processTurnStart(this.state);
     this.state.phase = TurnPhase.ACTION;
   }
 
@@ -125,6 +127,7 @@ export class TurnManager {
     this.state.turnId += 1;
     this.state.currentPlayerId = next;
     this.resetForTurn(next);
+    if (this.authority) new ItemSystem().processTurnStart(this.state);
     this.state.phase = TurnPhase.END;
   }
 
@@ -161,8 +164,11 @@ export class TurnManager {
   }
 
   private resetForTurn(playerId: PlayerId): void {
+    this.state.pendingAirstrike = null;
     const player = this.state.players[playerId];
     player.moveRemaining = GAME_CONFIG.player.maxMovePerTurn;
     player.hasFired = false;
+    player.itemUsedThisTurn = false;
+    this.state.acceptedShot = null;
   }
 }

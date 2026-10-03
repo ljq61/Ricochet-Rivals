@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type Phaser from 'phaser';
 import { GAME_CONFIG } from '../../src/game/config/GameConfig';
+import { ART } from '../../src/game/config/ArtAssets';
 import { SFX } from '../../src/game/audio/SfxBus';
 import { createInitialGameState, TurnPhase } from '../../src/game/state/GameState';
 import { OctopusTentacle } from '../../src/game/systems/OctopusTentacle';
@@ -11,6 +12,9 @@ vi.mock('phaser', () => ({ default: { Math: { Clamp: (v: number, min: number, ma
 /** A small rendering adapter: visual drawing calls are inert, lifetime is observable. */
 function fakeObject() {
   const object = { name: '', destroyed: false, x: 0, y: 0, rotation: 0, alpha: 1,
+    depth: 0, displayWidth: 0, displayHeight: 0, textureKey: '', frameIndex: 0,
+    originX: 0.5, originY: 0.5,
+    frameCalls: [] as number[],
     frame: { width: 512, height: 512 }, cropCalls: [] as unknown[][],
     roundedRectCalls: [] as number[][],
     destroy: vi.fn(() => { object.destroyed = true; }) };
@@ -22,6 +26,16 @@ function fakeObject() {
       if (!methods.has(key)) methods.set(key, vi.fn((...args: unknown[]) => {
         if (key === 'setName') target.name = String(args[0]);
         if (key === 'setAlpha') target.alpha = Number(args[0]);
+        if (key === 'setDepth') target.depth = Number(args[0]);
+        if (key === 'setOrigin') {
+          target.originX = Number(args[0]); target.originY = Number(args[1] ?? args[0]);
+        }
+        if (key === 'setDisplaySize') {
+          target.displayWidth = Number(args[0]); target.displayHeight = Number(args[1]);
+        }
+        if (key === 'setFrame') {
+          target.frameIndex = Number(args[0]); target.frameCalls.push(target.frameIndex);
+        }
         if (key === 'setCrop') target.cropCalls.push(args);
         if (key === 'fillRoundedRect') target.roundedRectCalls.push(args as number[]);
         return proxy;
@@ -33,9 +47,10 @@ function fakeObject() {
 }
 
 /** Deterministic linear tween clock; no browser or Phaser-global DOM is required. */
-function fixture(withSprite = false) {
+function fixture(withSprite = false, withSplashFrames = withSprite) {
   const objects: ReturnType<typeof fakeObject>[] = [];
   const bodies = new Set<object>();
+  const roars: { stop: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> }[] = [];
   let now = 0;
   const timers: { due: number; callback: () => void; canceled: boolean }[] = [];
   type TweenConfig = {
@@ -49,17 +64,29 @@ function fixture(withSprite = false) {
     props: { key: string; from: number; to: number }[]; stop: () => void }[] = [];
   const scene = {
     add: {
-      sprite: (x: number, y: number) => {
-        const obj = fakeObject(); obj.x = x; obj.y = y; objects.push(obj); return obj;
+      sprite: (x: number, y: number, textureKey: string) => {
+        const obj = fakeObject(); obj.x = x; obj.y = y; obj.textureKey = textureKey;
+        objects.push(obj); return obj;
       },
       graphics: () => { const obj = fakeObject(); objects.push(obj); return obj; },
+      image: (x: number, y: number, textureKey: string) => {
+        const obj = fakeObject(); obj.x = x; obj.y = y; obj.textureKey = textureKey;
+        objects.push(obj); return obj;
+      },
       text: () => { const obj = fakeObject(); objects.push(obj); return obj; },
     },
-    textures: { exists: () => withSprite },
+    textures: { exists: (key: string) => key === ART.octopusSplash ? withSplashFrames : withSprite,
+      get: () => ({ has: () => true }) },
     anims: { exists: () => true },
     // SfxBus 素材门禁放行；play 出口即断言目标（音效键名序列）
     cache: { audio: { exists: () => true } },
-    sound: { play: vi.fn() },
+    sound: {
+      play: vi.fn((key: string) => {
+        if (key === SFX.octopusSpawn) roars.push({ stop: vi.fn(), destroy: vi.fn() });
+      }),
+      getAll: vi.fn((key: string) => key === SFX.octopusSpawn
+        ? roars.filter((sound) => sound.destroy.mock.calls.length === 0) : []),
+    },
     time: {
       delayedCall: vi.fn((delay: number, callback: () => void) => {
         const timer = { due: now + delay, callback, canceled: false };
@@ -114,7 +141,7 @@ function fixture(withSprite = false) {
   };
   const hit = vi.fn(), focus = vi.fn(), complete = vi.fn();
   const tentacle = new OctopusTentacle(scene as unknown as Phaser.Scene, hit, focus, complete);
-  return { scene, tentacle, hit, focus, complete, tick, objects, bodies };
+  return { scene, tentacle, hit, focus, complete, tick, objects, bodies, roars };
 }
 
 function activeState() {
@@ -125,6 +152,175 @@ function activeState() {
     lastAttackTurnId: null, lastAttackTarget: null };
   return state;
 }
+
+describe('OctopusTentacle emergence presentation', () => {
+  function newborn() {
+    const state = activeState();
+    state.octopus.spawnTurnId = state.turnId;
+    return state;
+  }
+
+  it('plays distinct splash frames behind the creature at a fixed central water opening', () => {
+    const { tentacle, tick, objects } = fixture(true);
+    tentacle.refresh(newborn());
+    const sprite = objects.find((obj) => obj.name === 'octopus-visual')!;
+    const splash = objects.find((obj) => obj.name === 'octopus-disturbance')!;
+    expect(splash.textureKey).toBe(ART.octopusSplash);
+    expect(splash.depth).toBeLessThan(sprite.depth);
+    expect(splash.x).toBe(sprite.x);
+    expect(splash.y).toBe(GAME_CONFIG.octopus.baseY + 14);
+    expect(splash.originX).toBe(0.5);
+    expect(splash.originY).toBe(0.82);
+    expect(splash.displayWidth).toBe(480);
+    expect(splash.displayHeight).toBe(160);
+    tick(500);
+    expect(splash.frameIndex).toBe(0);
+    tick(250);
+    expect(splash.frameIndex).toBe(3);
+    tick(250);
+    expect(splash.frameIndex).toBe(6);
+    tick(1000);
+    expect(splash.frameIndex).toBe(2); // 12 fps; all 16 real frames repeat through the rise
+    expect(splash.displayWidth).toBe(480);
+    expect(splash.displayHeight).toBe(160);
+    expect(sprite.x).toBe(splash.x);
+    tick(1500);
+    expect(splash.alpha).toBeCloseTo(0.425);
+    const shownFrames = [...splash.frameCalls];
+    tentacle.destroy();
+    tick(5000);
+    expect(splash.destroyed).toBe(true);
+    expect(splash.frameCalls).toEqual(shownFrames);
+  });
+
+  it('keeps the old ripple behind the creature when the sequence texture is unavailable', async () => {
+    const { tentacle, tick, objects } = fixture(true, false);
+    tentacle.refresh(newborn());
+    const sprite = objects.find((obj) => obj.name === 'octopus-visual')!;
+    const ripple = objects.find((obj) => obj.name === 'octopus-disturbance')!;
+    expect(ripple.textureKey).toBe(ART.octopusDisturbance);
+    expect(ripple.originY).toBe(0.5);
+    expect(ripple.depth).toBeLessThan(sprite.depth);
+    tick(750);
+    expect(ripple.alpha).toBeGreaterThan(0);
+    expect(ripple.frameCalls).toEqual([]);
+    tick(3250);
+    await tentacle.whenIdle();
+    expect(ripple.destroyed).toBe(true);
+    expect(tentacle.attackPhase).toBe('idle');
+  });
+
+  it.each([false, true])('focuses 0.5s, disturbs water 0.5s, twists upward 2s, then holds 1s (sprite: %s)', async (withSprite) => {
+    const { scene, tentacle, tick, focus, complete, bodies, objects, roars } = fixture(withSprite);
+    const state = newborn();
+    const before = structuredClone(state);
+    tentacle.refresh(state);
+    const idle = tentacle.whenIdle();
+    let settled = false;
+    void idle.then(() => { settled = true; });
+    expect(focus).toHaveBeenCalledExactlyOnceWith(GAME_CONFIG.octopus.x,
+      GAME_CONFIG.octopus.baseY - GAME_CONFIG.octopus.height / 2, 500);
+    expect(bodies.size).toBe(1); // collider is authoritative immediately; animation cannot alter it
+    expect(tentacle.attackPhase).toBe('emergence-focusing');
+    expect(scene.sound.play).not.toHaveBeenCalled();
+    const sprite = objects.find((obj) => obj.name === 'octopus-visual');
+    const ripple = objects.find((obj) => obj.name === 'octopus-disturbance');
+    if (withSprite) { expect(sprite!.alpha).toBe(0); expect(ripple!.alpha).toBe(0); }
+    tick(499);
+    tentacle.refresh(state);
+    expect(tentacle.whenIdle()).toBe(idle);
+    expect(tentacle.attackPhase).toBe('emergence-focusing');
+    tick(1);
+    expect(tentacle.attackPhase).toBe('disturbing');
+    if (withSprite) { expect(sprite!.alpha).toBe(0); expect(ripple!.alpha).toBeGreaterThan(0); }
+    tick(499);
+    expect(scene.sound.play).not.toHaveBeenCalled();
+    tick(1);
+    expect(tentacle.attackPhase).toBe('emerging');
+    expect(scene.sound.play).toHaveBeenCalledExactlyOnceWith(SFX.octopusSpawn, expect.any(Object));
+    tick(250);
+    if (withSprite) {
+      expect(sprite!.rotation).not.toBe(0);
+      expect(sprite!.y).toBeGreaterThan(GAME_CONFIG.octopus.baseY);
+      expect(sprite!.cropCalls.at(-1)![3]).toBeGreaterThan(0);
+      expect(sprite!.cropCalls.at(-1)![3]).toBeLessThan(512);
+    }
+    tick(1749);
+    expect(tentacle.attackPhase).toBe('emerging');
+    tick(1);
+    expect(tentacle.attackPhase).toBe('emergence-holding');
+    if (withSprite) {
+      expect(sprite!.y).toBeCloseTo(GAME_CONFIG.octopus.baseY);
+      expect(sprite!.rotation).toBeCloseTo(0);
+    }
+    tick(999);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(complete).not.toHaveBeenCalled();
+    tick(1);
+    await idle;
+    expect(settled).toBe(true);
+    expect(tentacle.attackPhase).toBe('idle');
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(scene.sound.play).toHaveBeenCalledTimes(1);
+    expect(roars[0]!.stop).not.toHaveBeenCalled(); // ordinary completion leaves the one-shot roar to finish naturally
+    if (withSprite) expect(ripple!.destroyed).toBe(true);
+    expect(state).toEqual(before);
+    tentacle.refresh(state);
+    tick(5000);
+    expect(focus).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([100, 750, 1750, 3500])('recovery during emergence at %s ms resolves the old wait and does not replay it', async (elapsed) => {
+    const { scene, tentacle, tick, focus, complete, objects, roars } = fixture(true);
+    const state = newborn();
+    tentacle.refresh(state);
+    const idle = tentacle.whenIdle();
+    tick(elapsed);
+    const sounds = scene.sound.play.mock.calls.length;
+    tentacle.restore(structuredClone(state));
+    await idle;
+    expect(tentacle.isAttacking).toBe(false);
+    expect(objects.find((obj) => obj.name === 'octopus-visual')!.y).toBe(GAME_CONFIG.octopus.baseY);
+    expect(objects.find((obj) => obj.name === 'octopus-disturbance')!.destroyed).toBe(true);
+    for (let frame = 0; frame < 5; frame++) tentacle.refresh(state);
+    tick(5000);
+    expect(scene.sound.play).toHaveBeenCalledTimes(sounds);
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledTimes(1);
+    for (const sound of roars) {
+      expect(sound.stop).toHaveBeenCalledTimes(1);
+      expect(sound.destroy).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('shutdown while focusing removes collider and visuals and cannot later play a ghost roar', async () => {
+    const { scene, tentacle, tick, objects, bodies, complete } = fixture(true);
+    tentacle.refresh(newborn());
+    const idle = tentacle.whenIdle();
+    tick(300);
+    tentacle.destroy();
+    await idle;
+    tick(5000);
+    expect(bodies.size).toBe(0);
+    expect(objects.every((obj) => obj.destroyed)).toBe(true);
+    expect(scene.sound.play).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it('restoring a newborn snapshot directly displays it without movement or roar', async () => {
+    const { scene, tentacle, tick, objects, focus } = fixture(true);
+    tentacle.restore(newborn());
+    tentacle.refresh(newborn());
+    await tentacle.whenIdle();
+    tick(5000);
+    expect(tentacle.isActive).toBe(true);
+    expect(tentacle.attackPhase).toBe('idle');
+    expect(objects.find((obj) => obj.name === 'octopus-visual')!.y).toBe(GAME_CONFIG.octopus.baseY);
+    expect(focus).not.toHaveBeenCalled();
+    expect(scene.sound.play).not.toHaveBeenCalled();
+  });
+});
 
 describe('OctopusTentacle lifecycle and laser presentation', () => {
   it('shutdown after Matter clears its world cancels FX and resolves pending work without a ghost hit', async () => {

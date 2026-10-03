@@ -1,5 +1,6 @@
 import type { CommandRejectedReason } from './CommandRejectedReason';
 import type { MovementRejectReason } from '../../systems/MovementSystem';
+import type { ItemRejectReason } from '../../systems/ItemSystem';
 import type { FireRejectReason } from '../../systems/FireSystem';
 
 /**
@@ -36,6 +37,8 @@ export function mapMovementRejectReason(
 
 export function mapFireRejectReason(reason: FireRejectReason): CommandRejectedReason {
   switch (reason) {
+    case 'ITEM_ALREADY_USED': return 'ITEM_ALREADY_USED';
+    case 'ITEM_NOT_OWNED': case 'NOT_ATTACK_ITEM': return 'INVALID_ITEM';
     case 'GAME_OVER':
       return 'INVALID_PHASE';
     case 'WRONG_PHASE':
@@ -48,5 +51,18 @@ export function mapFireRejectReason(reason: FireRejectReason): CommandRejectedRe
       return 'INVALID_PLAYER';
     case 'ALREADY_FIRED':
       return 'ALREADY_FIRED';
+  }
+}
+
+export function mapItemRejectReason(reason: ItemRejectReason): CommandRejectedReason {
+  switch (reason) {
+    case 'GAME_OVER': case 'WRONG_PHASE': return 'INVALID_PHASE';
+    case 'TURN_MISMATCH': return 'STALE_TURN';
+    case 'NOT_CURRENT_PLAYER': return 'WRONG_TURN';
+    case 'PLAYER_DEAD': return 'INVALID_PLAYER';
+    case 'ALREADY_FIRED': return 'ALREADY_FIRED';
+    case 'ITEM_ALREADY_USED': return 'ITEM_ALREADY_USED';
+    case 'ITEM_NOT_OWNED': case 'NOT_HEAL_ITEM': return 'INVALID_ITEM';
+    case 'FULL_HP': return 'HP_FULL';
   }
 }

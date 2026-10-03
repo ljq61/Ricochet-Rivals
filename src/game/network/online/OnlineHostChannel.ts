@@ -1,5 +1,5 @@
 import { GAME_CONFIG } from '../../config/GameConfig';
-import type { MoveCommand, FireCommand } from '../../commands/GameCommand';
+import type { MoveCommand, FireCommand, UseItemCommand } from '../../commands/GameCommand';
 import { getLaunchOrigin } from '../../physics/aimMath';
 import type { GameState } from '../../state/GameState';
 import type { CommandRejectedReason } from './CommandRejectedReason';
@@ -8,11 +8,14 @@ import type { NetworkEnvelope } from '../NetworkEnvelope';
 import type { NetworkManager } from '../NetworkManager';
 import type { FireRequestPayload, OnlineBattleDeps } from './OnlineTypes';
 import type { CommandOutcome } from '../../systems/GameLogic';
-import { mapFireRejectReason, mapMovementRejectReason } from './OnlineReasonMap';
+import { mapFireRejectReason, mapMovementRejectReason, mapItemRejectReason } from './OnlineReasonMap';
+import type { AirstrikeContext } from '../../state/AirstrikeState';
+import { TurnPhase } from '../../state/TurnPhase';
 import type { PlayerId } from '../../state/ids';
 import { buildSnapshot, buildTurnResultPayload, computeStateHash } from './AuthoritativeState';
 import {
   isFireRequestPayload,
+  isUseItemRequestPayload,
   isMoveRequestPayload,
   isStateSyncRequestPayload,
   isTurnResultAckPayload,
@@ -20,7 +23,8 @@ import {
 import { OnlineSyncState } from './sync/OnlineSyncState';
 import type { DamageResult } from '../../state/DamageResult';
 import type { ProjectileImpact } from '../../state/ExplosionEvent';
-import type { StateSyncDiagnostics, TurnResultPayload } from './OnlineTypes';
+import { copyAirstrike, buildItemStatePayload } from './ItemAuthority';
+import type { ItemEventDetails, ItemStateChangeKind, StateSyncDiagnostics, TurnResultPayload } from './OnlineTypes';
 
 /**
  * Host 协议通道（Phase 14）—— 请求验证 + 权威广播的 Host 侧实现。
@@ -113,7 +117,7 @@ export interface OnlineChannelUtils {
   /** 统一出站口（记录 lastTxType + 权威回合戳记） */
   sendOut<T>(type: NetworkMessageType, payload: T, lobbyTurnId: number | null): void;
   /** COMMAND_REJECTED 回执（rejectedCount 由 Coordinator 维护） */
-  reject(commandType: 'MOVE' | 'FIRE', reason: CommandRejectedReason): void;
+  reject(commandType: 'MOVE' | 'FIRE' | 'USE_ITEM', reason: CommandRejectedReason, operationId?: string): void;
   /**
    * Phase 15 同步状态迁移。单一事实源在 Coordinator（syncState 公共口径）：
    * channel 调用本方法，Coordinator 记录并转发 deps.onSyncStateChange，
@@ -152,6 +156,8 @@ export class OnlineHostChannel {
   private readonly deps: OnlineHostChannelDeps;
   /** 当前 dispatch 的命令是否来自 Guest 请求（决定被拒时回执归属） */
   private incomingRequest = false;
+  private readonly acceptedItemOperations = new Map<string, { itemId: string; playerId: PlayerId; airstrike?: AirstrikeContext }>();
+  private itemOperationTurn = 0;
 
   /** ---- Phase 15：TURN_RESULT_ACK Barrier ---- */
   /** 待确认回合（TURN_RESULT.turnId）；null = 已确认 / 无等待 */
@@ -212,8 +218,12 @@ export class OnlineHostChannel {
   attach(): () => void {
     const cancels = [
       this.deps.gameLogic.onOutcome((outcome) => this.handleOutcome(outcome)),
+      this.deps.gameLogic.onAirstrikeResolved(({ context }) => {
+        this.notifyItemStateChanged('airstrike_end', { itemId: context.itemId, playerId: context.ownerId, airstrike: context });
+      }),
       this.nm.onMessage(NetworkMessageType.MOVE_REQUEST, (e) => this.handleMoveRequest(e)),
       this.nm.onMessage(NetworkMessageType.FIRE_REQUEST, (e) => this.handleFireRequest(e)),
+      this.nm.onMessage(NetworkMessageType.USE_ITEM_REQUEST, (e) => this.handleUseItemRequest(e)),
       this.nm.onMessage(NetworkMessageType.TURN_RESULT_ACK, (e) => this.handleTurnResultAck(e)),
       this.nm.onMessage(NetworkMessageType.STATE_SYNC_REQUEST, (e) => this.handleStateSyncRequest(e)),
     ];
@@ -223,6 +233,10 @@ export class OnlineHostChannel {
         cancel();
       }
     };
+  }
+
+  notifyItemStateChanged(kind: ItemStateChangeKind, details: ItemEventDetails = {}, operationId?: string): void {
+    this.utils.sendOut(NetworkMessageType.ITEM_STATE, buildItemStatePayload(this.deps.getState(), kind, details, operationId), null);
   }
 
   /**
@@ -415,6 +429,18 @@ export class OnlineHostChannel {
           x: outcome.result.nextX,
           moveRemaining: outcome.result.remainingMovement,
         }, null);
+      } else if (outcome.kind === 'USE_ITEM') {
+        if (this.itemOperationTurn !== outcome.command.turnId) {
+          this.acceptedItemOperations.clear();
+          this.itemOperationTurn = outcome.command.turnId;
+        }
+        const airstrike = outcome.result.airstrike;
+        if (outcome.command.operationId !== undefined) this.acceptedItemOperations.set(outcome.command.operationId,
+          { itemId: outcome.command.itemId, playerId: outcome.command.playerId,
+            ...(airstrike === undefined ? {} : { airstrike: copyAirstrike(airstrike)! }) });
+        this.notifyItemStateChanged(airstrike === undefined ? 'heal' : 'airstrike_start',
+          { itemId: outcome.command.itemId, playerId: outcome.command.playerId,
+            ...(airstrike === undefined ? {} : { airstrike }) }, outcome.command.operationId);
       } else {
         const { type: _type, ...canonical } = outcome.command;
         this.utils.sendOut(NetworkMessageType.FIRE, canonical, null);
@@ -425,8 +451,10 @@ export class OnlineHostChannel {
       const reason =
         outcome.kind === 'MOVE'
           ? mapMovementRejectReason(outcome.result.reason ?? 'WRONG_PHASE')
-          : mapFireRejectReason(outcome.result.reason ?? 'WRONG_PHASE');
-      this.utils.reject(outcome.kind, reason);
+          : outcome.kind === 'USE_ITEM'
+            ? mapItemRejectReason(outcome.result.reason ?? 'WRONG_PHASE')
+            : mapFireRejectReason(outcome.result.reason ?? 'WRONG_PHASE');
+      this.utils.reject(outcome.kind, reason, outcome.kind === 'USE_ITEM' ? outcome.command.operationId : undefined);
     }
     // Host 本地命令被拒 → 静默（离线行为不变）
   }
@@ -475,6 +503,9 @@ export class OnlineHostChannel {
       turnId: state.turnId,
       targetX: player.x + delta,
     };
+    // A valid remote MOVE is also the Guest's local cancel-aim intent.
+    // Only the current unspent action can leave the restored AIM continuation.
+    if (state.phase === TurnPhase.AIM && !player.hasFired) state.phase = TurnPhase.ACTION;
     this.dispatchIncoming(command);
     const distance = Math.abs(player.x - previousX);
     this.remoteMoveCredit = Math.max(0, this.remoteMoveCredit - distance);
@@ -529,12 +560,52 @@ export class OnlineHostChannel {
       velocityX: envelope.payload.velocityX,
       velocityY: envelope.payload.velocityY,
       seed: envelope.payload.seed,
+      ...(envelope.payload.itemId === undefined ? {} : { itemId: envelope.payload.itemId }),
     };
     this.dispatchIncoming(command);
   }
 
+  private handleUseItemRequest(envelope: NetworkEnvelope<unknown>): void {
+    if (!this.utils.guardInbound(envelope, NetworkMessageType.USE_ITEM_REQUEST, isUseItemRequestPayload)) return;
+    if (this.ackLadderSuspended) return;
+    const state = this.deps.getState();
+    const payload = envelope.payload;
+    const verdict = validateMoveRequest(state, envelope, payload);
+    if (verdict.kind === 'drop') return;
+    if (verdict.kind === 'reject') {
+      this.utils.reject('USE_ITEM', verdict.reason, payload.operationId);
+      return;
+    }
+    if (this.itemOperationTurn !== state.turnId) {
+      this.acceptedItemOperations.clear();
+      this.itemOperationTurn = state.turnId;
+    }
+    const previous = this.acceptedItemOperations.get(payload.operationId);
+    if (previous !== undefined) {
+      if (previous.itemId !== payload.itemId || previous.playerId !== payload.playerId) {
+        this.utils.reject('USE_ITEM', 'INVALID_ITEM', payload.operationId);
+        return;
+      }
+      // Confirm the current state; retries cannot replay a finished strike or cached HP.
+      if (previous.airstrike === undefined) {
+        this.notifyItemStateChanged('heal', { itemId: payload.itemId, playerId: payload.playerId }, payload.operationId);
+      } else if (state.pendingAirstrike?.itemId === previous.itemId) {
+        this.notifyItemStateChanged('airstrike_start', { itemId: previous.itemId, playerId: previous.playerId,
+          airstrike: previous.airstrike }, payload.operationId);
+      } else if (state.phase === previous.airstrike.resumePhase || state.phase === TurnPhase.GAME_OVER) {
+        this.notifyItemStateChanged('airstrike_end', { itemId: previous.itemId, playerId: previous.playerId,
+          airstrike: previous.airstrike }, payload.operationId);
+      } else {
+        this.utils.reject('USE_ITEM', 'ITEM_ALREADY_USED', payload.operationId);
+      }
+      return;
+    }
+    this.dispatchIncoming({ type: 'USE_ITEM', playerId: payload.playerId, turnId: state.turnId,
+      itemId: payload.itemId, operationId: payload.operationId, resumePhase: payload.resumePhase });
+  }
+
   /** 以"来自 Guest"标记 dispatch —— 被拒时 outcome 转 COMMAND_REJECTED 回执 */
-  private dispatchIncoming(command: MoveCommand | FireCommand): void {
+  private dispatchIncoming(command: MoveCommand | FireCommand | UseItemCommand): void {
     this.incomingRequest = true;
     try {
       this.deps.commandBus.dispatch(command);

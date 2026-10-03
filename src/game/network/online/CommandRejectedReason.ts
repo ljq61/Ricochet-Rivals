@@ -24,4 +24,7 @@ export type CommandRejectedReason =
   /** FIRE 参数非法（速度 NaN/∞、超速、起点偏离炮塔、seed 不符、武器非法） */
   | 'INVALID_FIRE'
   /** turnId 落后于权威回合（重复/迟到请求） */
-  | 'STALE_TURN';
+  | 'STALE_TURN'
+  | 'INVALID_ITEM'
+  | 'ITEM_ALREADY_USED'
+  | 'HP_FULL';

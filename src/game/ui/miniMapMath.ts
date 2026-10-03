@@ -4,6 +4,7 @@ import type { PlayerState } from '../state/PlayerState';
 import type { PlayerId } from '../state/ids';
 import type { ProjectileState } from '../state/ProjectileState';
 import { touchAimRect, type ScreenRect } from './touchAimLayout';
+import { battleItemDock, battleSettingsRect } from './battleSideDockLayout';
 
 /** Shared screen-space positions keep the map, HP cards and turn message separate. */
 export function battleHudLayout(viewport: ViewportMetrics, playerId: PlayerId = 'P1'): { map: ScreenRect; banner: ScreenRect } {
@@ -17,6 +18,20 @@ export function battleHudLayout(viewport: ViewportMetrics, playerId: PlayerId = 
     y: safeArea.top + 24 * uiScale,
     width: mapWidth,
     height: 36 * uiScale,
+  };
+  const finish = (banner: ScreenRect) => {
+    const dock = battleItemDock(viewport, playerId);
+    const obstacles = [...dock.slots, battleSettingsRect(viewport), ...(dock.bag ? [dock.bag] : [])];
+    const gap = 8 * uiScale;
+    let left = banner.x - banner.width / 2, right = banner.x + banner.width / 2;
+    for (const rect of obstacles) {
+      if (Math.abs(rect.y - banner.y) >= (rect.height + banner.height) / 2 + gap) continue;
+      if (rect.x < map.x) left = Math.max(left, rect.x + rect.width / 2 + gap);
+      else right = Math.min(right, rect.x - rect.width / 2 - gap);
+    }
+    // Retain the existing tiny-surface fallback; the landscape gate owns unsupported sizes.
+    if (right - left < 48 * uiScale) return { map, banner };
+    return { map, banner: { ...banner, x: (left + right) / 2, width: right - left } };
   };
   const aim = touchAimRect(viewport, playerId);
   let bannerHeight = 52 * uiScale;
@@ -35,10 +50,10 @@ export function battleHudLayout(viewport: ViewportMetrics, playerId: PlayerId = 
         : aim.x - aim.width / 2 - safeArea.left - 16 * uiScale);
       bannerHeight = Math.min(36 * uiScale, movementTop - 8 * uiScale - belowCards);
       bannerY = belowCards + bannerHeight / 2;
-      return { map, banner: { x: playerId === 'P2'
+      return finish({ x: playerId === 'P2'
         ? width - safeArea.right - 8 * uiScale - bannerWidth / 2
         : safeArea.left + 8 * uiScale + bannerWidth / 2,
-        y: bannerY, width: bannerWidth, height: bannerHeight } };
+        y: bannerY, width: bannerWidth, height: bannerHeight });
     }
     bannerWidth = Math.max(48 * uiScale, (middleGap - 12) * uiScale);
     bannerHeight = 36 * uiScale;
@@ -50,7 +65,7 @@ export function battleHudLayout(viewport: ViewportMetrics, playerId: PlayerId = 
     // On short landscape screens, long connection messages must stop before Aim.
     bannerWidth = Math.min(bannerWidth, 2 * (Math.abs(aim.x - map.x) - aim.width / 2 - 8 * uiScale));
   }
-  return { map, banner: { x: map.x, y: bannerY, width: bannerWidth, height: bannerHeight } };
+  return finish({ x: map.x, y: bannerY, width: bannerWidth, height: bannerHeight });
 }
 
 export function miniMapWorldX(x: number, width: number, uiScale: number): number {

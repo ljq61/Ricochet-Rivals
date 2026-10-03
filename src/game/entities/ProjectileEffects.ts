@@ -60,16 +60,15 @@ export class ProjectileEffects {
     });
   }
 
-  impact(x: number, y: number): void {
+  impact(x: number, y: number, radius: number = GAME_CONFIG.explosion.radius): void {
     this.finish();
     const scene = this.scene;
-    const radius = GAME_CONFIG.explosion.radius;
     const flash = scene.add.circle(x, y, 50, 0xfff6cc).setDepth(515);
     scene.tweens.add({ targets: flash, scale: 2.4, alpha: 0, duration: 140,
       onComplete: () => flash.destroy() });
     const ring = scene.add.circle(x, y, radius, 0xffd982, 0)
       .setStrokeStyle(5, 0xffdd93, 0.85).setScale(0.2).setDepth(509);
-    scene.tweens.add({ targets: ring, scale: 1.25, alpha: 0, duration: 380,
+    scene.tweens.add({ targets: ring, scale: 1, alpha: 0, duration: 380,
       ease: 'Cubic.easeOut', onComplete: () => ring.destroy() });
     if (scene.textures.exists(ART.explosion)) {
       const burst = scene.add.image(x, y, ART.explosion).setDepth(510);

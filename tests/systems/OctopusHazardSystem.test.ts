@@ -77,21 +77,36 @@ describe('OctopusHazardSystem', () => {
     expect(state.octopus.hp).toBe(13);
   });
 
-  it('turns before age five do not attack; the fifth and each later turn attack once', () => {
+  it('first attacks after five actions, then skips two player actions before each next attack', () => {
     const state = activeState();
-    for (let turn = 2; turn <= 5; turn++) {
-      state.turnId = turn;
-      resolveOctopusTurn(state, null, null);
-      expect(state.octopus.lastAttackTurnId).toBeNull();
-    }
-    for (let turn = 6; turn <= 8; turn++) {
+    state.players.P1.hp = state.players.P2.hp = 10;
+    for (let turn = 2; turn <= 12; turn++) {
       state.turnId = turn;
       const before = state.players.P1.hp + state.players.P2.hp;
-      const result = resolveOctopusTurn(state, null, null)!;
-      expect(state.players.P1.hp + state.players.P2.hp).toBe(before - 1);
-      expect(state.octopus.lastAttackTurnId).toBe(turn);
-      expect(result.players.reduce((sum, entry) => sum + entry.damage, 0)).toBe(1);
-      expect(Number.isFinite(result.explosion.x)).toBe(true);
+      const result = resolveOctopusTurn(state, null, null);
+      const attacks = turn >= 6 && (turn - 6) % cfg.attackIntervalTurns === 0;
+      expect(state.players.P1.hp + state.players.P2.hp).toBe(before - (attacks ? 1 : 0));
+      if (attacks) {
+        expect(state.octopus.lastAttackTurnId).toBe(turn);
+        expect(result!.players.reduce((sum, entry) => sum + entry.damage, 0)).toBe(1);
+        expect(Number.isFinite(result!.explosion.x)).toBe(true);
+      } else {
+        expect(result).toBeNull();
+        expect(state.octopus.lastAttackTurnId).toBe(turn < 6 ? null : 6 +
+          Math.floor((turn - 6) / cfg.attackIntervalTurns) * cfg.attackIntervalTurns);
+      }
+    }
+  });
+
+  it('restored attack history preserves the remaining two-action cooldown independently of elapsed animation', () => {
+    const state = activeState(6);
+    resolveOctopusTurn(state, null, null);
+    const restored = structuredClone(state);
+    for (let turn = 7; turn <= 9; turn++) {
+      state.turnId = restored.turnId = turn;
+      expect(resolveOctopusTurn(restored, null, null)).toEqual(resolveOctopusTurn(state, null, null));
+      expect(restored).toEqual(state);
+      expect(restored.octopus.lastAttackTurnId).toBe(turn < 9 ? 6 : 9);
     }
   });
 
@@ -106,7 +121,10 @@ describe('OctopusHazardSystem', () => {
     resolveOctopusTurn(state, tentacleImpact(6), null);
     expect(state).toEqual(pending);
     resolveOctopusTurn(state, null, null);
-    expect(state.octopus.lastAttackTurnId).toBe(7);
+    expect(state.octopus.lastAttackTurnId).toBe(6);
+    state.turnId = 9;
+    resolveOctopusTurn(state, null, null);
+    expect(state.octopus.lastAttackTurnId).toBe(9);
   });
 
   it('eight direct hits defeat fifteen HP, the killing hit suppresses its laser and it never respawns', () => {
@@ -123,7 +141,7 @@ describe('OctopusHazardSystem', () => {
     resolveOctopusTurn(state, tentacleImpact(9), null);
     expect(state.octopus.hp).toBe(0);
     expect(isOctopusActive(state.octopus)).toBe(false);
-    expect(state.octopus.lastAttackTurnId).toBe(8);
+    expect(state.octopus.lastAttackTurnId).toBe(6);
     expect(state.players.P1.hp + state.players.P2.hp).toBe(hp);
     state.turnId = 10;
     resolveOctopusTurn(state, null, null);
@@ -204,7 +222,7 @@ describe('OctopusHazardSystem', () => {
   it('continued lasers always finish an otherwise stalled match', () => {
     const state = activeState(6);
     const totalHp = state.players.P1.hp + state.players.P2.hp;
-    for (let turn = 6; turn < 6 + totalHp; turn++) {
+    for (let turn = 6; turn < 6 + totalHp * cfg.attackIntervalTurns; turn++) {
       state.turnId = turn;
       resolveOctopusTurn(state, null, null);
       if (state.gameOver) break;

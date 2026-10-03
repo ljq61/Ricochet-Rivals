@@ -18,6 +18,8 @@ describe('Network contracts (Phase 12)', () => {
       'MOVE',
       'FIRE_REQUEST',
       'FIRE',
+      'USE_ITEM_REQUEST',
+      'ITEM_STATE',
       'TURN_RESULT',
       'TURN_END',
       'COMMAND_REJECTED',

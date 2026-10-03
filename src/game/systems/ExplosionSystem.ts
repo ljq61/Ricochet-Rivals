@@ -34,7 +34,8 @@ export class ExplosionSystem {
       weaponId: impact.weaponId,
       x: impact.x,
       y: impact.y,
-      radius: GAME_CONFIG.explosion.radius,
+      radius: impact.itemType === 'range_boost' ? GAME_CONFIG.items.boostedRadius.splash : GAME_CONFIG.explosion.radius,
+      itemType: impact.itemType,
       turnId: impact.turnId,
     };
 

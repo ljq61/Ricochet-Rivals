@@ -163,10 +163,40 @@ export const GAME_CONFIG = {
     shakeIntensity: 0.012,
   },
 
+  items: {
+    inventoryCapacity: 3,
+    maxWorldItems: 2,
+    firstRound: 2,
+    spawnChance: 0.65,
+    pityMisses: 2,
+    lifetimeTurns: 6,
+    crateWidth: 80,
+    crateHeight: 64,
+    separation: 180,
+    obstacleMargin: 80,
+    referenceArcClearance: 120,
+    spawnY: [240, 620],
+    spawnRegions: [[1500, 2100], [2900, 3500]],
+    candidateGridStep: 100,
+    weights: { heal: 27, damage_boost: 27, range_boost: 22, homing: 14, airstrike: 10 },
+    healHp: 2,
+    boostedDamage: { direct: 3, splash: 2 },
+    boostedRadius: { direct: 90, splash: 210 },
+    homingDelayMs: 800,
+    homingSpeed: 4200,
+    simulationStepMs: 1000 / 60,
+    maxFrameDeltaMs: 250,
+    entranceMs: 350,
+    airstrikeFlightMs: 2600,
+    airstrikeDropMs: 650,
+    airstrikeImpactHoldMs: 350,
+    airstrikeAltitudeY: 260,
+  },
+
   /**
    * 中央章鱼触手（Phase 17 玩法特性）：任一方 HP ≤ 阈值时从战场中央
    * 海里升起，待机序列动画 + 静态碰撞体阻挡中低弹道，逼双方改打
-   * 高抛物线。触手可被击败；存活五个行动回合后每回合发射激光，
+   * 高抛物线。触手可被击败；存活五个行动回合后首次发射激光，此后攻击间隔三个行动回合，
    * 随机令一方失去一格 HP。HP 只在回合结算更新 → 炮弹飞行期间触手状态恒定，联机
    * 双端确定性一致（碰撞体激活即时生效，升起动画纯表现层）。
    * HP、存活回合和激光目标属于权威状态，动画只消费结算记录。
@@ -177,6 +207,11 @@ export const GAME_CONFIG = {
     deathDurationMs: 1100,
     /** 出生当回合不计；每个玩家行动均计一个回合。 */
     attackAfterTurns: 5,
+    attackIntervalTurns: 3,
+    emergenceFocusDurationMs: 500,
+    disturbanceDurationMs: 500,
+    emergenceDurationMs: 2000,
+    emergenceHoldDurationMs: 1000,
     laserDamage: 1,
     focusDurationMs: 450,
     chargeDurationMs: 500,

@@ -65,6 +65,11 @@ export class AimController implements GestureClaimant {
     return this.aim;
   }
 
+  /** Includes the touch dead-zone gesture before the drag becomes visible. */
+  get isDragging(): boolean {
+    return this.aim.active || this.pending !== null;
+  }
+
   /** 相机离开 AIMING（取消瞄准等）时中止进行中的拖拽 */
   update(): void {
     if (this.deps.canControl?.() === false) {

@@ -28,9 +28,11 @@ export interface DamageSystem {
 }
 
 /** 按距离取伤害值（分层边界：≤60 → 2；≤140 → 1；>140 → 0） */
-export function damageAtDistance(distance: number): number {
-  const { directDamageRadius, directDamage, radius, splashDamage } =
-    GAME_CONFIG.explosion;
+export function damageAtDistance(distance: number, itemType?: ExplosionEvent['itemType']): number {
+  const directDamageRadius = itemType === 'range_boost' ? GAME_CONFIG.items.boostedRadius.direct : GAME_CONFIG.explosion.directDamageRadius;
+  const radius = itemType === 'range_boost' ? GAME_CONFIG.items.boostedRadius.splash : GAME_CONFIG.explosion.radius;
+  const directDamage = itemType === 'damage_boost' ? GAME_CONFIG.items.boostedDamage.direct : GAME_CONFIG.explosion.directDamage;
+  const splashDamage = itemType === 'damage_boost' ? GAME_CONFIG.items.boostedDamage.splash : GAME_CONFIG.explosion.splashDamage;
   if (distance <= directDamageRadius) {
     return directDamage;
   }
@@ -46,7 +48,7 @@ export class ConcreteDamageSystem implements DamageSystem {
       const player = gameState.players[playerId];
       const distance = distanceToPlayer(explosion, player);
       // 已阵亡玩家不再受伤（保持血量不变，UI 不闪）
-      const damage = player.isAlive ? damageAtDistance(distance) : 0;
+      const damage = player.isAlive ? damageAtDistance(distance, explosion.itemType) : 0;
       return {
         playerId,
         distance,

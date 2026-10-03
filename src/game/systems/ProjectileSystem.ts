@@ -2,10 +2,10 @@ import Phaser from 'phaser';
 import { GAME_CONFIG } from '../config/GameConfig';
 import type { FireCommand } from '../commands/GameCommand';
 import { Projectile } from '../entities/Projectile';
-import {
-  isProjectileExpired,
-  isProjectileOutOfBounds,
-} from '../physics/projectileRules';
+import { stepFlight, simulationFrameBudget } from '../physics/flightSimulation';
+import type { ItemChangeKind, ItemPickup, ShotContext } from '../state/ItemState';
+import { ItemSystem, crateRect } from './ItemSystem';
+import { sweptCircleRectTime } from '../physics/itemGeometry';
 import { COLLISION_CATEGORY } from '../physics/collisionCategories';
 import { MatterLib } from '../physics/matterRuntime';
 import type { GameState } from '../state/GameState';
@@ -34,6 +34,10 @@ export class ProjectileSystem {
   private readonly groundBodies: MatterJS.BodyType[];
   private readonly playerBodies: Record<PlayerId, MatterJS.BodyType>;
   private nextId = 1;
+  private authority = true;
+  private accumulatorMs = 0;
+  private readonly items = new ItemSystem();
+  private readonly fullNotices = new Set<string>();
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
@@ -56,8 +60,6 @@ export class ProjectileSystem {
       P1: this.createPlayerBody('P1', pw, ph),
       P2: this.createPlayerBody('P2', pw, ph),
     };
-
-    scene.matter.world.on('collisionstart', this.onCollisionStart);
   }
 
   /** 当前活动投射物（Phase 6 相机跟随 / 调试读取） */
@@ -79,6 +81,7 @@ export class ProjectileSystem {
       projectile.destroyWithoutExplosion();
     }
     this.projectiles.length = 0;
+    this.accumulatorMs = 0;
   }
 
   // ---- 事件（相机 / Phase 8 TurnManager 消费） ----
@@ -102,10 +105,13 @@ export class ProjectileSystem {
   }
 
   /** 生成并发射一颗 NORMAL 炮弹（AI / 网络 FIRE 同一入口） */
-  launch(command: FireCommand): void {
+  launch(command: FireCommand, shot?: ShotContext): void {
     const id = `proj-${this.nextId}`;
     this.nextId += 1;
-    const projectile = new Projectile(this.scene, id, command);
+    const context = shot && !this.authority ? structuredClone(shot) : shot;
+    const projectile = new Projectile(this.scene, id, command, context);
+    this.accumulatorMs = 0;
+    this.fullNotices.clear();
     this.projectiles.push(projectile);
     this.events.emit(EVENT_LAUNCHED, projectile.state);
   }
@@ -121,36 +127,76 @@ export class ProjectileSystem {
       });
     }
 
-    for (const projectile of [...this.projectiles]) {
-      projectile.tick(deltaMs);
-      const ps = projectile.state;
-
-      if (ps.status === 'flying') {
-        const { width, height } = GAME_CONFIG.world;
-        if (isProjectileOutOfBounds(ps, width, height)) {
-          // 掉出 World Bounds：直接销毁并结束当前攻击（无爆炸）
+    // Long background pauses do not fast-forward gameplay. Ordinary low FPS frames
+    // (<=250ms) retain their complete simulation duration in fixed 60Hz steps.
+    const budget = simulationFrameBudget(this.accumulatorMs, deltaMs);
+    this.accumulatorMs = budget.remainingMs;
+    const stepMs = GAME_CONFIG.items.simulationStepMs;
+    for (let step = 0; step < budget.steps; step++) {
+      for (const projectile of [...this.projectiles]) {
+        if (projectile.state.status !== 'flying') continue;
+        const update = stepFlight(projectile.state, state, stepMs, projectile.shot);
+        // The valid sweep already ends at the first solid/out-of-bounds contact.
+        // Pickup at that endpoint is awarded before the termination event.
+        for (const segment of update.segments) {
+          const pickups = this.authority
+            ? this.items.collectAlongSegment(state, projectile.state.ownerId, segment.from, segment.to) : [];
+          for (const pickup of pickups) {
+            this.events.emit('pickup', pickup);
+            this.events.emit('item-changed', 'pickup', pickup.itemId);
+          }
+          if (state.players[projectile.state.ownerId].inventory.every((item) => item !== null)) {
+            for (const item of state.items) {
+              if (!this.fullNotices.has(item.id) && sweptCircleRectTime(segment.from, segment.to,
+                  crateRect(item), GAME_CONFIG.projectile.radius) !== null) {
+                this.fullNotices.add(item.id);
+                this.events.emit('inventory-full', item.id);
+              }
+            }
+          }
+        }
+        if (update.homingActivated) {
+          projectile.showHomingLock();
+          if (this.authority) this.events.emit('item-changed', 'homing', projectile.shot.itemId);
+        }
+        if (update.termination === 'out-of-bounds') {
           projectile.destroyWithoutExplosion();
           this.remove(projectile);
           this.events.emit(EVENT_OUT_OF_BOUNDS);
-          continue;
-        }
-        if (
-          isProjectileExpired(ps.ageMs, GAME_CONFIG.physics.projectileLifetimeMs)
-        ) {
+        } else if (update.termination === 'impact') {
           this.emitImpact(projectile);
           projectile.beginImpact();
         }
-      } else if (ps.status === 'destroyed') {
-        this.remove(projectile);
       }
     }
+    for (const projectile of [...this.projectiles]) {
+      projectile.tick(deltaMs);
+      if (projectile.state.status === 'destroyed') this.remove(projectile);
+    }
+  }
+
+  /** Guest simulation may render flight, but only Host writes public item state. */
+  setAuthority(authority: boolean): void { this.authority = authority; }
+
+  onInventoryFull(handler: (itemId: string) => void): () => void {
+    this.events.on('inventory-full', handler);
+    return () => this.events.off('inventory-full', handler);
+  }
+
+  onPickup(handler: (pickup: ItemPickup) => void): () => void {
+    this.events.on('pickup', handler);
+    return () => this.events.off('pickup', handler);
+  }
+
+  onItemChanged(handler: (kind: ItemChangeKind, itemId?: string) => void): () => void {
+    this.events.on('item-changed', handler);
+    return () => this.events.off('item-changed', handler);
   }
 
   destroy(): void {
     // 场景关闭链中 scene.matter.world 可能已置 null（SHUTDOWN 时序）——防御
     const world = this.scene.matter?.world;
     if (world) {
-      world.off('collisionstart', this.onCollisionStart);
       for (const body of this.groundBodies) world.remove(body);
       for (const playerId of PLAYER_IDS) {
         world.remove(this.playerBodies[playerId]);
@@ -186,19 +232,6 @@ export class ProjectileSystem {
     return body;
   }
 
-  private readonly onCollisionStart = (event: {
-    pairs: { bodyA: MatterJS.BodyType; bodyB: MatterJS.BodyType }[];
-  }): void => {
-    for (const pair of event.pairs) {
-      const projectile =
-        this.findProjectile(pair.bodyA) ?? this.findProjectile(pair.bodyB);
-      if (projectile) {
-        this.emitImpact(projectile);
-        projectile.beginImpact();
-      }
-    }
-  };
-
   private emitImpact(projectile: Projectile): void {
     const position = projectile.position;
     this.events.emit(EVENT_IMPACT, {
@@ -207,15 +240,8 @@ export class ProjectileSystem {
       ownerId: projectile.state.ownerId,
       weaponId: projectile.state.weaponId,
       turnId: projectile.turnId,
+      itemType: projectile.shot.itemType,
     });
-  }
-
-  private findProjectile(body: MatterJS.BodyType): Projectile | undefined {
-    if (!body.label.startsWith('projectile:')) {
-      return undefined;
-    }
-    const id = body.label.slice('projectile:'.length);
-    return this.projectiles.find((p) => p.state.id === id);
   }
 
   private remove(projectile: Projectile): void {

@@ -1,4 +1,5 @@
 import type { PlayerId, Side, WeaponId } from './ids';
+import type { InventoryItem } from './ItemState';
 
 /**
  * 玩家逻辑状态。
@@ -26,4 +27,6 @@ export interface PlayerState {
   isAlive: boolean;
 
   weaponId: WeaponId;
+  inventory: (InventoryItem | null)[];
+  itemUsedThisTurn: boolean;
 }

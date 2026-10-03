@@ -56,6 +56,8 @@ const PLAYER_SNAPSHOT_P1 = {
   moveRemaining: 0,
   hasFired: false,
   weaponId: 'normal',
+  inventory: [null, null, null],
+  itemUsedThisTurn: false,
 };
 
 const PLAYER_SNAPSHOT_P2 = {
@@ -73,6 +75,9 @@ const GAME_SNAPSHOT = {
   phase: 'START',
   players: { P1: PLAYER_SNAPSHOT_P1, P2: PLAYER_SNAPSHOT_P2 },
   items: [] as unknown[],
+  itemGeneration: { firstWindowParity: 0, lastWindowTurnId: 0, misses: 0, nextId: 1 },
+  acceptedShot: null,
+  pendingAirstrike: null,
   octopus: { hp: 15, spawnTurnId: null, lastResolvedTurnId: 0, lastAttackTurnId: null, lastAttackTarget: null },
   gameOver: false,
   winnerId: null,
@@ -87,8 +92,8 @@ const GAME_START = {
 };
 
 const TURN_RESULT_PLAYERS = {
-  P1: { x: 450, y: 960, hp: 10, hpBefore: 10, isAlive: true, moveRemaining: 0, hasFired: true },
-  P2: { x: 4550, y: 960, hp: 8, hpBefore: 10, isAlive: true, moveRemaining: 0, hasFired: false },
+  P1: { x: 450, y: 960, hp: 10, hpBefore: 10, isAlive: true, moveRemaining: 0, hasFired: true, inventory: [null, null, null], itemUsedThisTurn: false },
+  P2: { x: 4550, y: 960, hp: 8, hpBefore: 10, isAlive: true, moveRemaining: 0, hasFired: false, inventory: [null, null, null], itemUsedThisTurn: false },
 };
 
 const TURN_RESULT = {
@@ -96,6 +101,10 @@ const TURN_RESULT = {
   impact: { x: 4000, y: 900 },
   players: TURN_RESULT_PLAYERS,
   damages: { P1: 0, P2: 2 },
+  items: [],
+  itemGeneration: { firstWindowParity: 0, lastWindowTurnId: 0, misses: 0, nextId: 1 },
+  acceptedShot: null,
+  pendingAirstrike: null,
   octopus: { hp: 15, spawnTurnId: null, lastResolvedTurnId: 1, lastAttackTurnId: null, lastAttackTarget: null },
   gameOver: false,
   winnerId: null,

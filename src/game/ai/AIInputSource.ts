@@ -124,6 +124,16 @@ export class AIInputSource implements InputSource {
       this.reset(); // 防御：无有效决策不空转（正常流程不会发生）
       return;
     }
+    if (decision.healItemId !== undefined) {
+      this.commandBus.dispatch({ type: 'USE_ITEM', playerId: this.playerId,
+        turnId: state.turnId, itemId: decision.healItemId });
+    }
+    if (decision.airstrikeItemId !== undefined) {
+      this.commandBus.dispatch({ type: 'USE_ITEM', playerId: this.playerId,
+        turnId: state.turnId, itemId: decision.airstrikeItemId });
+      // Accepted airstrike owns a cinematic phase. Re-plan only after authority restores ACTION.
+      if (state.phase !== TurnPhase.ACTION) { this.reset(); return; }
+    }
     if (decision.moveTargetX !== null) {
       const command: MoveCommand = {
         type: 'MOVE',
@@ -170,6 +180,7 @@ export class AIInputSource implements InputSource {
       velocityX,
       velocityY,
       seed: state.seed,
+      ...(plan.itemId ? { itemId: plan.itemId } : {}),
     };
     this.commandBus.dispatch(command);
     // 本回合静默（hasFired 已由 FireSystem 标记，canAct 之后自然失效）

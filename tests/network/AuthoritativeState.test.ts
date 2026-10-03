@@ -79,7 +79,7 @@ describe('AuthoritativeState（Phase 14）', () => {
 
       // 改 rebuilt 不影响任何一方
       rebuilt.players.P1.hp = 1;
-      rebuilt.items.push({ id: 'item-1', type: 'heal', x: 100, y: 100, active: true });
+      rebuilt.items.push({ id: 'item-1', type: 'heal', x: 100, y: 100, active: true, spawnTurnId: 3, expiresAtTurnId: 9 });
       expect(state.players.P1.hp).toBe(10);
       expect(snapshot.players.P1.hp).toBe(10);
       expect(state.items).toHaveLength(0);
@@ -245,13 +245,14 @@ describe('AuthoritativeState（Phase 14）', () => {
       expect(computeStateHash(reversed)).toBe(computeStateHash(state));
     });
 
-    it('④ matchId / seed / items 不入哈希（GAME_START 已锁定同源）', () => {
+    it('④ V0.2 identity / items 纳入哈希', () => {
       const a = createInitialGameState({ matchId: 'a', seed: 1 });
       const b = createInitialGameState({ matchId: 'b', seed: 999 });
-      expect(computeStateHash(a)).toBe(computeStateHash(b));
+      expect(computeStateHash(a)).not.toBe(computeStateHash(b));
 
-      a.items.push({ id: 'item-1', type: 'heal', x: 100, y: 100, active: true });
-      expect(computeStateHash(a)).toBe(computeStateHash(b));
+      const before = computeStateHash(a);
+      a.items.push({ id: 'item-1', type: 'heal', x: 100, y: 100, active: true, spawnTurnId: 3, expiresAtTurnId: 9 });
+      expect(computeStateHash(a)).not.toBe(before);
     });
   });
 });

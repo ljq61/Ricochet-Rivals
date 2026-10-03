@@ -3,16 +3,22 @@ import type {
   FireCommand,
   GameCommand,
   MoveCommand,
+  UseItemCommand,
 } from '../commands/GameCommand';
 import type { GameState } from '../state/GameState';
 import type { FireResult, FireSystem } from './FireSystem';
 import type { MovementResult, MovementSystem } from './MovementSystem';
 import type { ProjectileSystem } from './ProjectileSystem';
+import { ItemSystem, type UseItemResult } from './ItemSystem';
+import type { AirstrikeContext, AirstrikeResult } from '../state/AirstrikeState';
+import { AirstrikeSystem } from './AirstrikeSystem';
 
 export interface GameLogicSystems {
   movement: MovementSystem;
   fire: FireSystem;
   projectile: ProjectileSystem;
+  items?: ItemSystem;
+  airstrike?: AirstrikeSystem;
 }
 
 /**
@@ -31,7 +37,8 @@ export type CommandOutcome =
       readonly kind: 'FIRE';
       readonly command: FireCommand;
       readonly result: FireResult;
-    };
+    }
+  | { readonly kind: 'USE_ITEM'; readonly command: UseItemCommand; readonly result: UseItemResult };
 
 /**
  * Game Logic 核心：订阅 CommandBus，把命令路由到对应系统。
@@ -50,6 +57,8 @@ export type CommandOutcome =
  */
 export class GameLogic {
   private readonly unsubscribe: () => void;
+  private readonly airstrikeStartedHandlers = new Set<(context: AirstrikeContext) => void>();
+  private readonly airstrikeResolvedHandlers = new Set<(result: AirstrikeResult) => void>();
 
   private readonly outcomeHandlers = new Set<
     (outcome: CommandOutcome) => void
@@ -76,6 +85,30 @@ export class GameLogic {
     };
   }
 
+  onAirstrikeStarted(handler: (context: AirstrikeContext) => void): () => void {
+    this.airstrikeStartedHandlers.add(handler);
+    return () => { this.airstrikeStartedHandlers.delete(handler); };
+  }
+
+  onAirstrikeResolved(handler: (result: AirstrikeResult) => void): () => void {
+    this.airstrikeResolvedHandlers.add(handler);
+    return () => { this.airstrikeResolvedHandlers.delete(handler); };
+  }
+
+  resolveAirstrike(expected?: { itemId: string; turnId: number }): AirstrikeResult | null {
+    const result = (this.systems.airstrike ?? new AirstrikeSystem()).resolve(this.state, expected);
+    if (result) this.emitAirstrike(this.airstrikeResolvedHandlers, result);
+    return result;
+  }
+
+  private emitAirstrike<T>(handlers: Set<(value: T) => void>, value: T): void {
+    for (const handler of handlers) {
+      try { handler(value); } catch (error) {
+        console.error('[GameLogic] Airstrike handler threw:', error);
+      }
+    }
+  }
+
   private readonly handleCommand = (command: GameCommand): void => {
     if (command.type === 'MOVE') {
       const result = this.systems.movement.execute(this.state, command);
@@ -83,9 +116,13 @@ export class GameLogic {
     } else if (command.type === 'FIRE') {
       const result = this.systems.fire.execute(this.state, command);
       if (result.accepted) {
-        this.systems.projectile.launch(command);
+        this.systems.projectile.launch(command, result.shot);
       }
       this.emitOutcome({ kind: 'FIRE', command, result });
+    } else if (command.type === 'USE_ITEM') {
+      const result = (this.systems.items ?? new ItemSystem()).execute(this.state, command);
+      this.emitOutcome({ kind: 'USE_ITEM', command, result });
+      if (result.accepted && result.airstrike) this.emitAirstrike(this.airstrikeStartedHandlers, result.airstrike);
     }
   };
 
@@ -104,5 +141,7 @@ export class GameLogic {
     this.unsubscribe();
     // 防 scene.start 实例复用后旧闭包复活（同 C1 幽灵 AI 坑）
     this.outcomeHandlers.clear();
+    this.airstrikeStartedHandlers.clear();
+    this.airstrikeResolvedHandlers.clear();
   }
 }

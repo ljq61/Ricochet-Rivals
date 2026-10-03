@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { computeViewportMetrics } from '../../src/game/platform/viewportMath';
 import { dockMoveButtonLayout, screenRectsOverlap, touchAimRect } from '../../src/game/ui/touchControlLayout';
+import { battleItemDock, battleSettingsRect } from '../../src/game/ui/battleSideDockLayout';
 import { battleHudLayout } from '../../src/game/ui/miniMapMath';
 
 const sizes = [
@@ -25,7 +26,7 @@ describe('dock movement controls', () => {
         { x: aim.x, y: aim.y + aim.height / 2 + 10 * dpr, width: 40 * dpr, height: 20 * dpr },
       ];
       expect(layout.hitSize / dpr).toBeGreaterThanOrEqual(48);
-      expect(layout.visualSize).toBeCloseTo(180 * viewport.zoom * 0.82);
+      expect(layout.visualSize).toBeCloseTo(Math.min(52 * dpr, 180 * viewport.zoom * 0.62));
       expect(layout.left.x).toBeLessThan(layout.right.x);
       expect(screenRectsOverlap(layout.left, layout.right)).toBe(false);
       for (const button of [layout.left, layout.right]) {
@@ -78,8 +79,26 @@ describe('dock movement controls', () => {
     const viewport = computeViewportMetrics(844, 390, { left: 0, right: 0, top: 0, bottom: 0 });
     const layout = dockMoveButtonLayout(viewport, 268, 380, 380, 65);
     expect(layout.right.x).toBeCloseTo(380 + layout.visualSize / 2 + 8);
-    expect(layout.right.y).toBeCloseTo(380 - layout.visualSize / 2);
+    expect(layout.right.y).toBeCloseTo(Math.min(380 - layout.visualSize / 2, 390 - layout.hitSize / 2 - 8));
   });
+
+  it.each([[844, 390], [667, 320], [568, 256], [932, 430]])(
+    'moves deck controls around stable item docks and gear at %i × %i', (width, height) => {
+      for (const id of ['P1', 'P2'] as const) for (const dpr of [1, 2, 3]) for (const pan of [-2000, 0, 2000]) {
+        const safe = { left: 20 * dpr, right: 12 * dpr, top: 4 * dpr, bottom: 8 * dpr };
+        const viewport = computeViewportMetrics(width * dpr, height * dpr, safe, undefined, dpr);
+        const dock = battleItemDock(viewport, id);
+        const obstacles = [...(dock.bag ? [dock.bag] : []), ...dock.slots, battleSettingsRect(viewport)];
+        const controls = dockMoveButtonLayout(viewport, (10 + pan) * dpr, (width - 10 + pan) * dpr,
+          (height - 30) * dpr, 180 * viewport.zoom, id);
+        expect(controls.visualSize / dpr).toBeLessThanOrEqual(52);
+        expect(controls.hitSize / dpr).toBeGreaterThanOrEqual(48);
+        for (const rect of [controls.left, controls.right]) {
+          expect(obstacles.some((obstacle) => screenRectsOverlap(rect, obstacle, 8 * dpr)),
+            JSON.stringify({ width, height, id, dpr, pan, controls, obstacles })).toBe(false);
+        }
+      }
+    });
 
   it('accepts an exact fractional gap while still rejecting meaningful overlap', () => {
     const obstacle = { x: 796, y: 716, width: 96, height: 96 };

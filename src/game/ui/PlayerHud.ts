@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_CONFIG } from '../config/GameConfig';
 import { playerColor } from '../config/Palette';
+import { battleSettingsRect } from './battleSideDockLayout';
 import { ART } from '../config/ArtAssets';
 import type { ViewportService } from '../platform/ViewportService';
 import type { PlayerState } from '../state/PlayerState';
@@ -16,13 +17,12 @@ interface HudEntry {
   portraitFill: Phaser.GameObjects.Graphics;
   avatar: Phaser.GameObjects.Image | null;
   hpText: Phaser.GameObjects.Text;
-  name: Phaser.GameObjects.Text;
   displayedHp: number | null;
   shownHp: number;
   tween: Phaser.Tweens.Tween | null;
 }
 
-/** Concept HUD: large framed portraits, team nameplates and animated red HP segments. */
+/** Compact concept HUD: framed portraits and animated HP segments. */
 export class PlayerHud {
   private readonly entries: Record<PlayerId, HudEntry>;
   private readonly unsubscribeViewport: () => void;
@@ -71,12 +71,9 @@ export class PlayerHud {
 
   /** DOM gear center below the P1 portrait, in CSS pixels. */
   get settingsAnchor(): { x: number; y: number } {
-    const { safeArea, uiScale } = this.viewport.current;
-    const scale = this.hudScale();
-    return {
-      x: (safeArea.left + 12 * uiScale + 36 * scale) / uiScale,
-      y: (safeArea.top + 83 * scale) / uiScale + 8 + 24,
-    };
+    const rect = battleSettingsRect(this.viewport.current);
+    const ui = this.viewport.current.uiScale;
+    return { x: rect.x / ui, y: rect.y / ui };
   }
 
   private hudScale(): number {
@@ -105,20 +102,12 @@ export class PlayerHud {
     if (this.scene.textures.exists(ART.portraitFrame)) {
       container.add(this.scene.add.image(portraitX, 0, ART.portraitFrame).setDisplaySize(78, 78));
     }
-    container.add(this.scene.add.text(portraitX, 29, id, {
-      fontFamily: 'monospace', fontSize: '11px', fontStyle: 'bold', color: '#fff0c6',
-      stroke: '#121c27', strokeThickness: 2,
-    }).setOrigin(0.5));
-    const name = this.scene.add.text(barX + 8, -27, right ? 'RED CREW' : 'BLUE CREW', {
-      fontFamily: 'monospace', fontSize: '12px', fontStyle: 'bold', color: '#fff1cd',
-      stroke: '#17202c', strokeThickness: 2,
-    });
-    const hpText = this.scene.add.text(barX + BAR_WIDTH / 2, 5, '', {
+    const hpText = this.scene.add.text(barX + BAR_WIDTH / 2, -17, '', {
       fontFamily: 'monospace', fontSize: '13px', fontStyle: 'bold', color: '#ffffff',
       stroke: '#321815', strokeThickness: 3,
     }).setOrigin(0.5);
-    container.add([name, hpText]);
-    return { container, plate, portraitFill, avatar, hpText, name, displayedHp: null,
+    container.add(hpText);
+    return { container, plate, portraitFill, avatar, hpText, displayedHp: null,
       shownHp: GAME_CONFIG.player.maxHp, tween: null };
   }
 
@@ -136,29 +125,22 @@ export class PlayerHud {
   private drawEntry(entry: HudEntry, player: PlayerState): void {
     const x = player.id === 'P2' ? 8 : 84;
     const g = entry.plate.clear();
-    const color = playerColor(player.id);
-    // Raised steel housing, inset dark trough, warm top edge and team enamel nameplate.
-    g.fillStyle(0x101720).fillRoundedRect(x - 5, -31, BAR_WIDTH + 10, 60, 4);
-    g.lineStyle(2, 0x9b8864).strokeRoundedRect(x - 5, -31, BAR_WIDTH + 10, 60, 4);
-    g.fillStyle(color).fillRect(x, -27, BAR_WIDTH, 16);
-    g.fillStyle(0x27171b).fillRect(x, -6, BAR_WIDTH, 24);
+    // Restore the original inset trough and bright steel edge around the HP bar itself.
+    // The large team-name housing remains removed.
+    g.fillStyle(0x27171b).fillRect(x, -29, BAR_WIDTH, 24);
     const segmentWidth = (BAR_WIDTH - 4) / player.maxHp;
     for (let i = 0; i < player.maxHp; i++) {
       const fill = Phaser.Math.Clamp(entry.shownHp - i, 0, 1);
       const sx = x + 2 + i * segmentWidth;
-      g.fillStyle(0x512a2a).fillRect(sx, -4, segmentWidth - 2, 20);
+      g.fillStyle(0x512a2a).fillRect(sx, -27, segmentWidth - 2, 20);
       if (fill > 0) {
         const w = (segmentWidth - 2) * fill;
-        g.fillStyle(player.isAlive ? 0xcc3836 : 0x65646a).fillRect(sx, -4, w, 20);
-        g.fillStyle(0xff9470, 0.8).fillRect(sx, -4, w, 5);
-        g.fillStyle(0x84242e).fillRect(sx, 12, w, 4);
+        g.fillStyle(player.isAlive ? 0xcc3836 : 0x65646a).fillRect(sx, -27, w, 20);
+        g.fillStyle(0xff9470, 0.8).fillRect(sx, -27, w, 5);
+        g.fillStyle(0x84242e).fillRect(sx, -11, w, 4);
       }
     }
-    g.lineStyle(1, 0xf5d799).strokeRect(x, -6, BAR_WIDTH, 24);
-    for (const sx of [x, x + BAR_WIDTH - 2]) {
-      g.fillStyle(0xc7bd9d).fillCircle(sx, 23, 2);
-    }
+    g.lineStyle(1, 0xf5d799).strokeRect(x, -29, BAR_WIDTH, 24);
     entry.hpText.setText(`${Math.max(0, Math.round(entry.shownHp))} / ${player.maxHp}`);
-    entry.name.setText(player.isAlive ? (player.id === 'P1' ? 'BLUE CREW' : 'RED CREW') : 'K.O.');
   }
 }

@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { evaluateAIShot } from '../../src/game/ai/AIItemStrategy';
 import { AIController, type AIFirePlan } from '../../src/game/ai/AIController';
 import { velocityFromAngleSpeed } from '../../src/game/ai/TrajectorySolver';
 import { GAME_CONFIG, type AIDifficulty } from '../../src/game/config/GameConfig';
@@ -89,7 +90,7 @@ function makeState(leftX: number, rightX: number, side: 'P1' | 'P2', hazard: boo
   return state;
 }
 
-function measure(state: GameState, difficulty: AIDifficulty) {
+function measure(state: GameState, difficulty: AIDifficulty, production = false) {
   let hits = 0;
   let damage = 0;
   for (let seed = 1; seed <= 120; seed++) {
@@ -102,7 +103,7 @@ function measure(state: GameState, difficulty: AIDifficulty) {
     expect(decision.fire).not.toBeNull();
     expect(decision.fire!.speed).toBeGreaterThanOrEqual(GAME_CONFIG.aiming.minLaunchSpeed);
     expect(decision.fire!.speed).toBeLessThanOrEqual(GAME_CONFIG.aiming.maxLaunchSpeed);
-    const dealt = simulateDamage(state, decision.fire!);
+    const dealt = production ? evaluateAIShot(state, decision.fire!).damage : simulateDamage(state, decision.fire!);
     hits += Number(dealt > 0);
     damage += dealt;
   }
@@ -128,6 +129,31 @@ describe('AI difficulty with actual Matter collision and damage', () => {
     it(`${side}: hard remains effective when the central octopus emerges`, () => {
       const result = measure(makeState(850, 4150, side, true), 'hard');
       expect(result.hitRate).toBeGreaterThan(0.95);
+    });
+  }
+});
+
+
+describe('AI difficulty with production continuous flight and damage', () => {
+  for (const side of ['P1', 'P2'] as const) {
+    for (const [leftX, rightX] of [[450, 4550], [850, 4150], [100, 4900]]) {
+      it(`${side}: production normal/hard retain calibrated accuracy at ${leftX} → ${rightX}`, () => {
+        const state = makeState(leftX!, rightX!, side, false);
+        const easy = measure(state, 'easy', true);
+        const normal = measure(state, 'normal', true);
+        const hard = measure(state, 'hard', true);
+        if (process.env.AI_ACCURACY_REPORT) console.log({ physics: 'continuous', side, leftX, rightX, easy, normal, hard });
+        // Rounded continuous contact is slightly earlier than discrete Matter polygons.
+        // Keep V0.1 error settings; require a majority of hits even at 4800px.
+        expect(normal.hitRate).toBeGreaterThan(0.5);
+        expect(normal.hitRate).toBeLessThan(0.95);
+        expect(normal.hitRate - easy.hitRate).toBeGreaterThan(0.3);
+        expect(hard.hitRate).toBeGreaterThan(0.95);
+        expect(hard.damagePerShot - normal.damagePerShot).toBeGreaterThanOrEqual(0.25);
+      });
+    }
+    it(`${side}: production hard can still clear the central octopus`, () => {
+      expect(measure(makeState(850, 4150, side, true), 'hard', true).hitRate).toBeGreaterThan(0.95);
     });
   }
 });

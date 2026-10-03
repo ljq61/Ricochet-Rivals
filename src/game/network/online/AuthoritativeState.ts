@@ -1,3 +1,4 @@
+import { copyAirstrike, copyGeneration, copyInventory, copyShot, copyWorldItems } from './ItemAuthority';
 import { GAME_CONFIG } from '../../config/GameConfig';
 import type { GameState } from '../../state/GameState';
 import type { PlayerState } from '../../state/PlayerState';
@@ -44,6 +45,8 @@ export function buildSnapshot(state: GameState): AuthoritativeGameSnapshot {
       moveRemaining: p.moveRemaining,
       hasFired: p.hasFired,
       weaponId: p.weaponId,
+      inventory: copyInventory(p.inventory),
+      itemUsedThisTurn: p.itemUsedThisTurn,
     };
   }
   return {
@@ -53,7 +56,10 @@ export function buildSnapshot(state: GameState): AuthoritativeGameSnapshot {
     currentPlayerId: state.currentPlayerId,
     phase: state.phase,
     players,
-    items: state.items.map((item) => ({ ...item })),
+    items: copyWorldItems(state.items),
+    itemGeneration: copyGeneration(state.itemGeneration),
+    acceptedShot: copyShot(state.acceptedShot),
+    pendingAirstrike: copyAirstrike(state.pendingAirstrike),
     octopus: {
       hp: state.octopus.hp,
       spawnTurnId: state.octopus.spawnTurnId,
@@ -86,9 +92,11 @@ export function stateFromSnapshot(snapshot: AuthoritativeGameSnapshot): GameStat
       hasFired: s.hasFired,
       isAlive: s.isAlive,
       weaponId: s.weaponId,
+      inventory: copyInventory(s.inventory),
+      itemUsedThisTurn: s.itemUsedThisTurn,
     };
   }
-  const items: WorldItemState[] = snapshot.items.map((item) => ({ ...item }));
+  const items: WorldItemState[] = copyWorldItems(snapshot.items);
   return {
     matchId: snapshot.matchId,
     seed: snapshot.seed,
@@ -97,6 +105,9 @@ export function stateFromSnapshot(snapshot: AuthoritativeGameSnapshot): GameStat
     phase: snapshot.phase,
     players,
     items,
+    itemGeneration: copyGeneration(snapshot.itemGeneration),
+    acceptedShot: copyShot(snapshot.acceptedShot),
+    pendingAirstrike: copyAirstrike(snapshot.pendingAirstrike),
     octopus: { ...snapshot.octopus },
     gameOver: snapshot.gameOver,
     winnerId: snapshot.winnerId,
@@ -130,6 +141,8 @@ export function buildTurnResultPayload(
       isAlive: p.isAlive,
       moveRemaining: p.moveRemaining,
       hasFired: p.hasFired,
+      inventory: copyInventory(p.inventory),
+      itemUsedThisTurn: p.itemUsedThisTurn,
     };
     damages[playerId] = damage;
   }
@@ -138,6 +151,10 @@ export function buildTurnResultPayload(
     impact: impact === null ? null : { x: impact.x, y: impact.y },
     players,
     damages,
+    items: copyWorldItems(state.items),
+    itemGeneration: copyGeneration(state.itemGeneration),
+    acceptedShot: copyShot(state.acceptedShot),
+    pendingAirstrike: copyAirstrike(state.pendingAirstrike),
     octopus: {
       hp: state.octopus.hp,
       spawnTurnId: state.octopus.spawnTurnId,
@@ -178,7 +195,13 @@ export function applyTurnResult(
     p.isAlive = entry.isAlive;
     p.moveRemaining = entry.moveRemaining;
     p.hasFired = entry.hasFired;
+    p.inventory = copyInventory(entry.inventory);
+    p.itemUsedThisTurn = entry.itemUsedThisTurn;
   }
+  state.items.splice(0, state.items.length, ...copyWorldItems(payload.items));
+  Object.assign(state.itemGeneration, copyGeneration(payload.itemGeneration));
+  state.acceptedShot = copyShot(payload.acceptedShot);
+  state.pendingAirstrike = copyAirstrike(payload.pendingAirstrike);
   state.gameOver = payload.gameOver;
   state.winnerId = payload.winnerId;
   copyOctopusState(state, payload.octopus);
@@ -231,11 +254,11 @@ export function normalizePosition(value: number): number {
 }
 
 /**
- * hash 契约版本前缀。v3 = 触手权威状态；v2 = 位置归一化版（Phase 15）；v1 = Phase 14 无
+ * hash 契约版本前缀。v5 = 空袭待结算上下文；v4 = 道具/库存/生成/导引；v3 = 触手；v2 = 位置归一化；v1 = Phase 14 无
  * 归一化版（已废弃）。未来新增 authoritative 字段进 hash 必须递增本
  * 版本 —— 两端不同 build 会显式 mismatch 而非静默不同源。
  */
-export const STATE_HASH_VERSION = 'v3';
+export const STATE_HASH_VERSION = 'v5';
 
 /**
  * Guest：原子应用权威快照（Phase 15 desync 恢复）。与 applyTurnResult
@@ -268,11 +291,13 @@ export function applyAuthoritativeSnapshot(
     p.hasFired = s.hasFired;
     p.isAlive = s.isAlive;
     p.weaponId = s.weaponId;
+    p.inventory = copyInventory(s.inventory);
+    p.itemUsedThisTurn = s.itemUsedThisTurn;
   }
-  state.items.length = 0; // V0.1 恒空；保持数组引用不变
-  for (const item of snapshot.items) {
-    state.items.push({ ...item });
-  }
+  state.items.splice(0, state.items.length, ...copyWorldItems(snapshot.items));
+  Object.assign(state.itemGeneration, copyGeneration(snapshot.itemGeneration));
+  state.acceptedShot = copyShot(snapshot.acceptedShot);
+  state.pendingAirstrike = copyAirstrike(snapshot.pendingAirstrike);
   state.gameOver = snapshot.gameOver;
   state.winnerId = snapshot.winnerId;
   copyOctopusState(state, snapshot.octopus);
@@ -295,15 +320,14 @@ function copyOctopusState(state: GameState, octopus: AuthoritativeGameSnapshot['
  * * 位置经 normalizePosition（0.01 精度，Phase 15）—— 物理 / 插值来源的
  *   双端微小浮点差不构成 gameplay 差异，不得触发 desync
  * * 数值经模板字符串（ECMA-262 Number::toString 规范化，双端一致）
- * * 禁 Math.random / toLocaleString / JSON.stringify 键序
+ * * 禁 Math.random / toLocaleString；JSON 编码仅用于固定顺序数组以消除 ID 分隔歧义
  * * 规范串以 STATE_HASH_VERSION 前缀开头 —— hash 契约版本化，未来新增
  *   authoritative 字段必须递增版本（两端不同 build 显式 mismatch，
  *   而非静默不同源）
  *
- * 不纳入 matchId / seed / items：matchId+seed 已由 GAME_START 锁定双方
- * 同源；items V0.1 恒空（Phase 17 定型后再评估纳入）。
- * 覆盖字段：turnId / currentPlayerId / phase / 每玩家(x,y,hp,isAlive,
- * moveRemaining,hasFired) / gameOver / winnerId / 触手 HP 与回合历史。
+ * 覆盖 identity / 回合 / 玩家 HP位置存活预算发射 / 背包与道具额度 /
+ * 世界空投、生成窗口和保底计数 / 已接受攻击与导引点 / 触手历史 / 终局。
+ * 本地尚未接受的 HUD 选中道具不属于权威 state，也不进入 hash。
  */
 export function computeStateHash(state: GameState): string {
   const parts: string[] = [
@@ -315,9 +339,19 @@ export function computeStateHash(state: GameState): string {
   for (const playerId of PLAYER_IDS) {
     const p = state.players[playerId];
     parts.push(
-      `${playerId}:${p.hp},${normalizePosition(p.x)},${normalizePosition(p.y)},${p.isAlive ? 1 : 0},${p.moveRemaining},${p.hasFired ? 1 : 0}`,
+      `${playerId}:${p.hp},${normalizePosition(p.x)},${normalizePosition(p.y)},${p.isAlive ? 1 : 0},${p.moveRemaining},${p.hasFired ? 1 : 0},${p.itemUsedThisTurn ? 1 : 0}`,
+      `${playerId}.bag=${p.inventory.map((item) => item === null ? '-' : JSON.stringify([item.id, item.type])).join(';')}`,
     );
   }
+  parts.push(`identity=${JSON.stringify([state.matchId, state.seed])}`);
+  const generation = state.itemGeneration;
+  parts.push(`generation=${generation.firstWindowParity},${generation.lastWindowTurnId},${generation.misses},${generation.nextId}`);
+  parts.push(`items=${state.items.map((item) => JSON.stringify([item.id, item.type, normalizePosition(item.x), normalizePosition(item.y), item.active, item.spawnTurnId, item.expiresAtTurnId])).join(';')}`);
+  const shot = state.acceptedShot;
+  parts.push(`shot=${shot === null ? '-' : JSON.stringify([shot.ownerId, shot.turnId, shot.itemId ?? null, shot.itemType ?? null, shot.homingActivated, shot.homingTarget === undefined ? null : [normalizePosition(shot.homingTarget.x), normalizePosition(shot.homingTarget.y)]])}`);
+  const airstrike = state.pendingAirstrike;
+  parts.push(`airstrike=${airstrike === null ? '-' : JSON.stringify([airstrike.itemId, airstrike.ownerId,
+    airstrike.turnId, normalizePosition(airstrike.target.x), normalizePosition(airstrike.target.y), airstrike.resumePhase])}`);
   parts.push(`over=${state.gameOver ? 1 : 0}`);
   parts.push(`win=${state.winnerId === null ? 'null' : state.winnerId}`);
   const octopus = state.octopus;

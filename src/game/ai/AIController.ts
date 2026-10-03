@@ -6,6 +6,7 @@ import { TurnPhase } from '../state/TurnPhase';
 import type { GameState } from '../state/GameState';
 import type { PlayerState } from '../state/PlayerState';
 import { solveTrajectory } from './TrajectorySolver';
+import { withAIItems } from './AIItemStrategy';
 
 /**
  * AIController（Phase 10，CODELY.md §18）—— 纯逻辑决策核心。
@@ -27,6 +28,7 @@ export interface AIFirePlan {
   angleDeg: number;
   /** 发射速度（px/s），∈ [minLaunchSpeed, maxLaunchSpeed] */
   speed: number;
+  itemId?: string;
 }
 
 export interface AIDecision {
@@ -34,6 +36,8 @@ export interface AIDecision {
   moveTargetX: number | null;
   /** 拟发射弹道（纯方向 + 力度；start 由执行层发射瞬间读取） */
   fire: AIFirePlan | null;
+  healItemId?: string;
+  airstrikeItemId?: string;
 }
 
 const NO_DECISION: AIDecision = { moveTargetX: null, fire: null };
@@ -66,7 +70,7 @@ export class AIController {
       targetY,
     });
     if (solution) {
-      return { moveTargetX: null, fire: this.applyError(solution, rng) };
+      return withAIItems(state, { moveTargetX: null, fire: this.applyError(solution, rng) }, this.difficulty, (plan) => this.applyError(plan, rng));
     }
 
     // 2. 无解：搜索基地内移动候选（先朝敌后背敌，确定性顺序）
@@ -78,12 +82,14 @@ export class AIController {
         targetY,
       });
       if (moved) {
-        return { moveTargetX: candidateX, fire: this.applyError(moved, rng) };
+        const movedState = structuredClone(state);
+        movedState.players[state.currentPlayerId].x = candidateX;
+        return withAIItems(movedState, { moveTargetX: candidateX, fire: this.applyError(moved, rng) }, this.difficulty, (plan) => this.applyError(plan, rng));
       }
     }
 
     // 3. 全部无解：尽力弹（回合唯一出口是发射，绝不返回 null fire）
-    return { moveTargetX: null, fire: this.bestEffortShot(me, enemy.x, rng) };
+    return withAIItems(state, { moveTargetX: null, fire: this.bestEffortShot(me, enemy.x, rng) }, this.difficulty, (plan) => this.applyError(plan, rng));
   }
 
   // ---- 内部 ---------------------------------------------------------------

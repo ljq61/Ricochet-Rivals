@@ -61,8 +61,8 @@ export class AimButton {
     return { x: this.screenX, y: this.screenY, width: this.width, height: this.height };
   }
 
-  get visualState(): { flipped: boolean; active: boolean; hintVisible: boolean; hintAlpha: number } {
-    return { flipped: this.icon?.flipX ?? false, active: this.icon?.texture.key === ART.aimActive,
+  get visualState(): { visible: boolean; flipped: boolean; active: boolean; hintVisible: boolean; hintAlpha: number } {
+    return { visible: this.container.visible, flipped: this.icon?.flipX ?? false, active: this.icon?.texture.key === ART.aimActive,
       hintVisible: this.halo.visible, hintAlpha: this.halo.alpha };
   }
 

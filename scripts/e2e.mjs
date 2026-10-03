@@ -181,6 +181,8 @@ function solveFortyFiveRelease(origin, d, targetWorldX) {
  * 起点偏移不影响力度 / 方向（与 Mobile 流程同一套防御）。
  */
 async function fireFortyFiveShot(page, viewportCssW, viewportCssH, targetWorldX) {
+  // Camera return may precede the 350ms supply entrance; wait for gameplay readiness.
+  await waitFor(page, async () => (await dbg(page)).phase === 'ACTION', 3000, 'ACTION input ready');
   await page.keyboard.press('Space');
   await waitFor(
     page,
@@ -546,9 +548,12 @@ async function runDesktop(browser) {
   );
   await waitFor(
     page,
-    async () => (await dbg(page)).cameraMode === 'FREE_VIEW',
+    async () => {
+      const d = await dbg(page);
+      return d.cameraMode === 'FREE_VIEW' && d.phase === 'ACTION';
+    },
     12000,
-    'P2 攻击结束'
+    'P2 攻击结束且下一回合可操作'
   );
   const afterP2Shot = await dbg(page);
   check(
@@ -585,7 +590,7 @@ async function runDesktop(browser) {
         if (s.gameOver) {
           return s;
         }
-        return s.turnId === shot + 1 &&
+        return s.phase === 'ACTION' && s.turnId === shot + 1 &&
           s.currentPlayerId === next &&
           s.lastBannerText === `${next} · 第 ${shot + 1} 回合`
           ? s
@@ -1218,6 +1223,7 @@ async function runSinglePlayer(browser) {
   check('SP 模式激活（菜单进入，aiEnabled）', d0.aiEnabled === true);
   check('SP 选择普通难度传入 AI', d0.aiDifficulty === 'normal');
   check('开局为 P1 人类回合', d0.currentPlayerId === 'P1' && d0.phase === 'ACTION');
+  check('SP 人类回合显示瞄准按钮', d0.aimIcon.visible);
 
   // 1. 人类回合输入可用（P1 移动）
   const xBefore = d0.players.P1;
@@ -1241,6 +1247,8 @@ async function runSinglePlayer(browser) {
     turn2.turnId === 2 && turn2.currentPlayerId === 'P2' && turn2.phase === 'ACTION',
     `turn=${turn2.turnId} player=${turn2.currentPlayerId}`
   );
+
+  check('SP 电脑回合瞄准按钮和光晕都隐藏', !turn2.aimIcon.visible && !turn2.aimIcon.hintVisible);
 
   // 3. AI 回合：人类瞄准热键静默（Space 不得驱动 AI 的瞄准相机流程；
   //    AI 自身的 PROJECTILE_FOLLOW 属合法状态，不在此断言范围）
@@ -1275,6 +1283,9 @@ async function runSinglePlayer(browser) {
     backToHuman.hp.P1 > 0,
     `P1 hp=${backToHuman.hp.P1}`
   );
+
+  await waitFor(page, async () => (await dbg(page)).aimIcon.visible, 2000, 'human aim visible');
+  check('SP 回到人类回合恢复瞄准按钮', (await dbg(page)).aimIcon.visible);
 
   // 5. 人类输入恢复（回合归属切回）
   const p1Before = (await dbg(page)).players.P1;

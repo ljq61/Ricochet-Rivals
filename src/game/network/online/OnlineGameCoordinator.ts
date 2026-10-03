@@ -12,9 +12,11 @@ import {
   type OnlineChannelUtils,
 } from './OnlineHostChannel';
 import { GuestAuthoritativeDamage, OnlineGuestChannel } from './OnlineGuestChannel';
-import { isGameStartPayload, isPlayerReadyPayload } from './OnlinePayloads';
+import { isGameStartPayload, isPlayerReadyPayload, isPlainObject, isDisconnectPayload } from './OnlinePayloads';
 import { OnlineSyncState } from './sync/OnlineSyncState';
+import { ONLINE_RULES_VERSION } from './OnlineTypes';
 import type {
+  ItemEventDetails, ItemStateChangeKind,
   GameStartPayload,
   OnlineBattleBootstrap,
   OnlineBattleDeps,
@@ -65,6 +67,8 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
   /** Phase 16 对称 ready：Guest 侧记录 Host 的 PLAYER_READY（ResultScene 提示用） */
   private hostReady = false;
   private gameStart: GameStartPayload | null = null;
+  private rulesMismatch = false;
+  private guestIntentBus: GuestIntentBus | null = null;
 
   /** 幂等防线：每消息类型的最近已处理 sequence（重复 / 重放防护） */
   private readonly lastSequence = new Map<NetworkMessageType, number>();
@@ -133,6 +137,9 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
     const cancels = [
       this.nm.onMessage(NetworkMessageType.PLAYER_READY, (e) => this.handlePlayerReady(e)),
       this.nm.onMessage(NetworkMessageType.GAME_START, (e) => this.handleGameStart(e)),
+      this.nm.onMessage(NetworkMessageType.DISCONNECT, (e) => {
+        if (this.guardInbound(e, NetworkMessageType.DISCONNECT, isDisconnectPayload) && e.payload.reason === 'RULES_VERSION_MISMATCH') this.rejectRulesMismatch(false);
+      }),
     ];
     const cancel = () => {
       for (const c of cancels) {
@@ -147,10 +154,10 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
   }
 
   sendPlayerReady(): void {
-    if (this.disposed) {
+    if (this.disposed || this.rulesMismatch) {
       return;
     }
-    this.sendOut(NetworkMessageType.PLAYER_READY, { readyAt: Date.now() }, 0);
+    this.sendOut(NetworkMessageType.PLAYER_READY, { readyAt: Date.now(), rulesVersion: ONLINE_RULES_VERSION }, 0);
     this.selfReady = true;
     if (this.role === 'host' && this.guestReady && !this.started) {
       this.startGame();
@@ -163,7 +170,7 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
           this.clearReadyRetry();
           return;
         }
-        this.sendOut(NetworkMessageType.PLAYER_READY, { readyAt: Date.now() }, 0);
+        this.sendOut(NetworkMessageType.PLAYER_READY, { readyAt: Date.now(), rulesVersion: ONLINE_RULES_VERSION }, 0);
       }, 1_500);
     }
   }
@@ -177,12 +184,13 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
 
   /** Host：汇齐双方 PLAYER_READY → 构建权威初始快照并发送 GAME_START */
   private startGame(): void {
-    if (this.started) {
+    if (this.started || this.rulesMismatch) {
       return;
     }
     const { matchId, seed } = this.createMatchIdentity();
     const state = createInitialGameState({ matchId, seed });
     const payload: GameStartPayload = {
+      rulesVersion: ONLINE_RULES_VERSION,
       matchId,
       seed,
       hostPlayerId: 'P1',
@@ -207,8 +215,12 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
     if (!this.guardInbound(envelope, NetworkMessageType.PLAYER_READY, isPlayerReadyPayload)) {
       return;
     }
-    if (this.started) {
+    if (this.started || this.rulesMismatch) {
       return; // 对局进行中重复 Ready 幂等
+    }
+    if (envelope.payload.rulesVersion !== ONLINE_RULES_VERSION) {
+      this.rejectRulesMismatch();
+      return;
     }
     if (this.role === 'host') {
       this.guestReady = true;
@@ -222,16 +234,29 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
   }
 
   private handleGameStart(envelope: NetworkEnvelope<unknown>): void {
-    if (!this.guardInbound(envelope, NetworkMessageType.GAME_START, isGameStartPayload)) {
+    if (!this.guardInbound(envelope, NetworkMessageType.GAME_START, isPlainObject)) {
       return;
     }
-    if (this.role !== 'guest' || this.started) {
+    if (this.role !== 'guest' || this.started || this.rulesMismatch) {
       return; // Host 不消费自身广播；重复 GAME_START 幂等
     }
+    if (envelope.payload.rulesVersion !== ONLINE_RULES_VERSION) { this.rejectRulesMismatch(); return; }
+    if (!isGameStartPayload(envelope.payload)) return;
+    if (envelope.payload.initialState.matchId !== envelope.payload.matchId || envelope.payload.initialState.seed !== envelope.payload.seed) return;
     this.gameStart = envelope.payload;
     this.started = true;
     this.clearReadyRetry(); // 握手完成，停重发
     this.lobbyHandlers?.onStart(this.buildBootstrap());
+  }
+
+  private rejectRulesMismatch(notifyPeer = true): void {
+    if (this.rulesMismatch) return;
+    this.rulesMismatch = true;
+    this.clearReadyRetry();
+    if (notifyPeer) {
+      try { this.sendOut(NetworkMessageType.DISCONNECT, { reason: 'RULES_VERSION_MISMATCH' }, 0); } catch { /* channel already closed */ }
+    }
+    this.lobbyHandlers?.onDisconnected('RULES_VERSION_MISMATCH');
   }
 
   // ---- Battle ----------------------------------------------------------
@@ -266,12 +291,22 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
       return;
     }
     // Guest：输入拦截为 *_REQUEST（不本地执行）；伤害 calculate-only
-    this.inputBusValue = new GuestIntentBus({
+    this.guestIntentBus = new GuestIntentBus({
       localPlayerId: this.localPlayerId,
       getState: () => deps.getState(),
       sendMoveRequest: (p) => this.sendOut(NetworkMessageType.MOVE_REQUEST, p, null),
       sendFireRequest: (p) => this.sendOut(NetworkMessageType.FIRE_REQUEST, p, null),
+      sendUseItemRequest: (p) => this.sendOut(NetworkMessageType.USE_ITEM_REQUEST, p, null),
+      onItemUsePendingChange: deps.onItemUsePendingChange,
+      onItemUseTimeout: () => {
+        try { this.guestChannel?.requestPostReconnectSync(); }
+        catch (error) {
+          // Recovery remains locked; the connection-restored callback resends the request.
+          console.warn('[OnlineGameCoordinator] heal timeout sync deferred until channel recovery:', error);
+        }
+      },
     });
+    this.inputBusValue = this.guestIntentBus;
     this.damageSystemValue = new GuestAuthoritativeDamage();
     this.guestChannel = new OnlineGuestChannel(this.nm, this.remotePlayerId, this, {
       getState: deps.getState,
@@ -282,6 +317,8 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
       showRejected: deps.showRejected,
       setSyncLock: deps.setSyncLock,
       onSnapshotApplied: deps.onSnapshotApplied,
+      onItemStateApplied: deps.onItemStateApplied,
+      clearPendingItemUse: (operationId) => this.guestIntentBus?.clearPendingItemUse(operationId),
     });
     this.cancels.push(this.guestChannel.attach());
   }
@@ -298,6 +335,13 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
       throw new Error('[OnlineGameCoordinator] damageSystem available only after attach()');
     }
     return this.damageSystemValue;
+  }
+
+  get itemUsePending(): boolean { return this.guestIntentBus?.itemUsePending ?? false; }
+
+  notifyItemStateChanged(kind: Exclude<ItemStateChangeKind, 'heal'>, details: ItemEventDetails = {}): void {
+    if (this.disposed) return;
+    this.hostChannel?.notifyItemStateChanged(kind, details);
   }
 
   isLocalTurn(): boolean {
@@ -462,6 +506,8 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
     }
     this.cancels.length = 0;
     this.lobbyHandlers = null;
+    this.guestIntentBus?.destroy();
+    this.guestIntentBus = null;
     this.battleDeps = null;
     this.hostChannel = null;
     this.guestChannel = null;
@@ -525,8 +571,8 @@ export class OnlineGameCoordinator implements OnlineGameCoordinatorApi, OnlineCh
   }
 
   /** COMMAND_REJECTED 回执（rejectedCount 诊断口径归本类） */
-  reject(commandType: 'MOVE' | 'FIRE', reason: CommandRejectedReason): void {
+  reject(commandType: 'MOVE' | 'FIRE' | 'USE_ITEM', reason: CommandRejectedReason, operationId?: string): void {
     this.rejectedCount += 1;
-    this.sendOut(NetworkMessageType.COMMAND_REJECTED, { commandType, reason }, null);
+    this.sendOut(NetworkMessageType.COMMAND_REJECTED, { commandType, reason, ...(operationId === undefined ? {} : { operationId }) }, null);
   }
 }

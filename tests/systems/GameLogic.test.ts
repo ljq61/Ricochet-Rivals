@@ -105,7 +105,7 @@ describe('GameLogic', () => {
       bus.dispatch(command);
 
       expect(launch).toHaveBeenCalledTimes(1);
-      expect(launch).toHaveBeenCalledWith(command);
+      expect(launch).toHaveBeenCalledWith(command, state.acceptedShot);
       expect(outcomes).toHaveLength(1);
       const outcome = outcomes[0];
       if (!outcome || outcome.kind !== 'FIRE') {

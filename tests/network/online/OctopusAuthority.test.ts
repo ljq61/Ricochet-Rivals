@@ -87,11 +87,11 @@ describe('Octopus authoritative state projection', () => {
   it.each([
     ['hp', 9], ['spawnTurnId', 2], ['lastResolvedTurnId', 4],
     ['lastAttackTurnId', 6], ['lastAttackTarget', 'P2'],
-  ] as const)('hash v3 includes %s', (key, value) => {
+  ] as const)('hash v5 includes %s', (key, value) => {
     const original = agedTentacle();
     const changed = structuredClone(original);
     (changed.octopus as Record<keyof OctopusState, number | string | null>)[key] = value;
-    expect(STATE_HASH_VERSION).toBe('v3');
+    expect(STATE_HASH_VERSION).toBe('v5');
     expect(computeStateHash(changed)).not.toBe(computeStateHash(original));
   });
 });

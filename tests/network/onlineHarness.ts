@@ -16,6 +16,7 @@ import { stateFromSnapshot } from '../../src/game/network/online/AuthoritativeSt
 import type {
   CommandRejectedPayload,
   AuthoritativeGameSnapshot,
+  ItemStatePayload,
   OnlineBattleBootstrap,
 } from '../../src/game/network/online/OnlineTypes';
 import type { DamageResult } from '../../src/game/state/DamageResult';
@@ -60,6 +61,8 @@ export interface OnlineHarness {
   readonly hostSyncFailure: Mock<() => void>;
   readonly guestSyncFailure: Mock<() => void>;
   readonly guestSetSyncLock: Mock<(locked: boolean) => void>;
+  readonly guestItemStateApplied: Mock<(payload: ItemStatePayload) => void>;
+  readonly guestItemUsePendingChange: Mock<(pending: boolean) => void>;
   readonly guestSnapshotApplied: Mock<(snapshot: AuthoritativeGameSnapshot) => void>;
   readonly hostBoot: OnlineBattleBootstrap;
   readonly guestBoot: OnlineBattleBootstrap;
@@ -162,7 +165,7 @@ export async function createOnlineHarness(
 
   // 4. 真实 GameLogic（Projectile 假 launch —— node 无 Phaser；
   //    GameLogic 调用的是 systems.projectile.launch 属性，假体须包一层对象）
-  const makeSide = (state: GameState) => {
+  const makeSide = (state: GameState, authority: boolean) => {
     const bus = new InMemoryCommandBus();
     const launch: Mock<(command: FireCommand) => void> = vi.fn();
     const logic = new GameLogic(state, bus, {
@@ -170,12 +173,12 @@ export async function createOnlineHarness(
       fire: new FireSystem(),
       projectile: { launch } as unknown as ProjectileSystem,
     });
-    const turn = new TurnManager(state);
+    const turn = new TurnManager(state, authority);
     turn.startMatch();
     return { bus, launch, logic, turn };
   };
-  const hostSide = makeSide(hostState);
-  const guestSide = makeSide(guestState);
+  const hostSide = makeSide(hostState, true);
+  const guestSide = makeSide(guestState, false);
 
   const hostResume: Mock<() => void> = vi.fn();
   const guestResume: Mock<() => void> = vi.fn();
@@ -188,6 +191,8 @@ export async function createOnlineHarness(
   const hostSyncFailure: Mock<() => void> = vi.fn();
   const guestSyncFailure: Mock<() => void> = vi.fn();
   const guestSetSyncLock: Mock<(locked: boolean) => void> = vi.fn();
+  const guestItemStateApplied: Mock<(payload: ItemStatePayload) => void> = vi.fn();
+  const guestItemUsePendingChange: Mock<(pending: boolean) => void> = vi.fn();
   const guestSnapshotApplied: Mock<(snapshot: AuthoritativeGameSnapshot) => void> = vi.fn();
 
   if (attach) {
@@ -214,6 +219,8 @@ export async function createOnlineHarness(
       onDisconnected: guestDisconnected,
       setSyncLock: guestSetSyncLock,
       onSnapshotApplied: guestSnapshotApplied,
+      onItemStateApplied: guestItemStateApplied,
+      onItemUsePendingChange: guestItemUsePendingChange,
       onSyncStateChange: guestSyncStateChange,
       onSyncFailure: guestSyncFailure,
     });
@@ -251,6 +258,8 @@ export async function createOnlineHarness(
     guestSyncFailure,
     guestSetSyncLock,
     guestSnapshotApplied,
+    guestItemStateApplied,
+    guestItemUsePendingChange,
     hostBoot,
     guestBoot,
     hostBootCount: hostBoots.length,

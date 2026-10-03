@@ -1,3 +1,4 @@
+import type { ShotContext } from './ItemState';
 import type { PlayerId, TurnId, WeaponId } from './ids';
 
 /**
@@ -15,6 +16,7 @@ export interface ProjectileImpact {
   weaponId: WeaponId;
   /** 发射该炮弹时的回合（FIRE 命令携带） */
   turnId: TurnId;
+  itemType?: ShotContext['itemType'];
 }
 
 /**
@@ -31,4 +33,5 @@ export interface ExplosionEvent {
   y: number;
   radius: number;
   turnId: TurnId;
+  itemType?: ShotContext['itemType'];
 }

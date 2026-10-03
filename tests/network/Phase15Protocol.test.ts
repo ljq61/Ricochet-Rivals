@@ -62,13 +62,13 @@ describe('Phase 15 — normalizePosition', () => {
   });
 });
 
-describe('Phase 15 — computeStateHash v3', () => {
-  it('① 确定性 + 8 位十六进制 + v3 前缀契约', () => {
+describe('Phase 15 — computeStateHash v5', () => {
+  it('① 确定性 + 8 位十六进制 + v5 前缀契约', () => {
     const state = makeState();
     const a = computeStateHash(state);
     expect(a).toBe(computeStateHash(state));
     expect(a).toMatch(/^[0-9a-f]{8}$/);
-    expect(STATE_HASH_VERSION).toBe('v3');
+    expect(STATE_HASH_VERSION).toBe('v5');
   });
 
   it('② 浮点微差（<0.01）→ hash 相同（不触发假 desync）', () => {
@@ -101,7 +101,7 @@ describe('Phase 15 — computeStateHash v3', () => {
     expect(computeStateHash(turnChanged)).not.toBe(computeStateHash(base));
   });
 
-  it('⑤ 对象键序无关（P1/P2 交换构建序）+ items 变化不影响 hash（V0.1 决策）', () => {
+  it('⑤ 对象键序无关（P1/P2 交换构建序）+ items 变化影响 hash（V0.2）', () => {
     const a = makeState();
     const b = makeState();
     // 交换 players 记录的属性构建顺序（同键不同序）
@@ -111,10 +111,10 @@ describe('Phase 15 — computeStateHash v3', () => {
     } as GameState['players'];
     expect(computeStateHash(a)).toBe(computeStateHash(b));
 
-    // items 不在 hash 覆盖内（Phase 14 决策，Phase 17 复评）
+    // V0.2 items participate in the authoritative state contract.
     const withItems = makeState();
-    withItems.items.push({ id: 'item-1' } as GameState['items'][number]);
-    expect(computeStateHash(withItems)).toBe(computeStateHash(makeState()));
+    withItems.items.push({ id: 'item-1', type: 'heal', x: 1700, y: 300, active: true, spawnTurnId: 3, expiresAtTurnId: 9 });
+    expect(computeStateHash(withItems)).not.toBe(computeStateHash(makeState()));
   });
 });
 

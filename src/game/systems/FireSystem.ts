@@ -1,5 +1,7 @@
 import type { FireCommand } from '../commands/GameCommand';
 import type { GameState } from '../state/GameState';
+import type { ShotContext } from '../state/ItemState';
+import { itemCommandReject } from './ItemSystem';
 import { TurnPhase } from '../state/TurnPhase';
 
 export type FireRejectReason =
@@ -8,11 +10,15 @@ export type FireRejectReason =
   | 'TURN_MISMATCH'
   | 'NOT_CURRENT_PLAYER'
   | 'PLAYER_DEAD'
-  | 'ALREADY_FIRED';
+  | 'ALREADY_FIRED'
+  | 'ITEM_ALREADY_USED'
+  | 'ITEM_NOT_OWNED'
+  | 'NOT_ATTACK_ITEM';
 
 export interface FireResult {
   accepted: boolean;
   reason?: FireRejectReason;
+  shot?: ShotContext;
 }
 
 /**
@@ -52,7 +58,21 @@ export class FireSystem {
       return { accepted: false, reason: 'ALREADY_FIRED' };
     }
 
+    const shot: ShotContext = { ownerId: command.playerId, turnId: command.turnId, homingActivated: false };
+    if (command.itemId !== undefined) {
+      const itemReason = itemCommandReject(state, command.playerId, command.turnId);
+      if (itemReason) return { accepted: false, reason: itemReason as FireRejectReason };
+      const slot = player.inventory.findIndex((entry) => entry?.id === command.itemId);
+      const item = player.inventory[slot];
+      if (!item) return { accepted: false, reason: 'ITEM_NOT_OWNED' };
+      if (item.type === 'heal' || item.type === 'airstrike') return { accepted: false, reason: 'NOT_ATTACK_ITEM' };
+      shot.itemId = item.id;
+      shot.itemType = item.type;
+      player.inventory[slot] = null;
+      player.itemUsedThisTurn = true;
+    }
     player.hasFired = true;
-    return { accepted: true };
+    state.acceptedShot = shot;
+    return { accepted: true, shot };
   }
 }

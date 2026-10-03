@@ -62,7 +62,7 @@ export class ResultScene extends Phaser.Scene {
   /** Phase 16：Rematch 握手协调器（点击 REMATCH 后创建；复用同一 session） */
   private rematchCoordinator: OnlineGameCoordinator | null = null;
   private rematchCancel: (() => void) | null = null;
-  private rematchPhase: 'idle' | 'waiting' | 'opponent-left' = 'idle';
+  private rematchPhase: 'idle' | 'waiting' | 'opponent-left' | 'rules-mismatch' = 'idle';
   private viewport!: ViewportService;
   private artwork!: MenuArtwork;
   private inputRouter!: InputRouter;
@@ -182,8 +182,8 @@ export class ResultScene extends Phaser.Scene {
     });
     const handlers: OnlineLobbyHandlers = {
       onStart: (bootstrap) => this.startRematchBattle(bootstrap),
-      onDisconnected: () => {
-        this.rematchPhase = 'opponent-left';
+      onDisconnected: (reason) => {
+        this.rematchPhase = reason === 'RULES_VERSION_MISMATCH' ? 'rules-mismatch' : 'opponent-left';
         this.refreshRematchStatus();
       },
     };
@@ -223,10 +223,12 @@ export class ResultScene extends Phaser.Scene {
   /** Rematch 状态行 + 按钮可用性（等待 / 对方已准备 / 对方已离开） */
   private refreshRematchStatus(): void {
     const el = this.rematchCoordinator;
-    if (this.rematchPhase === 'opponent-left') {
+    if (this.rematchPhase === 'opponent-left' || this.rematchPhase === 'rules-mismatch') {
       this.stopStatusPulse();
       this.statusLine.setColor('#ff8b7a');
-      this.statusLine.setText('OPPONENT LEFT — BACK TO MENU');
+      this.statusLine.setText(this.rematchPhase === 'rules-mismatch'
+        ? '玩法版本不一致，请双方刷新更新'
+        : 'OPPONENT LEFT — BACK TO MENU');
       this.rematchButton?.setVisible(false);
       return;
     }

@@ -10,6 +10,8 @@ import type { PlayerId } from '../state/ids';
 
 const OCTOPUS_ANIM_KEY = 'fx-octopus-idle-loop';
 const FRAME_COUNT = SHEET_GRID.cols * SHEET_GRID.rows;
+const SPLASH_FRAME_COUNT = 16;
+const SPLASH_FRAME_RATE = 12;
 
 export interface LaserVisual {
   tip: { x: number; y: number };
@@ -37,7 +39,10 @@ export class OctopusTentacle {
   private finishLaser: ((keepLastFrame?: boolean) => void) | null = null;
   private lingeringFx: Phaser.GameObjects.Graphics | null = null;
   private idlePromise: Promise<void> = Promise.resolve();
-  private phase: 'idle' | 'focusing' | 'charging' | 'holding' | 'sweeping' | 'dissolving' = 'idle';
+  private emergenceTween: Phaser.Tweens.Tween | null = null;
+  private finishEmergence: (() => void) | null = null;
+  private phase: 'idle' | 'emergence-focusing' | 'disturbing' | 'emerging' | 'emergence-holding' |
+    'focusing' | 'charging' | 'holding' | 'sweeping' | 'dissolving' = 'idle';
   /** 蓄力/扫射音效每段攻击只触发一次（tween 逐帧推进，相位切换按标志守卫） */
   private chargeSoundPlayed = false;
   private sweepSoundPlayed = false;
@@ -74,7 +79,7 @@ export class OctopusTentacle {
     this.syncObstacle(state);
     const turn = state.octopus.lastAttackTurnId;
     const target = state.octopus.lastAttackTarget;
-    if (this.active && turn !== null && target !== null && turn > this.lastShownAttackTurn &&
+    if (this.active && this.emergenceTween === null && turn !== null && target !== null && turn > this.lastShownAttackTurn &&
         [TurnPhase.RESOLVE, TurnPhase.END, TurnPhase.GAME_OVER].includes(state.phase)) {
       this.playLaser(turn, target);
     }
@@ -84,6 +89,7 @@ export class OctopusTentacle {
 
   /** Recovery shows the restored state without replaying historical attacks. */
   restore(state: GameState): void {
+    this.cancelEmergence(false);
     this.cancelLaser();
     this.cancelDeath();
     this.lastShownAttackTurn = state.octopus.lastAttackTurnId ?? 0;
@@ -91,6 +97,7 @@ export class OctopusTentacle {
   }
 
   destroy(): void {
+    this.cancelEmergence(false);
     this.cancelLaser();
     this.cancelDeath();
     this.removeObstacle();
@@ -103,7 +110,7 @@ export class OctopusTentacle {
       return;
     }
     if (this.phase === 'dissolving') this.cancelDeath();
-    if (!this.active) this.activate();
+    if (!this.active) this.activate(animateDeath && state.octopus.spawnTurnId === state.turnId);
     const cfg = GAME_CONFIG.octopus;
     const bar = this.healthBar!;
     bar.clear().fillStyle(0x10172c, 0.9).fillRoundedRect(-117, -14, 234, 28, 10);
@@ -116,6 +123,7 @@ export class OctopusTentacle {
   }
 
   private removeObstacle(): void {
+    this.cancelEmergence();
     this.removeCollider();
     for (const object of this.objects) {
       this.scene.tweens.killTweensOf(object);
@@ -137,6 +145,7 @@ export class OctopusTentacle {
 
   /** Presentation only: collision disappears immediately, ash completes before the next turn. */
   private playDeath(): void {
+    this.cancelEmergence(false);
     this.cancelLaser();
     this.removeCollider();
     this.active = false;
@@ -341,35 +350,21 @@ export class OctopusTentacle {
     });
   }
 
-  private activate(): void {
+  private activate(animateEmergence: boolean): void {
     this.active = true;
     const cfg = GAME_CONFIG.octopus;
     if (this.scene.textures.exists(ART.octopus)) {
       this.ensureAnim();
       // 自海底向上平移揭露；碰撞体仍即刻生效，保持已有双端确定性。
       const sprite = this.sprite = this.scene.add
-        .sprite(cfg.x, cfg.baseY + cfg.height + 100, ART.octopus, 0)
+        .sprite(cfg.x, cfg.baseY, ART.octopus, 0)
         .setOrigin(0.5, 1)
         .setDisplaySize(cfg.width, cfg.height)
         .setDepth(-6)
         .setName('octopus-visual');
-      // Phaser 4 WebGL supports texture cropping, not legacy GeometryMask.
-      const cropAtSea = (): void => {
-        const visible = Phaser.Math.Clamp((cfg.baseY - sprite.y + cfg.height) / cfg.height, 0, 1);
-        sprite.setCrop(0, 0, sprite.frame.width, sprite.frame.height * visible);
-      };
-      cropAtSea();
       sprite.play({
         key: OCTOPUS_ANIM_KEY,
         startFrame: 0,
-      });
-      this.scene.tweens.add({
-        targets: sprite,
-        y: cfg.baseY,
-        duration: 1500,
-        ease: 'Sine.easeOut',
-        onUpdate: cropAtSea,
-        onComplete: () => { sprite.setCrop(); },
       });
       this.objects.push(sprite);
     } else {
@@ -386,7 +381,7 @@ export class OctopusTentacle {
     const label = this.scene.add.text(cfg.x, cfg.baseY - cfg.height - 62, 'KRAKEN', {
       fontFamily: 'sans-serif', fontSize: '24px', color: '#f9c8f6',
       stroke: '#18132c', strokeThickness: 5,
-    }).setOrigin(0.5, 1).setDepth(870);
+    }).setOrigin(0.5, 1).setDepth(870).setName('octopus-label');
     this.objects.push(this.healthBar, label);
     // 入水处用局部前景水面盖住素材的平直截边；泡沫沿不规则波峰，而非椭圆描边。
     const wakeShadow = this.scene.add.graphics().setPosition(cfg.x, cfg.baseY - 2).setDepth(-7);
@@ -404,24 +399,9 @@ export class OctopusTentacle {
       .fillCircle(-82, -13, 3).fillCircle(-52, -18, 2)
       .fillCircle(61, -17, 3).fillCircle(89, -11, 2);
     this.objects.push(wakeShadow, waterFront);
-    wakeShadow.setAlpha(0);
-    waterFront.setAlpha(0);
-    this.scene.tweens.add({ targets: [wakeShadow, waterFront], alpha: 1,
-      duration: 500, delay: 100, ease: 'Sine.easeOut' });
     this.scene.tweens.add({ targets: waterFront, scaleX: { from: 0.92, to: 1.04 },
-      scaleY: { from: 0.9, to: 1.05 }, duration: 1800, delay: 600,
+      scaleY: { from: 0.9, to: 1.05 }, duration: 1800,
       yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-    // 待机：16 帧细微卷曲叠加慢摆，下部主体保持稳定
-    // 程序补 —— 底枢 ±1.4° 慢摆（origin(0.5,1) = 底部锚定，顶部 ±~19px）
-    if (this.sprite !== null) this.scene.tweens.add({
-      targets: this.sprite,
-      rotation: { from: -0.025, to: 0.025 },
-      duration: 2600,
-      delay: 1500,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    });
     // 静态阻挡体：占显示尺寸比例收窄（"一定程度"阻挡：贴边擦过、
     // 擦过最高尖端可过）；中央爆炸距双方基地 >2000px = 零伤害
     const bodyWidth = cfg.width * cfg.collisionWidthRatio;
@@ -440,6 +420,108 @@ export class OctopusTentacle {
         },
       }
     );
+    if (animateEmergence) this.playEmergence();
+    else this.startIdleSway();
+  }
+
+  private startIdleSway(): void {
+    if (this.sprite === null) return;
+    this.scene.tweens.add({ targets: this.sprite, rotation: { from: -0.025, to: 0.025 },
+      duration: 2600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+  }
+
+  /** One clock owns the entire entrance, so duplicate refreshes cannot restart its stages. */
+  private playEmergence(): void {
+    const cfg = GAME_CONFIG.octopus;
+    const disturbanceStart = cfg.emergenceFocusDurationMs;
+    const riseStart = disturbanceStart + cfg.disturbanceDurationMs;
+    const holdStart = riseStart + cfg.emergenceDurationMs;
+    const duration = holdStart + cfg.emergenceHoldDurationMs;
+    const progress = { elapsed: 0 };
+    const sprite = this.sprite;
+    const appearance = [...this.objects] as (Phaser.GameObjects.Graphics | Phaser.GameObjects.Sprite |
+      Phaser.GameObjects.Text)[];
+    const hasSplashFrames = this.scene.textures.exists(ART.octopusSplash) &&
+      Array.from({ length: SPLASH_FRAME_COUNT }, (_, frame) => frame)
+        .every((frame) => this.scene.textures.get(ART.octopusSplash).has(String(frame)));
+    const splash = hasSplashFrames
+      ? this.scene.add.sprite(cfg.x, cfg.baseY + 14, ART.octopusSplash, 0).setOrigin(0.5, 0.82) : null;
+    const disturbance = splash ?? (this.scene.textures.exists(ART.octopusDisturbance) &&
+      this.scene.textures.get(ART.octopusDisturbance).has('ripple')
+      ? this.scene.add.image(cfg.x, cfg.baseY, ART.octopusDisturbance, 'ripple') : null);
+    // The open water ring sits behind the creature. Only the small sea-front at its feet
+    // masks the straight texture edge; foam must never cover the emerging head or body.
+    disturbance?.setDisplaySize(480, 160).setDepth(-7.5).setName('octopus-disturbance').setAlpha(0);
+    if (disturbance !== null) this.objects.push(disturbance);
+    let roarPlayed = false;
+    const settle = (): void => {
+      if (sprite !== null) {
+        sprite.y = cfg.baseY;
+        sprite.rotation = 0;
+        sprite.setCrop();
+      }
+      for (const object of appearance) object.setAlpha(1);
+      disturbance?.destroy();
+      if (disturbance !== null) this.objects = this.objects.filter((object) => object !== disturbance);
+    };
+    this.idlePromise = new Promise<void>((resolve) => {
+      this.finishEmergence = () => { settle(); this.phase = 'idle'; resolve(); };
+    });
+    const draw = (): void => {
+      const t = progress.elapsed;
+      this.phase = t < disturbanceStart ? 'emergence-focusing' : t < riseStart ? 'disturbing'
+        : t < holdStart ? 'emerging' : 'emergence-holding';
+      const rise = Phaser.Math.Clamp((t - riseStart) / cfg.emergenceDurationMs, 0, 1);
+      const q = 1 - Math.cos(rise * Math.PI / 2);
+      for (const object of appearance) object.setAlpha(
+        object === this.healthBar || object.name === 'octopus-label' ? (rise >= 1 ? 1 : 0) : q);
+      if (sprite !== null) {
+        sprite.setAlpha(t < riseStart ? 0 : 1);
+        sprite.y = cfg.baseY + cfg.height * (1 - q);
+        sprite.rotation = Math.sin(rise * Math.PI * 6) * 0.11 * (1 - rise);
+        // Texture crop matches the moving bottom pivot; everything below sea level stays hidden.
+        sprite.setCrop(0, 0, sprite.frame.width, sprite.frame.height * q);
+      }
+      if (disturbance !== null) {
+        const waterAge = Math.max(0, t - disturbanceStart);
+        splash?.setFrame(Math.floor(waterAge * SPLASH_FRAME_RATE / 1000) % SPLASH_FRAME_COUNT);
+        disturbance.setAlpha(t < disturbanceStart ? 0 : t < holdStart ? 0.85 :
+          0.85 * (1 - (t - holdStart) / cfg.emergenceHoldDurationMs));
+      } else if (t >= disturbanceStart && t < riseStart) {
+        // Missing generated texture retains the existing sea-front/wake, rather than a blank stage.
+        for (const object of appearance) {
+          if (object !== sprite && object !== this.fallback && object !== this.healthBar &&
+              object.name !== 'octopus-label') object.setAlpha(0.5 + 0.15 * Math.sin(t / 65));
+        }
+      }
+      if (t >= riseStart && !roarPlayed) {
+        roarPlayed = true;
+        this.sfx.play(SFX.octopusSpawn);
+      }
+    };
+    this.onLaserFocus(cfg.x, cfg.baseY - cfg.height / 2, cfg.emergenceFocusDurationMs);
+    draw();
+    this.emergenceTween = this.scene.tweens.add({ targets: progress, elapsed: duration, duration,
+      onUpdate: draw, onComplete: () => {
+        this.emergenceTween = null;
+        this.finishEmergence?.();
+        this.finishEmergence = null;
+        this.startIdleSway();
+        this.onLaserComplete();
+      } });
+  }
+
+  private cancelEmergence(releaseCamera = true): void {
+    if (this.finishEmergence === null) return;
+    this.emergenceTween?.stop();
+    this.emergenceTween = null;
+    for (const sound of this.scene.sound.getAll(SFX.octopusSpawn)) {
+      sound.stop();
+      sound.destroy();
+    }
+    this.finishEmergence();
+    this.finishEmergence = null;
+    if (releaseCamera) this.onLaserComplete();
   }
 
   private ensureAnim(): void {

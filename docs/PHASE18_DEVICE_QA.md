@@ -39,10 +39,18 @@
 ## C. 跨网移动 WebRTC（Step 10，关键 REAL smoke）
 
 - [ ] C1 桌面 Wi-Fi Host ↔ 手机 5G Guest（或手机 Wi-Fi ↔ 手机 5G）：连接成功、PING 显示
+- [x] C1a 用户实测：上海电信光纤 ↔ 上海电信移动网络，双方不挂 VPN，可以联机（主客方向及 PING 未补充）
 - [ ] C2 完整 4+ 回合（双方各移动/瞄准/发射）、至少一次命中扣血
 - [ ] C3 中途切微信再回浏览器：连接不断（或断线提示正确）
 - [ ] C4 REMATCH 一次或完整终局
 - [ ] C5 无法跨网测则明确记录：**INTERNET MOBILE P2P NOT VERIFIED**
+
+2026-10-01 用户实测：同局域网联机正常；最新补充上海电信光纤与上海电信移动网络
+在双方不挂 VPN 时可以联机，记录为 C1a 的跨网连接成功。完整对局、PING、恢复和再战仍待补充。
+先前 iPhone Chrome 蜂窝 Host → 家中 Wi-Fi 笔记本 Guest 出现 `ICE_FAILED`，
+当时运营商/VPN条件未完整说明，作为历史失败保留，不据此断言蜂窝与 Wi-Fi 均无法联机或 VPN 是确定根因。
+TURN 仍按此前决定暂缓；如后续接入，需实际证明 relay 路线可用，并复测各真机组合。
+诊断事实、推断与 coturn 接入项见 [跨网联机记录](NETWORK_CONNECTIVITY_2026-10-01.md)。
 
 ## D. Desktop 回归（P1：Safari / Edge 各一轮）
 

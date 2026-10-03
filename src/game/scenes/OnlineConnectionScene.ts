@@ -432,13 +432,15 @@ export class OnlineConnectionScene extends Phaser.Scene {
     });
     this.lobbyCancel = this.coordinator.enterLobby({
       onStart: (bootstrap) => this.startOnlineBattle(bootstrap),
-      onDisconnected: () => {
+      onDisconnected: (reason) => {
         // Lobby 期断线：清协调器并提示（连接已失效，只能返回菜单）
         this.coordinator?.dispose();
         this.coordinator = null;
         this.lobbyCancel = null;
         this.lobbyPhase = 'idle';
-        this.lobbyNotice = 'CONNECTION LOST — BACK TO MENU';
+        this.lobbyNotice = reason === 'RULES_VERSION_MISMATCH'
+          ? '玩法版本不一致，请双方刷新更新后重试'
+          : 'CONNECTION LOST — BACK TO MENU';
         this.renderState();
       },
     });

@@ -95,6 +95,8 @@ async function startTrace(page) {
         pending: hazard.pendingHit, turn: d.turnId, hp: d.hp,
         deathProgress: hazard.deathProgress, bodyCount: hazard.bodyCount,
         displayHp: hazard.displayHp ?? null, lastAttackTurnId: hazard.lastAttackTurnId,
+        splash: d.artAnimation.find(item => item.key === 'art-octopus-splash-v02') ?? null,
+        monster: d.artAnimation.find(item => item.key === 'art-octopus') ?? null,
         visual: hazard.visual, worldView: d.cameraWorldView });
     }, 10);
   });
@@ -173,6 +175,39 @@ async function run(page, url) {
   check('mobile touch profile and DPR 2', d.controlProfile === 'touch' && d.uiScale === 2);
   check('new matches contain a fifteen-HP unspawned hazard', d.octopusState.hp === 15 &&
     d.octopusState.spawnTurnId === null && !d.octopusState.active);
+  await page.evaluate(() => window.__RR_DEBUG__.setHp('P2', 4));
+  await startTrace(page);
+  const birthTurn = await fireTouch(page);
+  await waitFor(page, d => d.octopusState.attackPhase === 'emergence-focusing', 'birth camera focus');
+  let birth = await waitFor(page, d => d.octopusState.attackPhase === 'disturbing', 'water disturbance');
+  check('birth: camera focuses central sea before surfacing',
+    Math.abs(birth.cameraWorldView.x + birth.cameraWorldView.width / 2 - 2500) < 30 && birth.turnId === birthTurn);
+  await page.screenshot({ path: '/tmp/rr-octopus-birth-water.png' });
+  await waitFor(page, d => d.octopusState.attackPhase === 'emerging', 'twisting emergence');
+  await pause(900);
+  await page.screenshot({ path: '/tmp/rr-octopus-birth-emerging.png' });
+  await waitFor(page, d => d.octopusState.attackPhase === 'emergence-holding', 'birth hold');
+  d = await settledNextTurn(page, birthTurn);
+  const birthTrace = await page.evaluate(() => { clearInterval(window.__RR_OCTOPUS_TRACE_TIMER__); return window.__RR_OCTOPUS_TRACE__; });
+  const splashFrames = birthTrace.filter(frame => ['disturbing', 'emerging'].includes(frame.phase) && frame.splash && frame.monster);
+  check('birth: generated water sprite visibly advances through its frame cycle',
+    new Set(splashFrames.map(frame => frame.splash.frame)).size >= 12,
+    JSON.stringify({ count: splashFrames.length, frames: [...new Set(splashFrames.map(frame => frame.splash.frame))], sample: birthTrace.find(frame => frame.phase === 'emerging') }));
+  check('birth: water stays behind the centered emerging monster', splashFrames.length > 20 &&
+    splashFrames.every(frame => frame.splash.depth < frame.monster.depth &&
+      Math.abs(frame.splash.x - frame.monster.x) < 1 && frame.splash.width === 480 && frame.splash.height === 160 && frame.splash.y === 1054));
+  const birthPhases = ['emergence-focusing', 'disturbing', 'emerging', 'emergence-holding'];
+  for (const [i, expected] of [500, 500, 2000, 1000].entries()) {
+    const first = birthTrace.find(frame => frame.phase === birthPhases[i]);
+    const end = birthTrace.find(frame => frame.t > first.t && frame.phase !== birthPhases[i]);
+    check(`birth: ${birthPhases[i]} duration`, end && Math.abs(end.t - first.t - expected) < 160,
+      `${Math.round(end?.t - first.t)}ms`);
+  }
+  const spawnAudio = await page.evaluate(() => window.__RR_SPAWN_ROAR_STARTS__);
+  check('birth: one audible monster roar during emergence', spawnAudio.length === 1 && spawnAudio[0].rms > .01 &&
+    spawnAudio[0].gain > 0 && Math.abs(spawnAudio[0].at - birthTrace.find(frame => frame.phase === 'emerging').t) < 100);
+  check('birth: transition waits for full entrance then opens next action', d.turnId === birthTurn + 1 && d.cameraMode === 'FREE_VIEW');
+  await page.evaluate(() => { window.__RR_DEBUG__.setHp('P1', 10); window.__RR_DEBUG__.setHp('P2', 10); });
   await prepare(page, 15, 2);
   await pause(1600); // emergence animation only; body is already authoritative
   for (let hp = 15; hp > 0; hp -= 2) {
@@ -230,9 +265,15 @@ async function run(page, url) {
   await pause(400);
   d = await debug(page);
   check('idle frames cannot repeat the last laser', d.hp.P1 === stableHp.P1 && d.hp.P2 === stableHp.P2);
+  for (let i = 0; i < 2; i++) {
+    const skippedTurn = await fireTouch(page);
+    d = await settledNextTurn(page, skippedTurn);
+    check(`laser skips intervening action ${i + 1}`, d.hp.P1 + d.hp.P2 === 19);
+  }
   d = await laserTurn(page);
-  check('next action turn also attacks exactly once', d.hp.P1 + d.hp.P2 === 18);
+  check('third action attacks once again', d.hp.P1 + d.hp.P2 === 18);
 
+  for (let i = 0; i < 2; i++) { const skippedTurn = await fireTouch(page); await settledNextTurn(page, skippedTurn); }
   await page.evaluate(() => { window.__RR_DEBUG__.setHp('P1', 1); window.__RR_DEBUG__.setHp('P2', 1); });
   await fireTouch(page);
   await waitFor(page, (d) => d?.scene === 'ResultScene', 'laser kills and opens result');

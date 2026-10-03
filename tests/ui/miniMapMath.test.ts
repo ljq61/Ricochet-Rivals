@@ -4,8 +4,23 @@ import { createInitialGameState } from '../../src/game/state/GameState';
 import { battleHudLayout, miniMapSnapshot, miniMapWorldX, miniMapProjection, miniMapCameraFrame } from '../../src/game/ui/miniMapMath';
 import type { ProjectileState } from '../../src/game/state/ProjectileState';
 import { screenRectsOverlap, touchAimRect } from '../../src/game/ui/touchControlLayout';
+import { battleItemDock, battleSettingsRect } from '../../src/game/ui/battleSideDockLayout';
 
 describe('battle mini map', () => {
+  it('keeps turn messages clear of fixed item docks and the relocated gear', () => {
+    for (const [width, height] of [[568, 256], [667, 320], [844, 390], [1280, 800]]) {
+      for (const id of ['P1', 'P2'] as const) for (const dpr of [1, 2, 3]) {
+        const viewport = computeViewportMetrics(width! * dpr, height! * dpr,
+          { left: 20 * dpr, right: 20 * dpr, top: 0, bottom: 8 * dpr }, undefined, dpr);
+        const { banner } = battleHudLayout(viewport, id);
+        const dock = battleItemDock(viewport, id);
+        for (const rect of [...dock.slots, battleSettingsRect(viewport), ...(dock.bag ? [dock.bag] : [])]) {
+          expect(screenRectsOverlap(banner, rect, 8 * dpr), JSON.stringify({ width, height, id, rect, banner })).toBe(false);
+        }
+        expect(banner.width / dpr).toBeGreaterThanOrEqual(48);
+      }
+    }
+  });
   it.each([[320, 180], [480, 180], [600, 180], [844, 180], [320, 240], [320, 568], [844, 240], [844, 390], [932, 430], [1280, 800]])(
     'keeps map and banner outside the HP cards at %i × %i', (width, height) => {
       for (const playerId of ['P1', 'P2'] as const) for (const dpr of [1, 2, 3]) {

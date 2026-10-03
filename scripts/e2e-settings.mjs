@@ -57,8 +57,8 @@ async function run(page, url, viewport, label) {
     d.uiScale === viewport.deviceScaleFactor);
   check(`${label}: one gear per battle`, await page.$$eval('.rr-battle-settings .rr-gear', (elements) => elements.length === 1));
   const gear = d.settings.buttons.gear;
-  check(`${label}: 48px gear below left portrait`, gear.width === 48 && gear.height === 48 &&
-    gear.x >= 24 && gear.x <= 70 && gear.y - gear.height / 2 > 70 && inViewport(gear, viewport));
+  check(`${label}: relocated 48px gear fits the left HUD`, gear.width === 48 && gear.height === 48 &&
+    gear.x >= 100 && gear.x <= 210 && gear.y > 40 && inViewport(gear, viewport));
   if (label === 'mobile') await page.screenshot({ path: '/private/tmp/rr-battle-settings-gear-mobile.png' });
 
   await action(page, 'gear', mobile);

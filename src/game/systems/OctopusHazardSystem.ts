@@ -24,6 +24,14 @@ function laserTarget(state: GameState): PlayerId {
   return new SeededRandom(seed).integer(0, 1) === 0 ? 'P1' : 'P2';
 }
 
+/** Birth may follow any damage source without advancing the laser action clock. */
+export function checkOctopusEmergence(state: GameState): void {
+  if (!state.gameOver && state.octopus.spawnTurnId === null &&
+      shouldOctopusEmerge(state.players.P1.hp, state.players.P2.hp)) {
+    state.octopus.spawnTurnId = state.turnId;
+  }
+}
+
 /**
  * Resolve once after the player's explosion damage has already been applied.
  * Out-of-bounds shots still advance the hazard. Animation consumes attack history;
@@ -46,14 +54,13 @@ export function resolveOctopusTurn(
 
   // Only a tentacle already present before this shot can take its explosion damage.
   if (isOctopusActive(octopus) && impact !== null) {
-    octopus.hp = Math.max(0, octopus.hp - damageAtDistance(distanceToOctopus(impact)));
+    octopus.hp = Math.max(0, octopus.hp - damageAtDistance(distanceToOctopus(impact), impact.itemType));
   }
-  if (octopus.spawnTurnId === null &&
-      shouldOctopusEmerge(state.players.P1.hp, state.players.P2.hp)) {
-    octopus.spawnTurnId = state.turnId;
-  }
+  checkOctopusEmergence(state);
   if (!isOctopusActive(octopus) || octopus.spawnTurnId === null ||
-      state.turnId - octopus.spawnTurnId < GAME_CONFIG.octopus.attackAfterTurns) {
+      state.turnId - octopus.spawnTurnId < GAME_CONFIG.octopus.attackAfterTurns ||
+      (octopus.lastAttackTurnId !== null &&
+        state.turnId - octopus.lastAttackTurnId < GAME_CONFIG.octopus.attackIntervalTurns)) {
     return result;
   }
 

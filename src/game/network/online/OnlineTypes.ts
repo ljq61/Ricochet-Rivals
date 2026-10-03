@@ -5,6 +5,8 @@ import type { ProjectileImpact } from '../../state/ExplosionEvent';
 import type { GameState } from '../../state/GameState';
 import type { PlayerId, WeaponId } from '../../state/ids';
 import type { TurnPhase } from '../../state/TurnPhase';
+import type { InventoryItem, ItemGenerationState, ShotContext } from '../../state/ItemState';
+import type { AirstrikeContext } from '../../state/AirstrikeState';
 import type { WorldItemState } from '../../state/WorldItemState';
 import type { CommandRejectedReason } from './CommandRejectedReason';
 import type { DamageSystem } from '../../systems/DamageSystem';
@@ -44,7 +46,11 @@ import type { OnlineSyncState } from './sync/OnlineSyncState';
 // ---------------------------------------------------------------------------
 
 /** PLAYER_READY：进入对局就绪（payload 需非 undefined，故带 readyAt 戳） */
+export const ONLINE_RULES_VERSION = '0.2-items-v3';
+
 export interface PlayerReadyPayload {
+  /** Missing on old V0.1 clients: accepted by the shape guard, rejected by handshake. */
+  readonly rulesVersion?: string;
   /** 发送时刻（epoch ms）—— 仅诊断用途，Host 不依赖其顺序 */
   readonly readyAt: number;
 }
@@ -54,6 +60,7 @@ export interface PlayerReadyPayload {
  * Guest 禁止自行产生 seed / 初始位置 / 首位玩家 —— 一律以本 payload 为准。
  */
 export interface GameStartPayload {
+  readonly rulesVersion?: string;
   /** 对局 ID（Host 生成；进入 GameState.matchId 与 stateHash） */
   readonly matchId: string;
   /** 对局种子（AI / 未来道具等全部 SeededRandom 派生源） */
@@ -81,6 +88,8 @@ export interface AuthoritativePlayerSnapshot {
   readonly moveRemaining: number;
   readonly hasFired: boolean;
   readonly weaponId: WeaponId;
+  readonly inventory: readonly (InventoryItem | null)[];
+  readonly itemUsedThisTurn: boolean;
 }
 
 /** Explicit hazard projection; also identifies the last laser for presentation deduplication. */
@@ -93,8 +102,7 @@ export interface AuthoritativeOctopusSnapshot {
 }
 
 /**
- * 权威对局快照。V0.1 items 恒为空数组（Phase 17 才有 Item Gameplay），
- * 但保留字段保证快照形状与 GameState 对齐、Phase 15 desync 对比可用。
+ * V0.2 权威对局快照：公开背包、空投和生成历史，恢复时不重放道具效果。
  */
 export interface AuthoritativeGameSnapshot {
   readonly matchId: string;
@@ -104,6 +112,9 @@ export interface AuthoritativeGameSnapshot {
   readonly phase: TurnPhase;
   readonly players: Readonly<Record<PlayerId, AuthoritativePlayerSnapshot>>;
   readonly items: readonly WorldItemState[];
+  readonly itemGeneration: ItemGenerationState;
+  readonly acceptedShot: ShotContext | null;
+  readonly pendingAirstrike: AirstrikeContext | null;
   readonly octopus: AuthoritativeOctopusSnapshot;
   readonly gameOver: boolean;
   readonly winnerId: PlayerId | null;
@@ -134,6 +145,7 @@ export interface MovePayload {
 
 /** Guest → Host：发射意图（canonical 数据 = 速度向量，不发 angle/power） */
 export interface FireRequestPayload {
+  readonly itemId?: string;
   readonly playerId: PlayerId;
   readonly weaponId: WeaponId;
   /** 起点意图可匹配当前回合最近2秒已接受移动；Host 始终从当前权威炮塔发射。 */
@@ -160,6 +172,8 @@ export interface TurnResultPlayerPayload {
   readonly isAlive: boolean;
   readonly moveRemaining: number;
   readonly hasFired: boolean;
+  readonly inventory: readonly (InventoryItem | null)[];
+  readonly itemUsedThisTurn: boolean;
 }
 
 /**
@@ -176,6 +190,10 @@ export interface TurnResultPayload {
   /** 本回合每个玩家的最终伤害（0 = 未命中） */
   readonly damages: Readonly<Record<PlayerId, number>>;
   readonly octopus: AuthoritativeOctopusSnapshot;
+  readonly items: readonly WorldItemState[];
+  readonly itemGeneration: ItemGenerationState;
+  readonly acceptedShot: ShotContext | null;
+  readonly pendingAirstrike: AirstrikeContext | null;
   readonly gameOver: boolean;
   readonly winnerId: PlayerId | null;
   readonly nextPlayerId: PlayerId | null;
@@ -196,8 +214,52 @@ export interface TurnEndPayload {
 
 /** COMMAND_REJECTED：Host 拒绝非法请求（轻量回执，不 disconnect） */
 export interface CommandRejectedPayload {
-  readonly commandType: 'MOVE' | 'FIRE';
+  readonly commandType: 'MOVE' | 'FIRE' | 'USE_ITEM';
+  readonly operationId?: string;
   readonly reason: CommandRejectedReason;
+}
+
+/** Guest intent; operation IDs also deduplicate retries carrying a newer envelope sequence. */
+export interface UseItemRequestPayload {
+  resumePhase?: TurnPhase.ACTION | TurnPhase.AIM;
+  readonly playerId: PlayerId;
+  readonly itemId: string;
+  readonly operationId: string;
+}
+
+export type ItemStateChangeKind = 'spawn' | 'expire' | 'pickup' | 'homing' | 'heal' | 'turn_start' | 'airstrike_start' | 'airstrike_end';
+export interface ItemEventDetails {
+  /** Completed context remains public after pendingAirstrike has been cleared. */
+  readonly airstrike?: AirstrikeContext;
+  readonly itemId?: string;
+  readonly playerId?: PlayerId;
+  readonly x?: number;
+  readonly y?: number;
+}
+/** Absolute, atomic projection. No projectile positions or local pending selection. */
+export interface ItemStatePayload extends ItemEventDetails {
+  readonly octopus: AuthoritativeOctopusSnapshot;
+  readonly phase: TurnPhase;
+  readonly currentPlayerId: PlayerId;
+  readonly gameOver: boolean;
+  readonly winnerId: PlayerId | null;
+  readonly kind: ItemStateChangeKind;
+  readonly turnId: number;
+  readonly operationId?: string;
+  readonly players: Readonly<Record<PlayerId, {
+    readonly x: number;
+    readonly y: number;
+    readonly hasFired: boolean;
+    readonly moveRemaining: number;
+    readonly hp: number;
+    readonly isAlive: boolean;
+    readonly inventory: readonly (InventoryItem | null)[];
+    readonly itemUsedThisTurn: boolean;
+  }>>;
+  readonly items: readonly WorldItemState[];
+  readonly itemGeneration: ItemGenerationState;
+  readonly acceptedShot: ShotContext | null;
+  readonly pendingAirstrike: AirstrikeContext | null;
 }
 
 /** DISCONNECT：主动退出通知（对端据此展示 OPPONENT DISCONNECTED） */
@@ -307,6 +369,8 @@ export interface OnlineBattleDeps {
   resumeNextTurn(): void;
   /** Guest 权威快照恢复成功后重建相机/转场表现；不推进权威回合。 */
   onSnapshotApplied?(snapshot: AuthoritativeGameSnapshot): void;
+  onItemStateApplied?(payload: ItemStatePayload): void;
+  onItemUsePendingChange?(pending: boolean): void;
   /** Guest 专属：权威伤害数字展示（复用 DamageResult 形状） */
   showAuthoritativeDamage(result: DamageResult): void;
   /** Guest 收到 COMMAND_REJECTED 的轻量提示入口 */
@@ -403,6 +467,9 @@ export interface OnlineGameCoordinatorApi {
    * Guest = calculate-only（本地 HP 只经 TURN_RESULT reconcile 改写）。
    */
   readonly damageSystem: DamageSystem;
+  /** Guest heal awaits an authoritative acceptance/rejection; FIRE is blocked meanwhile. */
+  readonly itemUsePending: boolean;
+  notifyItemStateChanged(kind: Exclude<ItemStateChangeKind, 'heal'>, details?: ItemEventDetails): void;
   /** 当前是否本地玩家回合（输入锁 / HUD 标签用；需已 attach） */
   isLocalTurn(): boolean;
   /**

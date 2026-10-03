@@ -2,6 +2,7 @@ import type { ViewportMetrics } from '../platform/viewportMath';
 import type { PlayerId } from '../state/ids';
 
 import { touchAimVisualRect, type ScreenRect } from './touchAimLayout';
+import { battleItemDock, battleSettingsRect } from './battleSideDockLayout';
 import { battleHudLayout } from './miniMapMath';
 export { touchAimRect, touchAimVisualRect, TOUCH_AIM_SIZE, TOUCH_AIM_MARGIN } from './touchAimLayout';
 export type { ScreenRect } from './touchAimLayout';
@@ -16,7 +17,7 @@ export function dockMoveButtonLayout(
   playerId: PlayerId = 'P1',
 ): { visualSize: number; hitSize: number; left: ScreenRect; right: ScreenRect } {
   const { width, height, safeArea, uiScale } = viewport;
-  const visualSize = characterHeight * 0.82;
+  const visualSize = Math.min(52 * uiScale, characterHeight * 0.62);
   const hitSize = Math.max(48 * uiScale, visualSize);
   const gap = 8 * uiScale;
   const half = hitSize / 2;
@@ -26,7 +27,10 @@ export function dockMoveButtonLayout(
   const hudScale = uiScale * Math.min(1, ((width - safeArea.left - safeArea.right) / uiScale - 110) / 540);
   const minY = safeArea.top + 83 * hudScale + gap + half;
   const maxY = height - safeArea.bottom - half - gap;
+  const itemDock = battleItemDock(viewport, playerId);
   const reserved: ScreenRect[] = [
+    ...(itemDock.bag ? [itemDock.bag] : []), ...itemDock.slots,
+    battleSettingsRect(viewport),
     touchAimVisualRect(viewport, playerId),
     battleHudLayout(viewport, playerId).banner,
   ];
@@ -67,7 +71,7 @@ export function dockMoveButtonLayout(
   if (!right) {
     // A tiny viewport may have room only to the left of Aim; move the pair together.
     reserved.pop();
-    left = place(minX, desiredY, minX, minX) ?? left;
+    left = place(minX, desiredY, minX, maxX - hitSize - gap) ?? left;
     reserved.push(left);
     right = place(dockRight + visualSize / 2 + gap, desiredY, left.x + hitSize + gap, maxX);
   }

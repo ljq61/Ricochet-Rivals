@@ -1,9 +1,11 @@
+import { applyItemState } from './ItemAuthority';
 import { ConcreteDamageSystem, type DamageSystem } from '../../systems/DamageSystem';
 import type { TurnManager } from '../../systems/TurnManager';
 import type { CommandBus } from '../../commands/CommandBus';
 import type { DamageResult } from '../../state/DamageResult';
 import type { GameState } from '../../state/GameState';
 import { TurnPhase } from '../../state/TurnPhase';
+import type { AirstrikeContext } from '../../state/AirstrikeState';
 import type { PlayerId } from '../../state/ids';
 import { NetworkMessageType } from '../NetworkMessageType';
 import type { NetworkEnvelope } from '../NetworkEnvelope';
@@ -18,6 +20,8 @@ import { validateAuthoritativeSnapshot } from './sync/SnapshotValidator';
 import { OnlineSyncState } from './sync/OnlineSyncState';
 import {
   isCommandRejectedPayload,
+  isItemStatePayload,
+  isPlainObject,
   isFirePayload,
   isMovePayload,
   isStateSnapshotPayload,
@@ -26,6 +30,7 @@ import {
 } from './OnlinePayloads';
 import type {
   CommandRejectedPayload,
+  ItemStatePayload,
   OnlineBattleDeps,
   StateSyncDiagnostics,
   StateSyncReason,
@@ -64,6 +69,8 @@ export interface OnlineGuestChannelDeps {
   /** Phase 15：恢复期间锁 Move/Aim/Fire（恢复完成解锁；Host 侧无此接线） */
   readonly setSyncLock: OnlineBattleDeps['setSyncLock'];
   readonly onSnapshotApplied: OnlineBattleDeps['onSnapshotApplied'];
+  readonly onItemStateApplied: OnlineBattleDeps['onItemStateApplied'];
+  readonly clearPendingItemUse?: (operationId?: string) => void;
 }
 
 export class OnlineGuestChannel {
@@ -104,6 +111,9 @@ export class OnlineGuestChannel {
   private lastAppliedSnapshotKey: string | null = null;
   /** Last trusted Host turn, independent of a possibly corrupted local turn counter. */
   private latestAuthoritativeTurnId = 0;
+  private pendingNextTurnItems: ItemStatePayload[] = [];
+  private itemEventTurn = 0;
+  private readonly appliedItemEvents = new Set<string>();
 
   constructor(
     nm: NetworkManager,
@@ -142,6 +152,7 @@ export class OnlineGuestChannel {
     const cancels = [
       this.nm.onMessage(NetworkMessageType.MOVE, (e) => this.handleAuthoritativeMove(e)),
       this.nm.onMessage(NetworkMessageType.FIRE, (e) => this.handleAuthoritativeFire(e)),
+      this.nm.onMessage(NetworkMessageType.ITEM_STATE, (e) => this.handleItemState(e)),
       this.nm.onMessage(NetworkMessageType.TURN_RESULT, (e) => this.handleTurnResult(e)),
       this.nm.onMessage(NetworkMessageType.TURN_END, (e) => this.handleTurnEnd(e)),
       this.nm.onMessage(NetworkMessageType.STATE_SNAPSHOT, (e) => this.handleStateSnapshot(e)),
@@ -217,6 +228,7 @@ export class OnlineGuestChannel {
       return;
     }
     const payload = envelope.payload;
+    if (envelope.turnId < this.deps.getState().turnId) return;
     // 绝对覆写（权威快照语义；重复同值天然幂等）
     const player = this.deps.getState().players[payload.playerId];
     player.x = payload.x;
@@ -231,6 +243,7 @@ export class OnlineGuestChannel {
       return;
     }
     const payload = envelope.payload;
+    if (payload.turnId !== envelope.turnId || envelope.turnId < this.deps.getState().turnId) return;
     this.deps.commandBus.dispatch({
       type: 'FIRE',
       playerId: payload.playerId,
@@ -241,7 +254,58 @@ export class OnlineGuestChannel {
       velocityX: payload.velocityX,
       velocityY: payload.velocityY,
       seed: payload.seed,
+      ...(payload.itemId === undefined ? {} : { itemId: payload.itemId }),
     });
+  }
+
+  private handleItemState(envelope: NetworkEnvelope<unknown>): void {
+    if (!this.utils.guardInbound(envelope, NetworkMessageType.ITEM_STATE, isItemStatePayload)) return;
+    const payload = envelope.payload;
+    const state = this.deps.getState();
+    if (payload.turnId !== envelope.turnId || envelope.turnId < state.turnId || this.recoveryInFlight) return;
+    if (envelope.turnId === state.turnId + 1) {
+      // Host already changed turns; Guest may still await its local dwell callback.
+      // Keep only a bounded next-turn projection chain (turn_start plus at most two crates).
+      this.pendingNextTurnItems.push(payload);
+      if (this.pendingNextTurnItems.length > 8) this.pendingNextTurnItems.shift();
+      return;
+    }
+    if (this.isFutureTurnJump(envelope.turnId, 'ITEM_STATE')) return;
+    if (state.phase === TurnPhase.RESOLVE || state.phase === TurnPhase.GAME_OVER || this.pendingHashResult !== null) return;
+    this.applyUniqueItemEvent(payload);
+    // A retry may already be applied, but its matching acknowledgement still clears pending.
+    if ((payload.kind === 'heal' || payload.kind === 'airstrike_start' || payload.kind === 'airstrike_end') && payload.playerId !== this.remotePlayerId) this.deps.clearPendingItemUse?.(payload.operationId);
+  }
+
+  private applyUniqueItemEvent(payload: ItemStatePayload): boolean {
+    if (this.itemEventTurn !== payload.turnId) {
+      this.appliedItemEvents.clear();
+      this.itemEventTurn = payload.turnId;
+    }
+    const state = this.deps.getState();
+    if (payload.currentPlayerId !== state.currentPlayerId) return false;
+    if (state.pendingAirstrike !== null && payload.kind !== 'airstrike_end' &&
+      (payload.pendingAirstrike === null || !sameAirstrike(state.pendingAirstrike, payload.pendingAirstrike))) return false;
+    if (payload.kind === 'airstrike_start' || payload.kind === 'airstrike_end') {
+      if (payload.currentPlayerId !== state.currentPlayerId) return false;
+      const pending = state.pendingAirstrike;
+      if (pending !== null && !sameAirstrike(pending, payload.airstrike!)) return false;
+      // A post-strike snapshot has already restored ACTION/AIM and spent the budget.
+      // Late starts must not revive its plane or revoke the player's resumed controls.
+      if (payload.kind === 'airstrike_start' && pending === null &&
+        (state.players[state.currentPlayerId].itemUsedThisTurn || state.players[state.currentPlayerId].hasFired ||
+          (state.phase !== TurnPhase.ACTION && state.phase !== TurnPhase.AIM && state.phase !== TurnPhase.END))) return false;
+      if (payload.kind === 'airstrike_end' && pending === null && state.players[state.currentPlayerId].itemUsedThisTurn) return false;
+    }
+    const identity = payload.kind === 'airstrike_start' || payload.kind === 'airstrike_end'
+      ? payload.itemId : payload.operationId ?? payload.itemId;
+    const eventKey = identity === undefined ? null : JSON.stringify([payload.kind, identity]);
+    if (eventKey !== null && this.appliedItemEvents.has(eventKey)) return false;
+    applyItemState(state, payload);
+    if (payload.kind === 'airstrike_end' && payload.gameOver) this.finalConfirmedValue = true;
+    if (eventKey !== null) this.appliedItemEvents.add(eventKey);
+    this.deps.onItemStateApplied?.(payload);
+    return true;
   }
 
   private handleTurnResult(envelope: NetworkEnvelope<unknown>): void {
@@ -352,7 +416,7 @@ export class OnlineGuestChannel {
 
   /** STATE_SNAPSHOT：validator → 原子 apply → 复验 → ACK(recovered) / 有限重试 */
   private handleStateSnapshot(envelope: NetworkEnvelope<unknown>): void {
-    if (!this.utils.guardInbound(envelope, NetworkMessageType.STATE_SNAPSHOT, isStateSnapshotPayload)) {
+    if (!this.utils.guardInbound(envelope, NetworkMessageType.STATE_SNAPSHOT, isPlainObject)) {
       return;
     }
     const validation = validateAuthoritativeSnapshot(envelope.payload, {
@@ -371,6 +435,8 @@ export class OnlineGuestChannel {
       this.utils.setSyncState(OnlineSyncState.SYNC_FAILED, this.lastSyncReasonValue);
       return;
     }
+    // Validation already checked the deep shape. Narrow it explicitly for TypeScript.
+    if (!isStateSnapshotPayload(envelope.payload)) return;
     const snapshotKey = `${validation.snapshot.turnId}:${envelope.payload.stateHash}`;
     if (validation.snapshot.turnId < this.latestAuthoritativeTurnId) {
       return; // New sequence does not make an older snapshot fresh.
@@ -391,6 +457,10 @@ export class OnlineGuestChannel {
     );
     const { stateHash } = applyAuthoritativeSnapshot(this.deps.getState(), validation.snapshot);
     this.pendingHashResult = null;
+    this.pendingNextTurnItems = [];
+    this.itemEventTurn = validation.snapshot.turnId;
+    this.appliedItemEvents.clear();
+    this.deps.clearPendingItemUse?.();
     this.pendingTurnResult = null;
     this.pendingLocalResolve = null;
     this.snapshotWithoutLocalFlight = validation.snapshot.phase === TurnPhase.PROJECTILE;
@@ -440,6 +510,8 @@ export class OnlineGuestChannel {
     ) {
       return;
     }
+    if (envelope.turnId !== this.deps.getState().turnId) return;
+    if (envelope.payload.commandType === 'USE_ITEM') this.deps.clearPendingItemUse?.(envelope.payload.operationId);
     this.deps.showRejected(envelope.payload);
   }
 
@@ -498,6 +570,13 @@ export class OnlineGuestChannel {
       this.beginRecovery('INVALID_LOCAL_STATE', `TURN_END_NOT_APPLIED(turn:${payload.nextTurnId})`);
       return false;
     }
+    const nextTurnItems = this.pendingNextTurnItems;
+    this.pendingNextTurnItems = [];
+    for (const items of nextTurnItems) {
+      if (items.turnId === payload.nextTurnId) {
+        this.applyUniqueItemEvent(items);
+      }
+    }
     this.dwellComplete = false;
     this.snapshotWithoutLocalFlight = false;
     this.pendingTurnResult = null;
@@ -542,4 +621,9 @@ export class GuestAuthoritativeDamage implements DamageSystem {
   apply(): void {
     // no-op：权威覆写归 applyTurnResult
   }
+}
+
+function sameAirstrike(a: AirstrikeContext, b: AirstrikeContext): boolean {
+  return a.itemId === b.itemId && a.ownerId === b.ownerId && a.turnId === b.turnId &&
+    a.resumePhase === b.resumePhase && a.target.x === b.target.x && a.target.y === b.target.y;
 }

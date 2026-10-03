@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { PALETTE, playerColor, toCssColor } from '../config/Palette';
+import { PALETTE, playerColor } from '../config/Palette';
 import type { PlayerState } from '../state/PlayerState';
 import type { PlayerId } from '../state/ids';
 import {
@@ -72,20 +72,9 @@ export class Player {
       this.barrel.setVisible(false);
     }
 
-    const label = scene.add
-      .text(0, -height - 24, playerState.id, {
-        fontFamily: 'monospace',
-        fontSize: '22px',
-        color: toCssColor(color),
-        stroke: '#151c22',
-        strokeThickness: 4,
-      })
-      .setOrigin(0.5);
-
     this.container = scene.add.container(playerState.x, playerState.y, [
       body,
       this.barrel,
-      label,
     ]);
     if (this.sprite) this.container.addAt(this.sprite, 1);
 

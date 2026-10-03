@@ -12,6 +12,13 @@ export interface UserSettings {
 }
 
 let inMemory: UserSettings = { soundEnabled: true };
+const soundListeners = new Set<(enabled: boolean) => void>();
+
+/** Persistent loops follow the same sound preference as one-shot effects. */
+export function onSoundSettingChanged(listener: (enabled: boolean) => void): () => void {
+  soundListeners.add(listener);
+  return () => { soundListeners.delete(listener); };
+}
 
 function readStorage(): string | null {
   try {
@@ -48,6 +55,7 @@ export function toggleSound(): boolean {
   const next = !getUserSettings().soundEnabled;
   inMemory = { soundEnabled: next };
   writeStorage(JSON.stringify(inMemory));
+  for (const listener of [...soundListeners]) listener(next);
   return next;
 }
 

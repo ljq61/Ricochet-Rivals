@@ -29,6 +29,13 @@ export const ART = {
   baseFire: 'art-base-fire',
   /** Phase 17 玩法特性：中央章鱼触手 16 帧待机循环（任一方 HP ≤ 4 升起） */
   octopus: 'art-octopus',
+  itemSupply: 'art-item-supply-v02',
+  itemHud: 'art-item-hud-v02',
+  airstrikeAtlas: 'art-airstrike-atlas',
+  airstrikePlane: 'art-airstrike-plane-v03',
+  airstrikeIcon: 'art-airstrike-icon-v03',
+  octopusDisturbance: 'art-airstrike-atlas',
+  octopusSplash: 'art-octopus-splash-v02',
 } as const;
 
 export const ART_FILES = [
@@ -55,7 +62,38 @@ export const ART_FILES = [
   [ART.buttonSteel, 'button-steel.png'],
   [ART.baseFire, 'base-fire-varied.png'],
   [ART.octopus, 'octopus-flex.png'],
+  [ART.octopusSplash, 'octopus-splash-v02.png'],
+  [ART.itemSupply, 'item-supply-v02.png'],
+  [ART.itemHud, 'item-hud-atlas-v02.png'],
+  [ART.airstrikeAtlas, 'airstrike-atlas-v02.png'],
+  [ART.airstrikePlane, 'airstrike-plane-v03.png'],
+  [ART.airstrikeIcon, 'airstrike-icon-v03.png'],
 ] as const;
+
+/** Alpha bounds measured from the generated six-button atlas; preserve original PNGs. */
+export const ITEM_ART_FRAMES = {
+  heal: { x: 64, y: 67, width: 416, height: 410 },
+  damage_boost: { x: 544, y: 67, width: 416, height: 410 },
+  range_boost: { x: 64, y: 547, width: 416, height: 411 },
+  homing: { x: 544, y: 547, width: 416, height: 411 },
+  bag: { x: 64, y: 1028, width: 416, height: 411 },
+  empty: { x: 544, y: 1028, width: 416, height: 411 },
+} as const;
+
+export const AIRSTRIKE_ART_FRAMES = {
+  airstrike: { x: 60, y: 78, width: 456, height: 469 },
+  plane: { x: 520, y: 215, width: 715, height: 324 },
+  bomb: { x: 166, y: 650, width: 274, height: 540 },
+  ripple: { x: 518, y: 865, width: 721, height: 297 },
+} as const;
+
+/** The wooden body alone maps to the gameplay rectangle; the parachute extends above it. */
+export const ITEM_SUPPLY_ART = {
+  sourceWidth: 1145, sourceHeight: 1374,
+  body: { x: 265, y: 788, width: 619, height: 522 },
+  originX: 574.5 / 1145, originY: 1049 / 1374,
+  displayWidth: 1145 / 619 * 80, displayHeight: 1374 / 522 * 64,
+} as const;
 
 /** Generated controls: measured alpha bounds, so visible art matches the input layout. */
 export const CONTROL_ART_FRAMES = {
