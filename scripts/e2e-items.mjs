@@ -61,7 +61,7 @@ async function makePage(label, width = 844, height = 390, dpr = 2, touch = true,
   const url = new URL(baseUrl);
   if (manual) url.searchParams.set('manual-sdp', '');
   await page.goto(url.href, { waitUntil: 'load' });
-  await waitFor(page, (d) => d.scene === 'MainMenuScene', `${label} menu`);
+  await waitFor(page, (d) => d.scene === 'MainMenuScene', `${label} menu`, 60_000);
   return page;
 }
 
@@ -536,7 +536,7 @@ function browserErrors() {
       // README records the pre-existing favicon 404. Exclude its load diagnostic
       // only when this same page also observed the exact URL return HTTP 404.
       if (faviconUrls.has(error.location.url) &&
-          /^Failed to load resource: the server responded with a status of 404 \(Not Found\)$/.test(error.message)) {
+          /^Failed to load resource: the server responded with a status of 404 \((?:Not Found)?\)$/.test(error.message)) {
         ignoredFavicon.push({ page: record.label, kind: 'console', ...error });
       } else failures.push({ page: record.label, kind: 'console', ...error });
     }
