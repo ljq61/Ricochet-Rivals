@@ -10,9 +10,14 @@ export function touchAimRect(viewport: ViewportMetrics, playerId: PlayerId = 'P1
   const size = TOUCH_AIM_SIZE * uiScale;
   return {
     x: playerId === 'P2'
-      ? safeArea.left + (TOUCH_AIM_MARGIN + TOUCH_AIM_SIZE / 2) * uiScale
+      ? safeArea.left + ((height - safeArea.top - safeArea.bottom) / uiScale < 180 ? 168
+        : (height - safeArea.top - safeArea.bottom) / uiScale < 360 ? 108
+        : TOUCH_AIM_MARGIN + TOUCH_AIM_SIZE / 2) * uiScale
       : width - safeArea.right - (TOUCH_AIM_MARGIN + TOUCH_AIM_SIZE / 2) * uiScale,
-    y: Math.max(safeArea.top + size / 2, Math.min(height / 2, height - safeArea.bottom - size / 2)),
+    y: Math.max(safeArea.top + size / 2, Math.min(
+      playerId === 'P2' && (width - safeArea.left - safeArea.right) / uiScale < 600
+        && (height - safeArea.top - safeArea.bottom) / uiScale < 220
+        ? height - safeArea.bottom - 52 * uiScale : height / 2, height - safeArea.bottom - size / 2)),
     width: size,
     height: size,
   };

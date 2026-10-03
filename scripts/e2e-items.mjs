@@ -150,6 +150,7 @@ async function screenshot(page, name) {
 async function runHudCases() {
   for (const [width, height, dpr, safe] of [[844, 390, 2], [667, 320, 2], [568, 256, 3], [568, 240, 2],
     [844, 240, 2, { left: 44, right: 44, top: 0, bottom: 34 }],
+    [568, 240, 2, { left: 44, right: 44, top: 8, bottom: 34 }],
     [568, 180, 2, { left: 4, right: 4, top: 8, bottom: 20 }]]) {
     const page = await localBattle(`fixed HUD ${width}x${height}`, width, height, dpr, safe);
     try {
@@ -159,14 +160,25 @@ async function runHudCases() {
         const label = `${width}x${height} ${id}`;
         let d = await waitFor(page, d => d.currentPlayerId === id && d.phase === 'ACTION' &&
           d.cameraMode === 'FREE_VIEW' && d.moveButtonsVisible && d.aimIcon?.hintVisible, `${label} controls ready`);
-        check(`${label}: three slots visible without a bag`, !d.itemState.hud.collapsed &&
-          d.itemState.hud.bag === null && d.itemState.hud.slots.length === 3);
-        check(`${label}: slots form a compact team-side row`, d.itemState.hud.slots.every(slot =>
-          slot.y === d.itemState.hud.slots[0].y && slot.width / d.uiScale === 48) &&
-          (id === 'P1' ? d.itemState.hud.slots[0].x < width * d.uiScale / 2
-            : d.itemState.hud.slots[0].x > width * d.uiScale / 2));
-        const anchors = d => JSON.stringify({ move: d.moveButtons, items: d.itemState.hud.slots,
+        check(`${label}: phone starts with a closed bag`, d.itemState.hud.collapsed &&
+          d.itemState.hud.bag !== null && d.itemState.hud.slots.length === 0);
+        const anchors = d => JSON.stringify({ move: d.moveButtons, bag: d.itemState.hud.bag,
           aim: d.aimButtonBounds, gear: d.settings.buttons.gear });
+        const closedAnchors = anchors(d);
+        const bag = d.itemState.hud.bag;
+        await clickCanvas(page, bag);
+        d = await waitFor(page, d => d.itemState.hud.expanded, `${label} bag opens`);
+        check(`${label}: opening reveals three compact slots without shifting controls`,
+          d.itemState.hud.slots.length === 3 && d.itemState.hud.slots.every(slot =>
+            slot.y === bag.y && slot.width / d.uiScale === 48) && anchors(d) === closedAnchors);
+        await screenshot(page, `bag-open-${width}x${height}-${id}`);
+        await clickCanvas(page, bag);
+        d = await waitFor(page, d => !d.itemState.hud.expanded, `${label} bag closes`);
+        check(`${label}: closing hides slots and keeps the bag fixed`,
+          d.itemState.hud.slots.length === 0 && anchors(d) === closedAnchors);
+        check(`${label}: both arrows stay on the current team's screen half`, id === 'P1'
+          ? d.moveButtons.left.x < width / 2 && d.moveButtons.right.x < width / 2
+          : d.moveButtons.left.x > width / 2 && d.moveButtons.right.x > width / 2);
         const before = anchors(d), scroll = d.cameraScrollX;
         const y = height * 0.55, start = width * 0.6;
         const distance = width * 0.3 * (id === 'P1' ? -1 : 1);
@@ -218,11 +230,11 @@ async function runHudCases() {
         }
       }
       await page.setViewport({ width: 932, height: 430, deviceScaleFactor: dpr, hasTouch: true, isMobile: true });
-      const resized = await waitFor(page, d => Math.abs(d.itemState.hud.slots[0].x / d.uiScale - (932 - (safe?.right ?? 0) - 32)) < 1 &&
+      const resized = await waitFor(page, d => Math.abs(d.itemState.hud.bag.x / d.uiScale - (932 - (safe?.right ?? 0) - 32)) < 1 &&
         Math.abs(d.moveButtons.right.x - (932 - (safe?.right ?? 0) - 32)) < 1,
         `${width} resize anchors`);
-      check(`${width}: resize preserves visible slots and settings safe area`, resized.itemState.hud.slots.length === 3 &&
-        resized.settings.buttons.gear.x === 110 + (safe?.left ?? 0) && resized.settings.buttons.gear.y > 80);
+      check(`${width}: resize preserves closed bag and settings safe area`, resized.itemState.hud.slots.length === 0 &&
+        resized.settings.buttons.gear.x === 44 + (safe?.left ?? 0) && resized.settings.buttons.gear.y > 80);
     } finally { await page.close(); }
   }
 }
@@ -246,8 +258,9 @@ async function runLocalCases() {
       const bluePanel = d.itemState.hud.bag ?? d.itemState.hud.slots[0];
       check(`${label}: blue inventory on left`, bluePanel.x / d.uiScale < width / 2);
       const middleY = d.itemState.hud.bag?.y ?? d.itemState.hud.slots[1].y;
-      check(`${label}: three slots stay visible at the team edge`, !d.itemState.hud.collapsed &&
-        d.itemState.hud.slots.length === 3 && Math.abs(bluePanel.x / d.uiScale - (height <= 600 ? 32 : 34)) < 1);
+      check(`${label}: three slots remain usable at the team edge`,
+        d.itemState.hud.slots.length === 3 && (height <= 600 ? d.itemState.hud.collapsed && d.itemState.hud.expanded
+          : !d.itemState.hud.collapsed));
       if (height <= 600) check(`${label}: phone inventory is a compact row`,
         d.itemState.hud.slots.every(slot => slot.y === middleY && slot.width / d.uiScale === 48));
       const position = (state) => JSON.stringify([state.itemState.hud.bag,

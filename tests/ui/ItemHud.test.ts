@@ -21,7 +21,7 @@ function objectStub(): unknown {
   return proxy;
 }
 
-function fixture() {
+function fixture(open = true) {
   const listeners = new Map<string, (event: PointerEvent) => void>();
   vi.stubGlobal('window', { addEventListener: (type: string, listener: (event: PointerEvent) => void) => listeners.set(type, listener),
     removeEventListener: (type: string) => listeners.delete(type) });
@@ -36,19 +36,38 @@ function fixture() {
   const scene = { add: { graphics: objectStub, text: objectStub, container: objectStub } } as unknown as Phaser.Scene;
   const hud = new ItemHud(scene, { router, viewport, getState: () => state, getPlayerId: () => 'P1',
     canUse: () => allowed, getSelectedItemId: () => null, isPending: () => false, onSlotTap });
-  const slot = hud.debugState.slots[0]!;
+  const bag = hud.debugState.bag!;
+  const bagEvent: GesturePointerEvent = { pointerId: 1, pointerType: 'touch', button: 0,
+    x: bag.x, y: bag.y, clientX: bag.x, clientY: bag.y };
+  const bagZone = zones.get('item-slot--1')!;
+  if (open) { bagZone.onDown!(bagEvent); bagZone.onUp!(bagEvent); }
+  const slot = hud.debugState.slots[0] ?? bag;
   const event: GesturePointerEvent = { pointerId: 1, pointerType: 'touch', button: 0,
     x: slot.x, y: slot.y, clientX: slot.x, clientY: slot.y };
-  return { hud, state, event, onSlotTap, zones, listeners, setAllowed: (value: boolean) => { allowed = value; } };
+  return { hud, state, event, bagEvent, onSlotTap, zones, listeners, setAllowed: (value: boolean) => { allowed = value; } };
 }
 
 describe('item HUD gesture ownership', () => {
+  it('captures the closed bag, opens on tap, and drops slot hit regions when collapsed', () => {
+    const f = fixture(false), bagZone = f.zones.get('item-slot--1')!, slotZone = f.zones.get('item-slot-0')!;
+    expect(slotZone.isActive()).toBe(false);
+    expect(f.hud.inventoryTarget('P1', 0)).toEqual({ x: f.bagEvent.x, y: f.bagEvent.y });
+    bagZone.onDown!(f.bagEvent); bagZone.onUp!(f.bagEvent);
+    expect(f.hud.debugState.slots).toHaveLength(3);
+    expect(slotZone.isActive()).toBe(true);
+    bagZone.onDown!(f.bagEvent); bagZone.onUp!(f.bagEvent);
+    expect(f.hud.debugState.slots).toHaveLength(0);
+    expect(slotZone.isActive()).toBe(false);
+    expect(f.onSlotTap).not.toHaveBeenCalled();
+  });
   it('uses a slot on pointerup, after a tap on the same item instance', () => {
     const f = fixture(), zone = f.zones.get('item-slot-0')!;
     zone.onDown!(f.event);
     expect(f.onSlotTap).not.toHaveBeenCalled();
     zone.onUp!(f.event);
     expect(f.onSlotTap).toHaveBeenCalledExactlyOnceWith('damage');
+    expect(f.hud.debugState.expanded).toBe(false);
+    expect(f.hud.debugState.slots).toHaveLength(0);
     f.hud.destroy();
     expect(f.zones.size).toBe(0);
     expect(f.listeners.size).toBe(0);

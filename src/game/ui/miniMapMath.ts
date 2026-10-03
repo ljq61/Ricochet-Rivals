@@ -20,7 +20,7 @@ export function battleHudLayout(viewport: ViewportMetrics, playerId: PlayerId = 
     height: 36 * uiScale,
   };
   const finish = (banner: ScreenRect) => {
-    const dock = battleItemDock(viewport, playerId);
+    const dock = battleItemDock(viewport, playerId, true);
     const obstacles = [...dock.slots, battleSettingsRect(viewport), ...(dock.bag ? [dock.bag] : [])];
     const gap = 8 * uiScale;
     let left = banner.x - banner.width / 2, right = banner.x + banner.width / 2;
@@ -38,7 +38,7 @@ export function battleHudLayout(viewport: ViewportMetrics, playerId: PlayerId = 
   let bannerHeight = (shortScreen ? 24 : 52) * uiScale;
   let bannerY = safeArea.top + Math.max(83 * hudScale + 8, 50) * uiScale + bannerHeight / 2;
   let bannerWidth = (available - 16) * uiScale;
-  if (viewport.height / uiScale <= 220) {
+  if ((viewport.height - safeArea.top - safeArea.bottom) / uiScale <= 220) {
     // On the narrowest landscape surface, leave the upper corners available
     // for 48px controls rather than stretching the message across one side.
     if (available < 360) return finish({ x: map.x,

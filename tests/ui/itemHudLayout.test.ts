@@ -3,7 +3,8 @@ import { computeViewportMetrics } from '../../src/game/platform/viewportMath';
 import { itemHudLayout, itemHudObstacleOverlaps } from '../../src/game/ui/itemHudLayout';
 import { battleSettingsRect } from '../../src/game/ui/battleSideDockLayout';
 import { touchAimVisualRect } from '../../src/game/ui/touchAimLayout';
-import { screenRectsOverlap } from '../../src/game/ui/touchControlLayout';
+import { screenMoveButtonLayout, screenRectsOverlap } from '../../src/game/ui/touchControlLayout';
+import { battleHudLayout } from '../../src/game/ui/miniMapMath';
 
 describe('item HUD safe area and control layout', () => {
   it.each([[844, 390], [667, 320], [568, 256], [1920, 1080], [932, 430]])(
@@ -31,19 +32,41 @@ describe('item HUD safe area and control layout', () => {
       }
     });
 
-  it('keeps all three slots visible without opening a bag on short screens', () => {
+  it('opens a three-slot row from a mobile bag and collapses without shifting the bag', () => {
     for (const height of [390, 320, 256, 240]) for (const id of ['P1', 'P2'] as const) {
       const viewport = computeViewportMetrics(667, height, { top: 0, left: 0, right: 0, bottom: 0 });
-      const layout = itemHudLayout(viewport, id, false);
-      expect(layout.collapsed).toBe(false);
-      expect(layout.bag).toBeNull();
-      expect(layout.slots).toHaveLength(3);
-      expect(layout.slots.every((slot) => slot.y === layout.slots[0]!.y)).toBe(true);
-      expect(id === 'P1' ? layout.slots[2]!.x > layout.slots[0]!.x
-        : layout.slots[2]!.x < layout.slots[0]!.x).toBe(true);
-      expect(itemHudLayout(viewport, id, true).slots).toEqual(layout.slots);
+      const closed = itemHudLayout(viewport, id, false), open = itemHudLayout(viewport, id, true);
+      expect(closed.collapsed).toBe(true);
+      expect(closed.bag).not.toBeNull();
+      expect(closed.slots).toHaveLength(0);
+      expect(open.bag).toEqual(closed.bag);
+      expect(open.slots).toHaveLength(3);
+      expect(open.slots.every((slot) => slot.y === open.bag!.y)).toBe(true);
+      expect(id === 'P1' ? open.slots[2]!.x > open.bag!.x
+        : open.slots[2]!.x < open.bag!.x).toBe(true);
     }
   });
+
+  it.each([
+    [667, 320, 0, 0, 0, 0], [844, 390, 0, 0, 0, 0],
+    [568, 240, 0, 0, 0, 0], [568, 256, 4, 4, 8, 20],
+    [568, 240, 44, 44, 8, 34], [844, 240, 44, 44, 8, 34],
+  ])('keeps an expanded phone bag clear of all screen controls at %i × %i with safe insets %i/%i/%i/%i',
+    (width, height, left, right, top, bottom) => {
+      for (const id of ['P1', 'P2'] as const) for (const dpr of [1, 2, 3]) {
+        const safe = { left: left * dpr, right: right * dpr, top: top * dpr, bottom: bottom * dpr };
+        const viewport = computeViewportMetrics(width * dpr, height * dpr, safe, undefined, dpr);
+        const closed = itemHudLayout(viewport, id, false), open = itemHudLayout(viewport, id, true);
+        expect(open.bag).toEqual(closed.bag);
+        const move = screenMoveButtonLayout(viewport, id);
+        const rects = [battleSettingsRect(viewport), touchAimVisualRect(viewport, id),
+          open.bag!, ...open.slots, move.left, move.right, battleHudLayout(viewport, id).banner];
+        for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) {
+          expect(screenRectsOverlap(rects[i]!, rects[j]!),
+            JSON.stringify({ width, height, id, dpr, safe, first: rects[i], second: rects[j] })).toBe(false);
+        }
+      }
+    });
 
   it.each([[844, 390], [667, 320], [568, 256], [1920, 1080]])(
     'anchors inventory at the team edge at %i × %i regardless of projected controls', (width, height) => {
@@ -51,11 +74,11 @@ describe('item HUD safe area and control layout', () => {
         const safe = { top: 4 * dpr, bottom: 8 * dpr, left: 20 * dpr, right: 12 * dpr };
         const viewport = computeViewportMetrics(width * dpr, height * dpr, safe, undefined, dpr);
         const baseline = itemHudLayout(viewport, id, true);
-        const anchor = baseline.slots[0]!;
-        const inset = height <= 600 ? 32 : 34;
+        const anchor = baseline.bag ?? baseline.slots[0]!;
+        const inset = height <= 600 ? (anchor.y < battleSettingsRect(viewport).y + 56 * dpr ? 100 : 32) : 34;
         expect(anchor.x).toBe(id === 'P1' ? safe.left + inset * dpr : viewport.width - safe.right - inset * dpr);
         const middle = (safe.top + viewport.height - safe.bottom) / 2;
-        if (height <= 600) expect(anchor.y).toBeGreaterThanOrEqual(middle);
+        if (height <= 600) expect(anchor.y).toBeLessThanOrEqual(viewport.height - safe.bottom - 88 * dpr);
         else expect(baseline.slots[1]!.y).toBe(middle);
         for (const x of [-5000, 40, width / 2, width - 40, 5000]) {
           const obstacles = [{ x: x * dpr, y: anchor.y, width: 64 * dpr, height: 64 * dpr },
@@ -76,7 +99,7 @@ describe('item HUD safe area and control layout', () => {
       const viewport = computeViewportMetrics(844, height, { top: 0, left: 0, right: 0, bottom: 0 });
       for (const id of ['P1', 'P2'] as const) {
         const layout = itemHudLayout(viewport, id, true);
-        expect(layout.collapsed).toBe(false);
+        expect(layout.collapsed).toBe(true);
         const rects = [...(layout.bag ? [layout.bag] : []), ...layout.slots];
         expect(rects.some((rect) => screenRectsOverlap(rect, battleSettingsRect(viewport), 8))).toBe(false);
       }
@@ -121,18 +144,18 @@ describe('item HUD safe area and control layout', () => {
             JSON.stringify({ width, height, inset, dpr, id, gear, obstacles })).toBe(false);
           expect(gear.y + gear.height / 2).toBeLessThanOrEqual(viewport.height - safe.bottom);
         }
-        expect(gear.x).toBe(safe.left + 110 * dpr);
+        expect(gear.x).toBe(safe.left + 44 * dpr);
         expect(gear.y).toBe(safe.top + 83 * scale + 32 * dpr);
       }
     });
 
   it('keeps the gear separate from all three slots on extremely short surfaces', () => {
-    for (const width of [320, 480, 568, 667, 844, 932]) for (const id of ['P1', 'P2'] as const)
+    for (const width of [480, 568, 667, 844, 932]) for (const id of ['P1', 'P2'] as const)
       for (const dpr of [1, 2, 3]) {
         const safe = { left: 4 * dpr, right: 4 * dpr, top: 8 * dpr, bottom: 20 * dpr };
         const viewport = computeViewportMetrics(width * dpr, 180 * dpr, safe, undefined, dpr);
         const gear = battleSettingsRect(viewport);
-        const layout = itemHudLayout(viewport, id, false);
+        const layout = itemHudLayout(viewport, id, true);
         expect(layout.slots).toHaveLength(3);
         expect(layout.slots.some(slot => screenRectsOverlap(slot, gear, 8 * dpr)),
           JSON.stringify({ width, id, dpr, gear, layout })).toBe(false);

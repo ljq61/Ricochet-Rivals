@@ -179,8 +179,7 @@ export class ItemHud {
       : selected && this.layout.collapsed ? '下一发待用' : '';
     const caption = this.layout.bag ? this.labels[3] : this.labels[0];
     if (statusText && caption?.visible) {
-      caption.setFontSize(8 * ui).setAlpha(1).setText(this.layout.bag
-        ? `背包 ${player.inventory.filter(Boolean).length}/3\n${statusText}` : statusText);
+      caption.setFontSize(8 * ui).setAlpha(1).setText(this.layout.bag && this.expanded ? '收起' : statusText);
     }
   }
 
