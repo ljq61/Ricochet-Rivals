@@ -780,6 +780,14 @@ async function runMobile(browser) {
     `Δ=${(afterCam - beforeCam).toFixed(1)}`
   );
 
+  // The arrow stays on the base: after the pan it has left the screen.
+  check('移动按钮与基地一起离开默认视角', (await dbg(page)).moveButtons.left.x < 0);
+  await page.touchscreen.touchStart(500, 200);
+  await page.touchscreen.touchMove(600, 200);
+  await page.touchscreen.touchEnd();
+  await sleep(150);
+  check('拖回基地恢复移动按钮位置', Math.abs((await dbg(page)).moveButtons.left.x - d0.moveButtons.left.x) < 1);
+
   // 2. 按住 ◀ 移动按钮（跟随当前基地；点击画面实际显示位置）
   const xBefore = (await dbg(page)).players.P1;
   const moveLeft = (await dbg(page)).moveButtons.left;

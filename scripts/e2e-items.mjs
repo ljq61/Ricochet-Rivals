@@ -146,7 +146,7 @@ async function screenshot(page, name) {
   screenshots.push(path);
 }
 
-// Exercise screen anchoring through production touch gestures, including both teams.
+// Exercise fixed-base anchoring and real engine rendering through touch gestures.
 async function runHudCases() {
   for (const [width, height, dpr, safe] of [[844, 390, 2], [667, 320, 2], [568, 256, 3], [568, 240, 2],
     [844, 240, 2, { left: 44, right: 44, top: 0, bottom: 34 }],
@@ -162,7 +162,7 @@ async function runHudCases() {
           d.cameraMode === 'FREE_VIEW' && d.moveButtonsVisible && d.aimIcon?.hintVisible, `${label} controls ready`);
         check(`${label}: phone starts with a closed bag`, d.itemState.hud.collapsed &&
           d.itemState.hud.bag !== null && d.itemState.hud.slots.length === 0);
-        const anchors = d => JSON.stringify({ move: d.moveButtons, bag: d.itemState.hud.bag,
+        const anchors = d => JSON.stringify({ bag: d.itemState.hud.bag,
           aim: d.aimButtonBounds, gear: d.settings.buttons.gear });
         const closedAnchors = anchors(d);
         const bag = d.itemState.hud.bag;
@@ -180,21 +180,50 @@ async function runHudCases() {
           ? d.moveButtons.left.x < width / 2 && d.moveButtons.right.x < width / 2
           : d.moveButtons.left.x > width / 2 && d.moveButtons.right.x > width / 2);
         const before = anchors(d), scroll = d.cameraScrollX;
-        const y = height * 0.55, start = width * 0.6;
-        const distance = width * 0.3 * (id === 'P1' ? -1 : 1);
+        const homeButtons = d.moveButtons, worldBefore = JSON.stringify(d.moveButtonWorldCenters);
+        const renderMatchesHit = d => ['left', 'right'].every(side => {
+          const render = d.moveButtonRenderState[side], hit = d.moveButtons[side];
+          return render.scrollFactorX === 1 && render.scrollFactorY === 1 &&
+            Math.abs(render.renderX / d.uiScale - hit.x) < 1 &&
+            Math.abs(render.renderY / d.uiScale - hit.y) < 1;
+        });
+        check(`${label}: actual engine-rendered centers match touch regions at home`, renderMatchesHit(d));
+        await screenshot(page, `base-home-${width}x${height}-${id}`);
+        const y = height * 0.55, start = width * (id === 'P1' ? 0.6 : 0.45);
+        const distance = width * 0.45 * (id === 'P1' ? -1 : 1);
         await page.touchscreen.touchStart(start, y);
         try {
           for (let step = 1; step <= 10; step++) await page.touchscreen.touchMove(start + distance * step / 10, y);
         } finally { await page.touchscreen.touchEnd(); }
         d = await waitFor(page, d => Math.abs(d.cameraScrollX - scroll) > 30, `${label} camera pan`);
-        check(`${label}: camera pan leaves arrows, inventory, aim and gear fixed`, anchors(d) === before);
+        await pause(100);
+        d = await debug(page);
+        const screenDelta = -(d.cameraScrollX - scroll) * d.cameraZoom / d.uiScale;
+        check(`${label}: arrows pan with the base instead of staying on screen`,
+          ['left', 'right'].every(side => Math.abs(d.moveButtons[side].x - homeButtons[side].x - screenDelta) < 1) &&
+          JSON.stringify(d.moveButtonWorldCenters) === worldBefore && anchors(d) === before);
+        check(`${label}: actual render and hit regions remain aligned after panning`, renderMatchesHit(d));
+        check(`${label}: outer arrow leaves the viewport with the base`, id === 'P1'
+          ? d.moveButtons.left.x < 0 : d.moveButtons.right.x > width);
+        await screenshot(page, `base-away-${width}x${height}-${id}`);
+        const xBeforeOldTap = d.players[id];
+        await page.touchscreen.touchStart(homeButtons[id === 'P1' ? 'right' : 'left'].x, homeButtons.left.y);
+        try { await pause(180); } finally { await page.touchscreen.touchEnd(); }
+        check(`${label}: vacated screen location cannot move the player`, (await debug(page)).players[id] === xBeforeOldTap);
+        await clickCanvas(page, d.aimButtonBounds);
+        await waitFor(page, d => d.phase === 'AIM' && d.cameraMode === 'AIMING', `${label} return to base`);
+        await clickCanvas(page, (await debug(page)).aimButtonBounds);
+        d = await waitFor(page, d => d.phase === 'ACTION' && d.moveButtonsVisible, `${label} return cancellation`);
+        check(`${label}: returning to base restores the original arrow positions`,
+          ['left', 'right'].every(side => Math.abs(d.moveButtons[side].x - homeButtons[side].x) < 1) && renderMatchesHit(d));
         for (const direction of ['right', 'left']) {
           const initialX = d.players[id], point = d.moveButtons[direction];
           await page.touchscreen.touchStart(point.x, point.y);
           try {
             d = await waitFor(page, d => direction === 'right' ? d.players[id] > initialX + 10
               : d.players[id] < initialX - 10, `${label} ${direction} hold`);
-            check(`${label}: ${direction} hold moves the player without moving buttons`, anchors(d) === before);
+            check(`${label}: ${direction} hold moves the player without moving the base anchors`,
+              anchors(d) === before && JSON.stringify(d.moveButtonWorldCenters) === worldBefore && renderMatchesHit(d));
           } finally { await page.touchscreen.touchEnd(); }
           await pause(100);
           d = await debug(page);
@@ -222,7 +251,8 @@ async function runHudCases() {
         d = await waitFor(page, d => d.phase === 'AIM' && d.cameraMode === 'AIMING', `${label} aim return`);
         await clickCanvas(page, d.aimButtonBounds);
         d = await waitFor(page, d => d.phase === 'ACTION' && d.moveButtonsVisible, `${label} aim cancellation`);
-        check(`${label}: returning home and cancelling aim preserves anchors`, anchors(d) === before);
+        check(`${label}: aiming at the moved player keeps the same base-world anchors`, anchors(d) === before &&
+          JSON.stringify(d.moveButtonWorldCenters) === worldBefore && renderMatchesHit(d));
         await screenshot(page, `fixed-hud-${width}x${height}-${id}`);
         if (id === 'P1') {
           await fire(page, 1450, -1450);
@@ -231,7 +261,7 @@ async function runHudCases() {
       }
       await page.setViewport({ width: 932, height: 430, deviceScaleFactor: dpr, hasTouch: true, isMobile: true });
       const resized = await waitFor(page, d => Math.abs(d.itemState.hud.bag.x / d.uiScale - (932 - (safe?.right ?? 0) - 32)) < 1 &&
-        Math.abs(d.moveButtons.right.x - (932 - (safe?.right ?? 0) - 32)) < 1,
+        d.moveButtonRenderState.right.scrollFactorX === 1,
         `${width} resize anchors`);
       check(`${width}: resize preserves closed bag and settings safe area`, resized.itemState.hud.slots.length === 0 &&
         resized.settings.buttons.gear.x === 44 + (safe?.left ?? 0) && resized.settings.buttons.gear.y > 80);

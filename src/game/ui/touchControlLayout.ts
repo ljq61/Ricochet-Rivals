@@ -1,11 +1,14 @@
 import type { ViewportMetrics } from '../platform/viewportMath';
 import type { PlayerId } from '../state/ids';
+import { GAME_CONFIG } from '../config/GameConfig';
+import { clampCameraCenterX, groundAnchoredCenterY } from '../camera/cameraBounds';
+import { baseDockGeometry } from '../utils/baseDockGeometry';
 
 import type { ScreenRect } from './touchAimLayout';
 export { touchAimRect, touchAimVisualRect, TOUCH_AIM_SIZE, TOUCH_AIM_MARGIN } from './touchAimLayout';
 export type { ScreenRect } from './touchAimLayout';
 
-/** Both directions stay on the player's side of the screen as the world camera moves. */
+/** The team-side layout in the default, ground-anchored view of its base. */
 export function screenMoveButtonLayout(
   viewport: ViewportMetrics,
   playerId: PlayerId = 'P1',
@@ -15,19 +18,47 @@ export function screenMoveButtonLayout(
   const hitSize = 48 * uiScale;
   const half = hitSize / 2;
   const edgeInset = half + 8 * uiScale;
-  const safeWidth = width - safeArea.left - safeArea.right;
   const y = Math.max(safeArea.top + half, height - safeArea.bottom - edgeInset);
-  // The inner arrow stays at 40% of the safe width from the team's edge.
-  // Layout depends only on the viewport, never on camera, player or dock motion.
-  const innerInset = 0.4 * safeWidth;
+  const { center, dockWidth } = baseDockGeometry(playerId);
+  const homeCenterX = clampCameraCenterX(GAME_CONFIG.player.spawn[playerId],
+    viewport.visibleWorldWidth, GAME_CONFIG.world.width);
+  const projectX = (worldX: number) => width / 2 + (worldX - homeCenterX) * viewport.zoom;
+  const leftEdge = center - dockWidth / 2;
+  const rightEdge = center + dockWidth / 2;
   const blue = playerId === 'P1';
+  // The inner arrow follows the actual deck edge, including short/wide views.
+  // Only the outer arrow's default-view position receives safe-area padding;
+  // the resulting world anchor is never clamped against a panned camera.
+  const outerX = blue
+    ? Math.max(safeArea.left + edgeInset, projectX(leftEdge) + visualSize / 2)
+    : Math.min(width - safeArea.right - edgeInset, projectX(rightEdge) - visualSize / 2);
   const rect = (x: number): ScreenRect => ({ x, y, width: hitSize, height: hitSize });
   return {
     visualSize,
     hitSize,
-    left: rect(blue ? safeArea.left + edgeInset : width - safeArea.right - innerInset),
-    right: rect(blue ? safeArea.left + innerInset : width - safeArea.right - edgeInset),
+    left: rect(blue ? outerX : projectX(leftEdge)),
+    right: rect(blue ? projectX(rightEdge) : outerX),
   };
+}
+
+/**
+ * Place the reference controls in the world once, relative to the base's home
+ * view. Panning and character movement never alter these world anchors; resize
+ * recalculates the reference view so its safe-area spacing remains usable.
+ */
+export function baseMoveButtonLayout(viewport: ViewportMetrics, playerId: PlayerId) {
+  const reference = screenMoveButtonLayout(viewport, playerId);
+  const centerX = clampCameraCenterX(GAME_CONFIG.player.spawn[playerId],
+    viewport.visibleWorldWidth, GAME_CONFIG.world.width);
+  const centerY = groundAnchoredCenterY(viewport.visibleWorldHeight, GAME_CONFIG.world.height);
+  const toWorld = (rect: ScreenRect): ScreenRect => ({
+    x: centerX + (rect.x - viewport.width / 2) / viewport.zoom,
+    y: centerY + (rect.y - viewport.height / 2) / viewport.zoom,
+    width: rect.width / viewport.zoom,
+    height: rect.height / viewport.zoom,
+  });
+  return { visualSize: reference.visualSize, hitSize: reference.hitSize,
+    left: toWorld(reference.left), right: toWorld(reference.right) };
 }
 
 export function screenRectsOverlap(a: ScreenRect, b: ScreenRect, gap = 0): boolean {

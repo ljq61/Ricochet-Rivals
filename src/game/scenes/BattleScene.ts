@@ -1576,6 +1576,8 @@ export class BattleScene extends Phaser.Scene {
           right: { x: centers.right.x / scale, y: centers.right.y / scale },
         };
       },
+      get moveButtonWorldCenters() { return self.touchControls?.moveButtonWorldCenters ?? null; },
+      get moveButtonRenderState() { return self.touchControls?.moveButtonRenderState ?? null; },
       /** SG-8：连接恢复状态（IDLE/RECONNECTING/RECOVERED/FAILED；离线 = null） */
       get recoveryState(): string | null {
         return self.roomRecovery?.state ?? null;

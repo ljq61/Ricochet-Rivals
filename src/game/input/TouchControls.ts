@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { playerColor } from '../config/Palette';
 import { ART } from '../config/ArtAssets';
-import { screenMoveButtonLayout } from '../ui/touchControlLayout';
+import { baseMoveButtonLayout } from '../ui/touchControlLayout';
 import type { CommandBus } from '../commands/CommandBus';
 import type { GameState } from '../state/GameState';
 import { TurnPhase } from '../state/TurnPhase';
@@ -54,7 +54,7 @@ interface TouchButton {
   pressed: boolean;
   /** 按住的 pointerId 集合（移动按钮多指追踪） */
   heldPointers: Set<number>;
-  /** 画面坐标（相机缩放补偿前）；InputRouter 的 zone 直接使用此坐标。 */
+  /** 世界锚点经过当前相机投影后的画面坐标；InputRouter 使用同一投影。 */
   screenX: number;
   screenY: number;
 }
@@ -111,10 +111,34 @@ export class TouchControls implements InputSource {
 
   /** 可见按钮中心（游戏像素，供触控回归测试取真实落点）。 */
   get moveButtonCenters(): { left: { x: number; y: number }; right: { x: number; y: number } } {
+    this.updateScreenPosition(this.leftButton);
+    this.updateScreenPosition(this.rightButton);
     return {
       left: { x: this.leftButton.screenX, y: this.leftButton.screenY },
       right: { x: this.rightButton.screenX, y: this.rightButton.screenY },
     };
+  }
+
+  /** 实际 Phaser 容器的世界中心，用于检查基地锚点和渲染投影。 */
+  get moveButtonWorldCenters(): { left: { x: number; y: number }; right: { x: number; y: number } } {
+    return {
+      left: { x: this.leftButton.container.x, y: this.leftButton.container.y },
+      right: { x: this.rightButton.container.x, y: this.rightButton.container.y },
+    };
+  }
+
+  get moveButtonRenderState() {
+    const read = (button: TouchButton) => {
+      const container = button.container;
+      // Copy immediately: Phaser reuses these matrices for the next object.
+      const calc = Phaser.GameObjects.GetCalcMatrix(container, this.scene.cameras.main).calc;
+      const renderX = calc.tx;
+      const renderY = calc.ty;
+      return { x: container.x, y: container.y,
+        scrollFactorX: container.scrollFactorX, scrollFactorY: container.scrollFactorY,
+        scaleX: container.scaleX, scaleY: container.scaleY, renderX, renderY };
+    };
+    return { left: read(this.leftButton), right: read(this.rightButton) };
   }
 
   /** 视觉和触控尺寸分开观测，避免图片缩小后丢失最小触控面积。 */
@@ -206,7 +230,7 @@ export class TouchControls implements InputSource {
     baseSize: number,
     direction: 'left' | 'right'
   ): TouchButton {
-    const container = this.scene.add.container(0, 0).setScrollFactor(0).setDepth(900);
+    const container = this.scene.add.container(0, 0).setScrollFactor(1).setDepth(900);
     const bg = this.scene.add.graphics();
     container.add(bg);
 
@@ -279,10 +303,10 @@ export class TouchControls implements InputSource {
     this.repositionMoveButtons();
   }
 
-  /** 屏幕底部的固定方向按钮，只由视口、安全区和队伍侧边 HUD 决定。 */
+  /** 基地默认视角决定世界锚点；拖动镜头时按钮和基地一起离开画面。 */
   private repositionMoveButtons(): void {
     const playerId = this.deps.getState().currentPlayerId;
-    const layout = screenMoveButtonLayout(this.deps.viewport.current, playerId);
+    const layout = baseMoveButtonLayout(this.deps.viewport.current, playerId);
     for (const [button, position] of [
       [this.leftButton, layout.left], [this.rightButton, layout.right],
     ] as const) {
@@ -294,19 +318,20 @@ export class TouchControls implements InputSource {
         this.drawArrow(button);
         this.drawHoldButton(button);
       }
-      this.placeOnScreen(button, position.x, position.y);
+      button.container.setScale(1 / this.scene.cameras.main.zoom).setPosition(position.x, position.y);
+      this.updateScreenPosition(button);
     }
   }
 
-  /** setScrollFactor(0) 仍受世界相机 zoom 影响；逆变换保证画面与命中区重合。 */
-  private placeOnScreen(button: TouchButton, x: number, y: number): void {
-    const { width, height, zoom } = this.deps.viewport.current;
-    button.screenX = x;
-    button.screenY = y;
-    button.container.setScale(1 / zoom).setPosition(
-      width / 2 + (x - width / 2) / zoom,
-      height / 2 + (y - height / 2) / zoom,
-    );
+  /** 与 Phaser 世界相机相同的投影，画面落点与触控命中区始终重合。 */
+  private updateScreenPosition(button: TouchButton): void {
+    const camera = this.scene.cameras.main;
+    const originX = camera.width * camera.originX;
+    const originY = camera.height * camera.originY;
+    button.screenX = camera.x + originX +
+      (button.container.x - camera.scrollX - originX) * camera.zoom;
+    button.screenY = camera.y + originY +
+      (button.container.y - camera.scrollY - originY) * camera.zoom;
   }
 
   private allButtons(): TouchButton[] {
@@ -324,7 +349,11 @@ export class TouchControls implements InputSource {
       id: button.id,
       kind: button.kind,
       isActive: () => this.moveButtonsVisible,
-      contains: (x, y) => containsButton(button, x, y),
+      contains: (x, y) => {
+        // Pointer events can arrive between scene updates after a camera drag.
+        this.updateScreenPosition(button);
+        return containsButton(button, x, y);
+      },
       onDown: (event) => {
         button.heldPointers.add(event.pointerId);
         button.pressed = true;

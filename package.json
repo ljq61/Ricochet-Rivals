@@ -1,7 +1,7 @@
 {
   "name": "ricochet-rivals",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "description": "横版 2D 回合制弹道对战网页游戏 (Side-scrolling turn-based artillery PvP web game)",
   "scripts": {

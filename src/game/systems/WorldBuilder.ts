@@ -3,6 +3,8 @@ import { GAME_CONFIG } from '../config/GameConfig';
 import { PALETTE, playerColor } from '../config/Palette';
 import type { PlayerId } from '../state/ids';
 import { ART, DOCK_ART_FRAME } from '../config/ArtAssets';
+import { baseDockGeometry } from '../utils/baseDockGeometry';
+export { baseDockGeometry } from '../utils/baseDockGeometry';
 
 /**
  * 静态占位世界构建器（Phase 1/2）。
@@ -24,20 +26,6 @@ const ALPHA = {
  * 且始终保持原图宽高比。最小高度常量在 GameConfig.world
  * （与相机垂直 clamp 上界同源）。
  */
-
-/**
- * 基地甲板几何（世界坐标）：阵地 bounds 居中 + 两侧外伸。
- * WorldBuilder 铺图与 BaseDamageEffects 烟/火发射点同源取此函数。
- */
-export function baseDockGeometry(id: PlayerId): { center: number; dockWidth: number } {
-  const bounds = id === 'P1'
-    ? GAME_CONFIG.player.leftBounds
-    : GAME_CONFIG.player.rightBounds;
-  return {
-    center: (bounds.minX + bounds.maxX) / 2,
-    dockWidth: bounds.maxX - bounds.minX + GAME_CONFIG.world.platformOverhang * 2,
-  };
-}
 
 export class WorldBuilder {
   constructor(private readonly scene: Phaser.Scene) {}
