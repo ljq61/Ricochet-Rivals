@@ -41,7 +41,7 @@ async function waitFor(page, predicate, label, timeoutMs = 15_000) {
   throw new Error(`Timeout ${label}: ${JSON.stringify(last)}`);
 }
 
-async function makePage(label, width = 844, height = 390, dpr = 2, touch = true, manual = false) {
+async function makePage(label, width = 844, height = 390, dpr = 2, touch = true, manual = false, safe = null) {
   const page = await browser.newPage();
   await installHomingProbe(page);
   await installAirstrikeProbe(page);
@@ -58,6 +58,18 @@ async function makePage(label, width = 844, height = 390, dpr = 2, touch = true,
   page.on('requestfailed', (request) => record.failedRequests.push({ url: request.url(),
     resourceType: request.resourceType(), error: request.failure()?.errorText ?? 'unknown' }));
   await page.setViewport({ width, height, deviceScaleFactor: dpr, hasTouch: touch, isMobile: touch });
+  if (safe) await page.evaluateOnNewDocument((safe) => {
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function () {
+      if (this.style?.cssText.includes('safe-area-inset')) return {
+        x: safe.left, y: safe.top, left: safe.left, top: safe.top,
+        right: window.innerWidth - safe.right, bottom: window.innerHeight - safe.bottom,
+        width: window.innerWidth - safe.left - safe.right,
+        height: window.innerHeight - safe.top - safe.bottom, toJSON() { return this; },
+      };
+      return original.call(this);
+    };
+  }, safe);
   const url = new URL(baseUrl);
   if (manual) url.searchParams.set('manual-sdp', '');
   await page.goto(url.href, { waitUntil: 'load' });
@@ -79,8 +91,8 @@ async function clickMenu(page, key) {
   else await page.mouse.click(rect.x, rect.y);
 }
 
-async function localBattle(label, width = 844, height = 390, dpr = 2) {
-  const page = await makePage(label, width, height, dpr);
+async function localBattle(label, width = 844, height = 390, dpr = 2, safe = null) {
+  const page = await makePage(label, width, height, dpr, true, false, safe);
   await clickMenu(page, 'local2p');
   await waitFor(page, (d) => d.scene === 'BattleScene' && d.phase === 'ACTION', `${label} battle`);
   return page;
@@ -134,6 +146,87 @@ async function screenshot(page, name) {
   screenshots.push(path);
 }
 
+// Exercise screen anchoring through production touch gestures, including both teams.
+async function runHudCases() {
+  for (const [width, height, dpr, safe] of [[844, 390, 2], [667, 320, 2], [568, 256, 3], [568, 240, 2],
+    [844, 240, 2, { left: 44, right: 44, top: 0, bottom: 34 }],
+    [568, 180, 2, { left: 4, right: 4, top: 8, bottom: 20 }]]) {
+    const page = await localBattle(`fixed HUD ${width}x${height}`, width, height, dpr, safe);
+    try {
+      check(`${width}x${height}: correct game page`, (await page.title()).includes('Ricochet') &&
+        await page.$('vite-error-overlay') === null);
+      for (const id of ['P1', 'P2']) {
+        const label = `${width}x${height} ${id}`;
+        let d = await waitFor(page, d => d.currentPlayerId === id && d.phase === 'ACTION' &&
+          d.cameraMode === 'FREE_VIEW' && d.moveButtonsVisible && d.aimIcon?.hintVisible, `${label} controls ready`);
+        check(`${label}: three slots visible without a bag`, !d.itemState.hud.collapsed &&
+          d.itemState.hud.bag === null && d.itemState.hud.slots.length === 3);
+        check(`${label}: slots form a compact team-side row`, d.itemState.hud.slots.every(slot =>
+          slot.y === d.itemState.hud.slots[0].y && slot.width / d.uiScale === 48) &&
+          (id === 'P1' ? d.itemState.hud.slots[0].x < width * d.uiScale / 2
+            : d.itemState.hud.slots[0].x > width * d.uiScale / 2));
+        const anchors = d => JSON.stringify({ move: d.moveButtons, items: d.itemState.hud.slots,
+          aim: d.aimButtonBounds, gear: d.settings.buttons.gear });
+        const before = anchors(d), scroll = d.cameraScrollX;
+        const y = height * 0.55, start = width * 0.6;
+        const distance = width * 0.3 * (id === 'P1' ? -1 : 1);
+        await page.touchscreen.touchStart(start, y);
+        try {
+          for (let step = 1; step <= 10; step++) await page.touchscreen.touchMove(start + distance * step / 10, y);
+        } finally { await page.touchscreen.touchEnd(); }
+        d = await waitFor(page, d => Math.abs(d.cameraScrollX - scroll) > 30, `${label} camera pan`);
+        check(`${label}: camera pan leaves arrows, inventory, aim and gear fixed`, anchors(d) === before);
+        for (const direction of ['right', 'left']) {
+          const initialX = d.players[id], point = d.moveButtons[direction];
+          await page.touchscreen.touchStart(point.x, point.y);
+          try {
+            d = await waitFor(page, d => direction === 'right' ? d.players[id] > initialX + 10
+              : d.players[id] < initialX - 10, `${label} ${direction} hold`);
+            check(`${label}: ${direction} hold moves the player without moving buttons`, anchors(d) === before);
+          } finally { await page.touchscreen.touchEnd(); }
+          await pause(100);
+          d = await debug(page);
+          const stoppedX = d.players[id];
+          await pause(100);
+          d = await debug(page);
+          check(`${label}: ${direction} release stops movement`, d.players[id] === stoppedX);
+        }
+        await page.touchscreen.tap(d.settings.buttons.gear.x, d.settings.buttons.gear.y);
+        await waitFor(page, d => d.settings.phase === 'settings', `${label} settings opens`);
+        let resume = (await debug(page)).settings.buttons.resume;
+        if (resume.y + resume.height / 2 > height - (safe?.bottom ?? 0)) {
+          await page.touchscreen.touchStart(width / 2, height - 25);
+          try { await page.touchscreen.touchMove(width / 2, Math.max(30, height - 130)); }
+          finally { await page.touchscreen.touchEnd(); }
+          await pause(200);
+          resume = (await debug(page)).settings.buttons.resume;
+        }
+        check(`${label}: resume remains reachable in a short settings panel`,
+          resume.y > 0 && resume.y < height);
+        await page.touchscreen.tap(resume.x, resume.y);
+        d = await waitFor(page, d => d.settings.phase === 'closed', `${label} settings closes`);
+        check(`${label}: settings returns to the same screen anchor`, anchors(d) === before);
+        await clickCanvas(page, d.aimButtonBounds);
+        d = await waitFor(page, d => d.phase === 'AIM' && d.cameraMode === 'AIMING', `${label} aim return`);
+        await clickCanvas(page, d.aimButtonBounds);
+        d = await waitFor(page, d => d.phase === 'ACTION' && d.moveButtonsVisible, `${label} aim cancellation`);
+        check(`${label}: returning home and cancelling aim preserves anchors`, anchors(d) === before);
+        await screenshot(page, `fixed-hud-${width}x${height}-${id}`);
+        if (id === 'P1') {
+          await fire(page, 1450, -1450);
+          await waitFor(page, d => d.currentPlayerId === 'P2' && d.phase === 'ACTION', `${label} next turn`, 25_000);
+        }
+      }
+      await page.setViewport({ width: 932, height: 430, deviceScaleFactor: dpr, hasTouch: true, isMobile: true });
+      const resized = await waitFor(page, d => Math.abs(d.itemState.hud.slots[0].x / d.uiScale - (932 - (safe?.right ?? 0) - 32)) < 1 &&
+        Math.abs(d.moveButtons.right.x - (932 - (safe?.right ?? 0) - 32)) < 1,
+        `${width} resize anchors`);
+      check(`${width}: resize preserves visible slots and settings safe area`, resized.itemState.hud.slots.length === 3 &&
+        resized.settings.buttons.gear.x === 110 + (safe?.left ?? 0) && resized.settings.buttons.gear.y > 80);
+    } finally { await page.close(); }
+  }
+}
+
 async function runLocalCases() {
   for (const [width, height, dpr] of [[844, 390, 2], [667, 320, 2], [568, 256, 3], [1920, 1080, 1]]) {
     const label = `${width}x${height} DPR${dpr}`;
@@ -147,14 +240,16 @@ async function runLocalCases() {
       const d = await waitFor(page, (d) => d.hp.P1 === 10, `${label} heal`);
       check(`${label}: heal spends one item but permits normal fire`, d.itemState.used.P1 &&
         d.itemState.inventory.P1[0] === null && !d.hasFired);
-      check(`${label}: 52 CSS touch targets`, d.itemState.hud.slots.every((rect) =>
-        rect.width / d.uiScale >= 52 && rect.height / d.uiScale >= 52));
+      check(`${label}: at least 48 CSS touch targets`, d.itemState.hud.slots.every((rect) =>
+        rect.width / d.uiScale >= 48 && rect.height / d.uiScale >= 48));
       await screenshot(page, `${width}x${height}`);
       const bluePanel = d.itemState.hud.bag ?? d.itemState.hud.slots[0];
       check(`${label}: blue inventory on left`, bluePanel.x / d.uiScale < width / 2);
       const middleY = d.itemState.hud.bag?.y ?? d.itemState.hud.slots[1].y;
-      check(`${label}: inventory stays at side midpoint`, Math.abs(middleY / d.uiScale - height / 2) < 1 &&
-        Math.abs(bluePanel.x / d.uiScale - 34) < 1);
+      check(`${label}: three slots stay visible at the team edge`, !d.itemState.hud.collapsed &&
+        d.itemState.hud.slots.length === 3 && Math.abs(bluePanel.x / d.uiScale - (height <= 600 ? 32 : 34)) < 1);
+      if (height <= 600) check(`${label}: phone inventory is a compact row`,
+        d.itemState.hud.slots.every(slot => slot.y === middleY && slot.width / d.uiScale === 48));
       const position = (state) => JSON.stringify([state.itemState.hud.bag,
         state.itemState.hud.slots.map(({ x, y, width, height }) => ({ x, y, width, height }))]);
       const before = position(d);
@@ -569,9 +664,11 @@ async function main() {
       args: ['--no-sandbox', '--disable-dev-shm-usage', '--mute-audio', '--disable-background-timer-throttling',
         '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] });
     const spOnly = process.env.RR_E2E_ITEMS_ONLY === 'sp';
-    if (!spOnly) await runLocalCases();
-    await runSinglePlayerControls();
-    if (!spOnly) {
+    const hudOnly = process.env.RR_E2E_ITEMS_ONLY === 'hud';
+    if (!spOnly) await runHudCases();
+    if (!spOnly && !hudOnly) await runLocalCases();
+    if (!hudOnly) await runSinglePlayerControls();
+    if (!spOnly && !hudOnly) {
       await runAirstrikeCases();
       await runOnlineCases();
     }

@@ -1,9 +1,7 @@
 import Phaser from 'phaser';
 import { playerColor } from '../config/Palette';
 import { ART } from '../config/ArtAssets';
-import { GAME_CONFIG } from '../config/GameConfig';
-import { baseDockGeometry } from '../systems/WorldBuilder';
-import { dockMoveButtonLayout } from '../ui/touchControlLayout';
+import { screenMoveButtonLayout } from '../ui/touchControlLayout';
 import type { CommandBus } from '../commands/CommandBus';
 import type { GameState } from '../state/GameState';
 import { TurnPhase } from '../state/TurnPhase';
@@ -281,22 +279,10 @@ export class TouchControls implements InputSource {
     this.repositionMoveButtons();
   }
 
-  /** 当前基地甲板两端的方向按钮，跟随相机投影并避开固定 HUD。 */
+  /** 屏幕底部的固定方向按钮，只由视口、安全区和队伍侧边 HUD 决定。 */
   private repositionMoveButtons(): void {
-    const { width, height, zoom } = this.deps.viewport.current;
-    const camera = this.scene.cameras.main;
     const playerId = this.deps.getState().currentPlayerId;
-    const { center, dockWidth } = baseDockGeometry(playerId);
-    const projectX = (x: number) => width / 2 + (x - camera.scrollX - width / 2) * zoom;
-    const deckY = height / 2 + (GAME_CONFIG.world.groundTopY - camera.scrollY - height / 2) * zoom;
-    const layout = dockMoveButtonLayout(
-      this.deps.viewport.current,
-      projectX(center - dockWidth / 2),
-      projectX(center + dockWidth / 2),
-      deckY,
-      GAME_CONFIG.player.collision.height * zoom,
-      playerId,
-    );
+    const layout = screenMoveButtonLayout(this.deps.viewport.current, playerId);
     for (const [button, position] of [
       [this.leftButton, layout.left], [this.rightButton, layout.right],
     ] as const) {

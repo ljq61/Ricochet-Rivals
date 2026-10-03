@@ -21,7 +21,7 @@ describe('battle mini map', () => {
       }
     }
   });
-  it.each([[320, 180], [480, 180], [600, 180], [844, 180], [320, 240], [320, 568], [844, 240], [844, 390], [932, 430], [1280, 800]])(
+  it.each([[568, 240], [568, 256], [667, 240], [932, 240], [320, 180], [480, 180], [600, 180], [844, 180], [320, 240], [320, 568], [844, 240], [844, 390], [932, 430], [1280, 800]])(
     'keeps map and banner outside the HP cards at %i × %i', (width, height) => {
       for (const playerId of ['P1', 'P2'] as const) for (const dpr of [1, 2, 3]) {
         const safe = { left: 12 * dpr, right: 4 * dpr, top: 8 * dpr, bottom: 4 * dpr };
