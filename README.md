@@ -19,6 +19,8 @@ Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
 程序启动即显示新生成的海港双角色插画、现有标志和实际资源进度；主菜单首次渲染后收起，手机横竖屏适配。素材与完整提示词见[启动加载图记录](docs/ArtDesign/STARTUP_LOADING_2026-10-01.md)。
 
+CrazyGames 发布准备（2026-10-04）：独立分支 `codex/crazygames-release-prep` 基于0.2.3，已整理官方门槛、英文/路径/体积/全屏/联机差距及商店文案草稿。实施顺序与验收见[准备清单](docs/CRAZYGAMES_RELEASE_PREP.md)。当前清单不代表平台提交或审核通过。
+
 ## 在线试玩与部署状态
 
 - 游戏：[GitHub Pages](https://ljq61.github.io/Ricochet-Rivals/)。手机建议横屏，发布更新后刷新页面。
