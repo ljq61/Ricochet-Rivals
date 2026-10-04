@@ -1,3 +1,4 @@
+import { t } from '../i18n/locale';
 import type Phaser from 'phaser';
 import type { WorldItemType } from '../state/ids';
 import { ART } from '../config/ArtAssets';
@@ -11,7 +12,7 @@ export function createItemArt(scene: Phaser.Scene, type: WorldItemType | 'bag' |
 }
 
 export const ITEM_LABELS: Record<WorldItemType, string> = {
-  heal: '+2 HP', damage_boost: '威力', range_boost: '范围', homing: '锁定', airstrike: '空袭',
+  heal: '+2 HP', damage_boost: t('威力', 'Power'), range_boost: t('范围', 'Blast'), homing: t('锁定', 'Homing'), airstrike: t('空袭', 'Airstrike'),
 };
 
 export const ITEM_COLORS: Record<WorldItemType, number> = {

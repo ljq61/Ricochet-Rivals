@@ -1,3 +1,4 @@
+import { t } from '../i18n/locale';
 import Phaser from 'phaser';
 import { CameraMode } from '../camera/CameraMode';
 import { ART } from '../config/ArtAssets';
@@ -156,7 +157,7 @@ export class AimButton {
     const active = aiming || (this.hovered && inFlow);
 
     this.label.setText(
-      aiming ? '取消瞄准 · Esc / 右键' : '回到炮手 / 瞄准 [Space]'
+      aiming ? t('取消瞄准 · Esc / 右键', 'Cancel · Esc / Right click') : t('回到炮手 / 瞄准 [Space]', 'Return / Aim [Space]')
     );
     this.label.setColor('#151c22');
     this.label.setX(this.icon ? 34 * ui : 0);
@@ -210,7 +211,7 @@ export class AimButton {
     const alpha = inFlow || aiming ? 1 : 0.55;
 
     if (this.icon !== null) {
-      this.label.setText(aiming ? '取消' : '瞄准').setFontSize(12 * this.deps.viewport.current.uiScale)
+      this.label.setText(aiming ? t('取消', 'Cancel') : t('瞄准', 'Aim')).setFontSize(12 * this.deps.viewport.current.uiScale)
         .setPosition(0, this.height / 2 + 10 * this.deps.viewport.current.uiScale)
         .setStroke('#151c22', 3 * this.deps.viewport.current.uiScale);
       this.bg.clear();

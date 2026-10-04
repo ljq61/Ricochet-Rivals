@@ -1,6 +1,6 @@
 # Ricochet Rivals
 
-当前版本：**0.2.3**（2026-10-03，版本标签 `v0.2.3`；历史标签 `v0.2.2`、`v0.2.1`、`v0.2.0`、`v0.1.0` 保留）。更新记录见 [CHANGELOG](CHANGELOG.md)，版本升级与发布流程见 [版本管理](docs/VERSIONING.md)。
+当前开发版本：**0.2.4 候选**（2026-10-04，`codex/crazygames-release-prep`）；公开 Pages 版本仍为 **0.2.3 / v0.2.3**，历史标签保留。更新记录见 [CHANGELOG](CHANGELOG.md)，版本升级与发布流程见 [版本管理](docs/VERSIONING.md)。
 
 V0.2 新增降落伞木箱、穿箱拾取、3 格背包、每行动 1 件，以及回血、威力、范围、自动瞄准、空袭五类道具；三档 AI 与 Host 权威联机已接入。单人电脑行动时隐藏电脑瞄准图标、光晕和输入热区，玩家行动时恢复。0.2.0 已发布到 GitHub Pages；当时线上两种手机尺寸13项单人控件检查通过，新增美术与音效资源返回200。规则与验收见 [V0.2 PRD](docs/横版回合制弹道对战网页游戏%20V0.2%20PRD.md) 和 [验证记录](docs/V0.2_QA.md)。
 
@@ -19,7 +19,7 @@ Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
 
 程序启动即显示新生成的海港双角色插画、现有标志和实际资源进度；主菜单首次渲染后收起，手机横竖屏适配。素材与完整提示词见[启动加载图记录](docs/ArtDesign/STARTUP_LOADING_2026-10-01.md)。
 
-CrazyGames 发布准备（2026-10-04）：独立分支 `codex/crazygames-release-prep` 基于0.2.3，已整理官方门槛、英文/路径/体积/全屏/联机差距及商店文案草稿。实施顺序与验收见[准备清单](docs/CRAZYGAMES_RELEASE_PREP.md)。当前清单不代表平台提交或审核通过。
+CrazyGames 0.2.4 候选（2026-10-04）：平台默认英文，独立相对路径构建，隐藏自有全屏并注入公网信令。41张运行图片编码为WebP，保留原始美术和全部帧尺寸，音效/出处原样打包；简单标识使用SVG。完整包63文件、12.38 MB，ZIP约11.01 MB。构建方式、资源审计与剩余平台验收见[准备清单](docs/CRAZYGAMES_RELEASE_PREP.md)。此分支尚未合入main或提交平台。
 
 ## 在线试玩与部署状态
 
@@ -93,12 +93,18 @@ npm install --include=dev   # 本机 npm 全局 omit=dev，必须带 --include=d
 
 npm run dev        # 启动开发服务器
 npm run typecheck  # tsc --noEmit（strict）
-npm run test       # vitest run（1021 项；不含信令服务器测试）
+npm run test       # vitest run（1079 项；不含信令服务器测试）
 npm run build      # 类型检查 + 生产构建
 npm run preview    # 预览构建产物
 npm run e2e        # 全量 E2E（desktop / mobile / sp / online 配对 / online 对战 / online-room 房间码）
                    # 调试单场景：RR_E2E_ONLY=battle|online|online-room|sp|mobile|desktop npm run e2e
-npm run e2e:items  # V0.2 道具专项（五类效果、连续拾取、四尺寸、真实双端；先 build）
+npm run e2e:items  # V0.2 道具专项（五类效果、连续拾取、手机安全区、真实双端；先 build）
+
+# CrazyGames Basic 候选（另需 cwebp、zip、unzip；macOS: brew install webp）
+npm run build:crazygames   # typecheck、增量WebP、dist-crazygames、artifacts/上传ZIP
+npm run preview:crazygames # 预览独立平台构建
+npm run e2e:crazygames     # 解压ZIP后用随机嵌套路径iframe测试英文/手机/资源
+RR_CRAZYGAMES_ITEMS=1 npm run e2e:crazygames # 同一ZIP追加完整道具/真实双端回归
 
 # 房间码联机模式需另起 Signaling Server（缺省 ws://127.0.0.1:8787）：
 cd server/signaling

@@ -1,3 +1,4 @@
+import { t } from '../i18n/locale';
 import Phaser from 'phaser';
 import { MenuArtwork } from '../ui/MenuArtwork';
 import { playerColor, toCssColor } from '../config/Palette';
@@ -227,7 +228,7 @@ export class ResultScene extends Phaser.Scene {
       this.stopStatusPulse();
       this.statusLine.setColor('#ff8b7a');
       this.statusLine.setText(this.rematchPhase === 'rules-mismatch'
-        ? '玩法版本不一致，请双方刷新更新'
+        ? t('玩法版本不一致，请双方刷新更新', 'Game versions differ. Both players must refresh.')
         : 'OPPONENT LEFT — BACK TO MENU');
       this.rematchButton?.setVisible(false);
       return;

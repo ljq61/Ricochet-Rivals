@@ -1,3 +1,4 @@
+import { t } from '../i18n/locale';
 import Phaser from 'phaser';
 import { playerColor, toCssColor } from '../config/Palette';
 import type { ViewportService } from '../platform/ViewportService';
@@ -106,7 +107,7 @@ export class TurnBanner {
       return;
     }
     const color = playerColor(playerId);
-    this.label.setText(label ?? `${playerId} · 第 ${turnId} 回合`);
+    this.label.setText(label ?? t(`${playerId} · 第 ${turnId} 回合`, `${playerId === 'P1' ? 'BLUE' : 'RED'} · Round ${turnId}`));
     this.fullText = this.label.text;
     this.label.setFontSize(TURN_FONT_SIZE * this.viewport.current.uiScale);
     this.label.setColor(toCssColor(color));
@@ -162,12 +163,12 @@ export class TurnBanner {
     this.winnerActive = true;
 
     if (winnerId === null) {
-      this.label.setText('平局 · 同归于尽');
+      this.label.setText(t('平局 · 同归于尽', 'DRAW · Both crews defeated'));
       this.fullText = this.label.text;
       this.label.setColor('#ffd24a');
       this.drawPill(0xffd24a, 0.9);
     } else {
-      this.label.setText(`${winnerId} 获胜！`);
+      this.label.setText(t(`${winnerId} 获胜！`, `${winnerId === 'P1' ? 'BLUE' : 'RED'} WINS!`));
       this.fullText = this.label.text;
       this.label.setColor(toCssColor(playerColor(winnerId)));
       this.drawPill(playerColor(winnerId), 0.9);

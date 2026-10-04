@@ -1,3 +1,4 @@
+import { t } from '../i18n/locale';
 import Phaser from 'phaser';
 import type { InputRouter } from '../input/InputRouter';
 import type { GesturePointerEvent } from '../input/gesture';
@@ -138,7 +139,7 @@ export class ItemHud {
       }
       this.labels[slot]!.setVisible(true).setPosition(rect.x - width / 2, rect.y - height / 2 + 19 * ui)
         .setFontSize(8 * ui).setAlpha(enabled || active ? 1 : 0.55)
-        .setText(active ? (item?.type === 'homing' ? '待用 0.8s' : '待用') : item ? ITEM_LABELS[item.type] : '空槽');
+        .setText(active ? (item?.type === 'homing' ? t('待用 0.8s', 'Armed 0.8s') : t('待用', 'Armed')) : item ? ITEM_LABELS[item.type] : t('空槽', 'Empty'));
     });
     if (this.layout.bag) {
       const rect = this.layout.bag;
@@ -156,7 +157,7 @@ export class ItemHud {
         g.lineStyle(2 * ui, 0xf4dc9c).strokeRoundedRect(x - 8 * ui, y - 21 * ui, 16 * ui, 8 * ui, 3 * ui);
       }
       this.labels[3]!.setVisible(true).setPosition(x, y + 19 * ui).setFontSize(8 * ui)
-        .setText(this.expanded ? '收起' : `背包 ${player.inventory.filter(Boolean).length}/3`);
+        .setText(this.expanded ? t('收起', 'Close') : t(`背包 ${player.inventory.filter(Boolean).length}/3`, `Bag ${player.inventory.filter(Boolean).length}/3`));
     }
     // Public opponent inventory badges below the HP bar, never an input zone.
     const opponentId = playerId === 'P1' ? 'P2' : 'P1';
@@ -175,11 +176,11 @@ export class ItemHud {
       }
     });
     // Keep state captions inside their plate; external captions could cover the next slot or Aim.
-    const statusText = this.deps.isPending() ? '确认中…' : player.itemUsedThisTurn ? '本回合已用'
-      : selected && this.layout.collapsed ? '下一发待用' : '';
+    const statusText = this.deps.isPending() ? t('确认中…', 'Pending…') : player.itemUsedThisTurn ? t('本回合已用', 'Used')
+      : selected && this.layout.collapsed ? t('下一发待用', 'Armed') : '';
     const caption = this.layout.bag ? this.labels[3] : this.labels[0];
     if (statusText && caption?.visible) {
-      caption.setFontSize(8 * ui).setAlpha(1).setText(this.layout.bag && this.expanded ? '收起' : statusText);
+      caption.setFontSize(8 * ui).setAlpha(1).setText(this.layout.bag && this.expanded ? t('收起', 'Close') : statusText);
     }
   }
 

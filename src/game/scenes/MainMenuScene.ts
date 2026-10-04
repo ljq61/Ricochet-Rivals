@@ -1,3 +1,4 @@
+import { t, getLocale, isCrazyGamesBuild } from '../i18n/locale';
 import Phaser from 'phaser';
 import { MenuArtwork } from '../ui/MenuArtwork';
 import { DEBUG_GAME } from '../config/DebugConfig';
@@ -138,7 +139,7 @@ export class MainMenuScene extends Phaser.Scene {
           router: this.inputRouter,
           id: `menu-difficulty-${difficulty}`,
           viewport: this.viewport,
-          label: { easy: 'EASY · 简单', normal: 'NORMAL · 普通', hard: 'HARD · 困难' }[difficulty],
+          label: { easy: t('EASY · 简单', 'EASY'), normal: t('NORMAL · 普通', 'NORMAL'), hard: t('HARD · 困难', 'HARD') }[difficulty],
           baseWidth: MODE_BUTTON_WIDTH,
           baseHeight: MODE_BUTTON_HEIGHT,
           fontSize: 18,
@@ -158,11 +159,11 @@ export class MainMenuScene extends Phaser.Scene {
       fontSize: 16,
       onTap: () => this.showDifficultySelection(false),
     });
-    this.difficultyTitle = this.add.text(0, 0, '选择难度', {
+    this.difficultyTitle = this.add.text(0, 0, t('选择难度', 'CHOOSE DIFFICULTY'), {
       fontFamily: 'Arial, sans-serif', fontStyle: 'bold', color: '#ffca59',
       stroke: '#151c22', strokeThickness: 4,
     }).setOrigin(0.5).setDepth(900);
-    this.difficultyHint = this.add.text(0, 0, '简单：轻松练习   普通：精准交锋\n困难：更精准、更有压迫感的炮击', {
+    this.difficultyHint = this.add.text(0, 0, t('简单：轻松练习   普通：精准交锋\n困难：更精准、更有压迫感的炮击', 'Easy: Practice   Normal: Sharper rivals\nHard: Accurate and relentless attacks'), {
       fontFamily: 'Arial, sans-serif', color: '#e8eef7',
       stroke: '#151c22', strokeThickness: 3, align: 'center',
     }).setOrigin(0.5).setDepth(900);
@@ -185,7 +186,7 @@ export class MainMenuScene extends Phaser.Scene {
 
     this.soundButton.setIconActive(getUserSettings().soundEnabled);
 
-    if (document.fullscreenEnabled) {
+    if (!isCrazyGamesBuild() && document.fullscreenEnabled) {
       this.fullscreenButton = new MenuButton(this, {
         router: this.inputRouter,
         id: 'menu-fullscreen',
@@ -315,7 +316,7 @@ export class MainMenuScene extends Phaser.Scene {
     }
     this.difficultyBackButton.setPosition(safeArea.left + 70 * uiScale, safeArea.top + 38 * uiScale);
     const compactHeader = top - safeArea.top < 140 * uiScale;
-    this.difficultyTitle.setFontSize((compactHeader ? 24 : 30) * uiScale);
+    this.difficultyTitle.setFontSize((compactHeader ? (getLocale() === 'en' ? 22 : 24) : 30) * uiScale);
     const headerY = compactHeader
       ? Math.min(safeArea.top + 38 * uiScale, top - buttonH / 2 - this.difficultyTitle.height / 2 - 8 * uiScale)
       : top - 100 * uiScale;

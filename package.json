@@ -1,7 +1,7 @@
 {
   "name": "ricochet-rivals",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "description": "横版 2D 回合制弹道对战网页游戏 (Side-scrolling turn-based artillery PvP web game)",
   "scripts": {
@@ -18,7 +18,10 @@
     "e2e:settings": "node scripts/e2e-settings.mjs",
     "e2e:loading": "node scripts/e2e-loading.mjs",
     "e2e:items": "node scripts/e2e-items.mjs",
-    "e2e:settings-online": "node scripts/e2e-settings-online.mjs"
+    "e2e:settings-online": "node scripts/e2e-settings-online.mjs",
+    "build:crazygames": "npm run typecheck && node scripts/asset-optimization.mjs && vite build --mode crazygames && node scripts/package-crazygames.mjs",
+    "preview:crazygames": "vite preview --mode crazygames",
+    "e2e:crazygames": "node scripts/e2e-crazygames.mjs"
   },
   "dependencies": {
     "phaser": "^4.2.1"

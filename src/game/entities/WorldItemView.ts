@@ -1,3 +1,4 @@
+import { t } from '../i18n/locale';
 import Phaser from 'phaser';
 import type { WorldItemState } from '../state/WorldItemState';
 import type { WorldItemType } from '../state/ids';
@@ -97,7 +98,7 @@ export class WorldItemView {
 
   pickupFeedback(type: WorldItemType, x: number, y: number,
     target?: { x: number; y: number }, uiScale = Math.max(1, window.devicePixelRatio || 1)): void {
-    const text = this.scene.add.text(x, y, `拾取 · ${ITEM_LABELS[type]}`, {
+    const text = this.scene.add.text(x, y, t(`拾取 · ${ITEM_LABELS[type]}`, `Picked up · ${ITEM_LABELS[type]}`), {
       fontFamily: 'sans-serif', fontSize: '32px', fontStyle: 'bold', color: '#fff0c9',
       stroke: '#17242d', strokeThickness: 5,
     }).setOrigin(0.5).setDepth(70);

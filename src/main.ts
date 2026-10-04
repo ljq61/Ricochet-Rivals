@@ -1,3 +1,4 @@
+import { initializeLocaleDocument, t } from './game/i18n/locale';
 import Phaser from 'phaser';
 import { createPhaserGameConfig } from './game/config/PhaserGameConfig';
 import { OrientationGate } from './game/platform/OrientationGate';
@@ -10,7 +11,8 @@ if (!root) {
   throw new Error('#game-root element not found in index.html');
 }
 
-updateStartupLoading(0, '正在唤醒海港…');
+initializeLocaleDocument();
+updateStartupLoading(0, t('正在唤醒海港…', 'Waking up the harbor…'));
 const game = new Phaser.Game(createPhaserGameConfig(root));
 game.events.once(Phaser.Core.Events.DESTROY, removeStartupLoading);
 const audioUnlock = new AudioUnlock(game.sound);

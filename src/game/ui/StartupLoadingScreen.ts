@@ -1,3 +1,4 @@
+import { t } from '../i18n/locale';
 import type Phaser from 'phaser';
 
 /** The initial DOM exists before JavaScript; scenes only update and retire it. */
@@ -5,7 +6,7 @@ export function isStartupLoadingVisible(): boolean {
   return document.getElementById('startup-loading') !== null;
 }
 
-export function updateStartupLoading(progress: number, status = '正在装载海港…'): void {
+export function updateStartupLoading(progress: number, status = t('正在装载海港…', 'Loading the harbor…')): void {
   if (!Number.isFinite(progress)) return;
   const percent = Math.round(Math.max(0, Math.min(1, progress)) * 100);
   const bar = document.getElementById('startup-loading-progress');
@@ -23,7 +24,7 @@ export function removeStartupLoading(): void {
 /** POST_RENDER happens after the newly created menu has actually painted its canvas. */
 export function finishStartupLoadingAfterRender(scene: Phaser.Scene): void {
   if (!isStartupLoadingVisible()) return;
-  updateStartupLoading(1, '海港已就绪，准备出航…');
+  updateStartupLoading(1, t('海港已就绪，准备出航…', 'Harbor ready. Setting sail…'));
   const finish = (): void => {
     scene.events.off('shutdown', cancel);
     removeStartupLoading();

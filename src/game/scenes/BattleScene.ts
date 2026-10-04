@@ -1,3 +1,4 @@
+import { t } from '../i18n/locale';
 import Phaser from 'phaser';
 import { createInitialGameState, TurnPhase, type GameState } from '../state/GameState';
 import type { PlayerId, WorldItemType } from '../state/ids';
@@ -458,7 +459,7 @@ export class BattleScene extends Phaser.Scene {
     this.sfx = new SfxBus(this);
     this.projectileSystem.onInventoryFull(() => {
       if (!this.syncLocked && !this.connectionRecoveryActive) {
-        this.turnBanner.showMessage('背包已满 · 木箱保留', 0xe2af4e);
+        this.turnBanner.showMessage(t('背包已满 · 木箱保留', 'Bag full · Crate stays'), 0xe2af4e);
       }
     });
     this.projectileSystem.onPickup((pickup) => {
@@ -650,8 +651,8 @@ export class BattleScene extends Phaser.Scene {
         if (this.online !== null) {
           const label =
             this.state.currentPlayerId === this.online.localPlayerId
-              ? `YOUR TURN · 第 ${this.state.turnId} 回合`
-              : `OPPONENT'S TURN · 第 ${this.state.turnId} 回合`;
+              ? t(`YOUR TURN · 第 ${this.state.turnId} 回合`, `YOUR TURN · Round ${this.state.turnId}`)
+              : t(`OPPONENT'S TURN · 第 ${this.state.turnId} 回合`, `OPPONENT’S TURN · Round ${this.state.turnId}`);
           this.turnBanner.showTurn(this.state.currentPlayerId, this.state.turnId, label);
         } else {
           this.turnBanner.showTurn(this.state.currentPlayerId, this.state.turnId);

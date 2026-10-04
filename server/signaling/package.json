@@ -1,7 +1,7 @@
 {
   "name": "ricochet-rivals-signaling",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "description": "Ricochet Rivals — WebSocket Signaling Server (room pairing / SDP / ICE relay only; gameplay runs on WebRTC DataChannel)",
   "scripts": {

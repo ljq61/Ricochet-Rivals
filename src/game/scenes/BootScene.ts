@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { MainMenuScene } from './MainMenuScene';
 import { ART, ART_FILES, AIM_POSE_FILES, SHEET_GRID, WALK_ART, DOCK_ART_FRAME, CONTROL_ART_FRAMES, ITEM_ART_FRAMES, AIRSTRIKE_ART_FRAMES } from '../config/ArtAssets';
-import { SFX_FILES } from '../audio/SfxBus';
+import { SFX_FILES } from '../config/SfxAssets';
+import { assetUrl } from '../platform/assetUrl';
 import { updateStartupLoading } from '../ui/StartupLoadingScreen';
 
 /**
@@ -21,15 +22,15 @@ export class BootScene extends Phaser.Scene {
       this.load.off('progress', updateStartupLoading);
     });
     for (const [key, file] of ART_FILES) {
-      this.load.image(key, `assets/art/${file}`);
+      this.load.image(key, assetUrl(`assets/art/${file}`));
     }
     // Phase 17 修复轮：瞄准抬枪序列（15–75°，蓝红各 5 张）
     for (const [key, file] of AIM_POSE_FILES) {
-      this.load.image(key, `assets/art/${file}`);
+      this.load.image(key, assetUrl(`assets/art/${file}`));
     }
     // Phase 17 Juice：音效（缺失时 SfxBus 静默跳过，同美术回退原则）
     for (const [key, file] of SFX_FILES) {
-      this.load.audio(key, `assets/sfx/${file}`);
+      this.load.audio(key, assetUrl(`assets/sfx/${file}`));
     }
   }
 

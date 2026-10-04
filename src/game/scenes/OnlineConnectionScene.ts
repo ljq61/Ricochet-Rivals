@@ -1,3 +1,4 @@
+import { t } from '../i18n/locale';
 import Phaser from 'phaser';
 import { MenuArtwork } from '../ui/MenuArtwork';
 import { DEBUG_FORCE_RELAY, DEBUG_GAME } from '../config/DebugConfig';
@@ -439,7 +440,7 @@ export class OnlineConnectionScene extends Phaser.Scene {
         this.lobbyCancel = null;
         this.lobbyPhase = 'idle';
         this.lobbyNotice = reason === 'RULES_VERSION_MISMATCH'
-          ? '玩法版本不一致，请双方刷新更新后重试'
+          ? t('玩法版本不一致，请双方刷新更新后重试', 'Game versions differ. Both players must refresh and retry.')
           : 'CONNECTION LOST — BACK TO MENU';
         this.renderState();
       },
@@ -706,8 +707,8 @@ export class OnlineConnectionScene extends Phaser.Scene {
       case RoomConnectionState.FAILED: {
         const failure = this.roomController?.lastFailure ?? null;
         const starting = this.isRoomStartupFailure();
-        status = starting ? '房间服务器正在启动，\n请10秒后重试' : this.roomFailureMessage ?? 'Connection failed';
-        if (starting) prompt = '点击 TRY AGAIN 后重新创建房间。';
+        status = starting ? t('房间服务器正在启动，\n请10秒后重试', 'Room server is starting.\nPlease retry in 10 seconds.') : this.roomFailureMessage ?? 'Connection failed';
+        if (starting) prompt = t('点击 TRY AGAIN 后重新创建房间。', 'Press TRY AGAIN to create a new room.');
         // Debug Mode 输出具体 reason（规格 SG-7）：正式构建保持简洁
         if (DEBUG_GAME && failure !== null && !starting) {
           status += ` [${failure.reason}${failure.code !== undefined ? `:${failure.code}` : ''}]`;
