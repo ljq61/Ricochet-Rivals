@@ -54,4 +54,3 @@ Browser插件未提供，沿用frontend-testing-debugging技能和仓库Puppetee
 - 线上[正式游戏](https://ljq61.github.io/Ricochet-Rivals/)引用 `assets/index-FSCfxU0g.js`，与本地已验证脚本SHA256一致：`fa9f2d6f3ee9fab2822e8d0052d837edee8c57251c51e7d1b3ececf4b5beeca0`。
 - 公网Chrome 844×390/DPR2触屏验证13/13：非空正确页面、无框架错误层、中文与原全屏、单人→普通→触屏移动→三格背包→回血保留正常射击→设置/声音/恢复通过。
 - 41张图实际HTTP200、Content-Type为image/webp，没有PNG/JPEG下载、资源/console/runtime错误。截图和临时报告保留在本机系统临时目录；实际扬声器输出、Safari/真机和跨网体验仍是独立验收。
-
