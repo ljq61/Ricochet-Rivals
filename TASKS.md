@@ -3976,6 +3976,6 @@ STOP。
 - [x] 构建缓存校验源码/输出SHA256，剔除无引用历史资源并验证dist实际文件。
 - [x] Pages工作流安装WebP编码器，客户端/信令包与锁文件统一0.2.4。
 - [x] 1075单测、类型检查与构建；完整浏览器289、道具/七组手机/双端380、加载59、设置74通过；45项独立复审，Windows缓存路径P2已修复。
-- [ ] 合入并推送main与dev_signaling_turn，核对Actions和线上WebP实际加载。
+- [x] 资源提交6f130e0同步main与dev_signaling_turn；Pages37207563674构建/部署成功，线上脚本SHA一致，41图WebP/0 PNG、中文/触屏/背包/回血/设置/声音13项通过，文档补记后同步。
 
 详情见[资源优化记录](docs/RESOURCE_OPTIMIZATION.md)。

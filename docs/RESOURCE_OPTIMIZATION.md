@@ -46,6 +46,12 @@ Browser插件未提供，沿用frontend-testing-debugging技能和仓库Puppetee
 - 完整浏览器289/289；道具/七组手机安全区/真实双端380/380（含基地HUD253项），五道具与制导/空袭音频通过。
 - 独立复审：类型检查、45项相关单测、61资源源/缓存/dist SHA、41图解码、dev原图/prod WebP、中文/原全屏/DOM设置通过；P2 Windows缓存路径分隔符已修复并重验，无未关闭P0/P1/P2。
 
-## 发布核对
+## 发布核对（2026-10-04）
 
-按资源优化提交合入main与dev_signaling_turn后核对两个远端SHA一致、工作树干净、Pages Actions成功；再检查线上HTML所指脚本、WebP请求/解码、中文设置和真实触控，记录实际发布证据。Git推送或本地构建成功不能替代线上验收。
+资源合入提交 `6f130e0cde1d8379b52df2e94dea2693efddddbb` 已同步推送到main和dev_signaling_turn；CrazyGames准备分支保持 `f8e2138`，没有合入平台功能。文档补记作为后续提交同步。
+
+- [Pages工作流37207563674](https://github.com/ljq61/Ricochet-Rivals/actions/runs/37207563674) build/deploy均success，CI83测试文件通过；Linux编码运行资源10.67 MB，完整产物63文件/12.39 MB（与本机编码版本的微小差异）。
+- 线上[正式游戏](https://ljq61.github.io/Ricochet-Rivals/)引用 `assets/index-FSCfxU0g.js`，与本地已验证脚本SHA256一致：`fa9f2d6f3ee9fab2822e8d0052d837edee8c57251c51e7d1b3ececf4b5beeca0`。
+- 公网Chrome 844×390/DPR2触屏验证13/13：非空正确页面、无框架错误层、中文与原全屏、单人→普通→触屏移动→三格背包→回血保留正常射击→设置/声音/恢复通过。
+- 41张图实际HTTP200、Content-Type为image/webp，没有PNG/JPEG下载、资源/console/runtime错误。截图和临时报告保留在本机系统临时目录；实际扬声器输出、Safari/真机和跨网体验仍是独立验收。
+
