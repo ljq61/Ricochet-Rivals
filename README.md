@@ -1,10 +1,12 @@
 # Ricochet Rivals
 
-当前版本：**0.2.3**（2026-10-03，版本标签 `v0.2.3`；历史标签 `v0.2.2`、`v0.2.1`、`v0.2.0`、`v0.1.0` 保留）。更新记录见 [CHANGELOG](CHANGELOG.md)，版本升级与发布流程见 [版本管理](docs/VERSIONING.md)。
+当前版本：**0.2.4**（2026-10-04，正式构建资源优化；历史版本标签保留）。更新记录见 [CHANGELOG](CHANGELOG.md)，版本升级与发布流程见 [版本管理](docs/VERSIONING.md)。
 
 V0.2 新增降落伞木箱、穿箱拾取、3 格背包、每行动 1 件，以及回血、威力、范围、自动瞄准、空袭五类道具；三档 AI 与 Host 权威联机已接入。单人电脑行动时隐藏电脑瞄准图标、光晕和输入热区，玩家行动时恢复。0.2.0 已发布到 GitHub Pages；当时线上两种手机尺寸13项单人控件检查通过，新增美术与音效资源返回200。规则与验收见 [V0.2 PRD](docs/横版回合制弹道对战网页游戏%20V0.2%20PRD.md) 和 [验证记录](docs/V0.2_QA.md)。
 
 2026-10-03 界面反馈：手机蓝左红右显示背包，点击向内展开三格、再次点击收起，48 CSS px 点击区；桌面保留竖排。左右移动按钮固定在己方基地甲板两端，默认基地视角下靠近平台左右边缘，图标44 CSS px、点击区48 CSS px；拖动镜头时与基地一起移出画面，角色移动不改变按钮世界位置，点击区域跟随实际图像；设置按钮移到左上头像正下方，安全区和矮屏缩放共用布局。移除 CREW 标题、血条外部大框与 P1/P2 标签，血条上移并保留原来的内槽、细边和分段高光。新道具美术参照概念图生图，素材与提示词见 [美术记录](docs/ArtDesign/V02_ITEMS_2026-10-03.md)。
+
+2026-10-04 资源优化：正式Pages构建使用41张WebP、18个音效、声音署名和SVG标识，运行资源48.03→10.66 MB，完整构建约64.93→12.38 MB（63文件）。保留原始美术、帧尺寸、透明通道、中文界面与现有玩法；开发服务器继续使用原图。仅提取CrazyGames准备分支的资源部分，平台功能仍留在原分支。1075单测、生产构建、完整浏览器289、道具/手机/双端380、加载59与设置74通过，独立复审P2已修。构建与验收见[资源优化记录](docs/RESOURCE_OPTIMIZATION.md)。
 
 横版 2D 回合制弹道对战网页游戏。
 Worms 式双方阵地对抗 + Angry Birds 式反方向拖拽瞄准发射。
@@ -91,8 +93,9 @@ npm install --include=dev   # 本机 npm 全局 omit=dev，必须带 --include=d
 
 npm run dev        # 启动开发服务器
 npm run typecheck  # tsc --noEmit（strict）
-npm run test       # vitest run（1021 项；不含信令服务器测试）
-npm run build      # 类型检查 + 生产构建
+npm run test       # vitest run（1075 项；不含信令服务器测试）
+npm run build      # 类型检查 + WebP编码 + 生产构建 + 资源完整性验证
+npm run assets:optimize # 单独更新WebP缓存（需cwebp，macOS: brew install webp）
 npm run preview    # 预览构建产物
 npm run e2e        # 全量 E2E（desktop / mobile / sp / online 配对 / online 对战 / online-room 房间码）
                    # 调试单场景：RR_E2E_ONLY=battle|online|online-room|sp|mobile|desktop npm run e2e

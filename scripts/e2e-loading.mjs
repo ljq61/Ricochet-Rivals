@@ -48,10 +48,10 @@ async function cold(page, url, label, viewport, failArt = false, failLogo = fals
   let holdScripts = true, holdAssets = true;
   const scripts = [], assets = [];
   page.on('request', (request) => {
-    if (failArt && request.url().includes('/loading-harbor.jpg')) return void request.abort();
-    if (failLogo && /\/logo\.png(?:\?|$)/.test(request.url())) return void request.abort();
+    if (failArt && /\/loading-harbor\.(?:jpg|webp)(?:\?|$)/.test(request.url())) return void request.abort();
+    if (failLogo && /\/logo\.(?:png|webp)(?:\?|$)/.test(request.url())) return void request.abort();
     if (holdScripts && request.resourceType() === 'script') scripts.push(request);
-    else if (holdAssets && /\/harbor\.png(?:\?|$)/.test(request.url())) assets.push(request);
+    else if (holdAssets && /\/harbor\.(?:png|webp)(?:\?|$)/.test(request.url())) assets.push(request);
     else void request.continue();
   });
   const navigation = page.goto(url, { waitUntil: 'load', timeout: 60000 });

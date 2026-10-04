@@ -1,3 +1,4 @@
+import { assetUrl } from '../platform/assetUrl';
 import { getUserSettings, toggleSound } from '../settings/UserSettings';
 
 export interface BattleSettingsOptions {
@@ -21,23 +22,22 @@ export class BattleSettings {
   private destroyed = false;
 
   constructor(private readonly options: BattleSettingsOptions) {
-    const artBase = `${import.meta.env.BASE_URL}assets/art/`;
     this.root.className = 'rr-battle-settings';
     this.root.innerHTML = `
       <style>
         .rr-battle-settings{position:fixed;inset:0;z-index:40;pointer-events:none;font-family:system-ui,sans-serif;color:#f5ead2}
         .rr-battle-settings *{box-sizing:border-box}
-        .rr-battle-settings button{font:800 17px system-ui,sans-serif;letter-spacing:1px;color:#ebf2ef;text-shadow:0 2px #07131f;touch-action:manipulation;cursor:pointer;border:0;border-radius:0;background:transparent url('${artBase}button-steel.png') center/100% 100% no-repeat;min-height:54px;padding:10px 24px;-webkit-tap-highlight-color:transparent;filter:drop-shadow(0 3px 1px #020a11aa)}
+        .rr-battle-settings button{font:800 17px system-ui,sans-serif;letter-spacing:1px;color:#ebf2ef;text-shadow:0 2px #07131f;touch-action:manipulation;cursor:pointer;border:0;border-radius:0;background:transparent url('${assetUrl('assets/art/button-steel.png')}') center/100% 100% no-repeat;min-height:54px;padding:10px 24px;-webkit-tap-highlight-color:transparent;filter:drop-shadow(0 3px 1px #020a11aa)}
         .rr-battle-settings button:active{filter:brightness(1.16) drop-shadow(0 1px 1px #020a11aa);transform:translateY(1px)}
         .rr-battle-settings button:focus-visible{outline:2px solid #ffdc84;outline-offset:2px}
-        .rr-battle-settings .rr-gear{position:absolute;width:48px;height:48px;min-height:48px;padding:0;pointer-events:auto;background-image:url('${artBase}settings-gear.png');background-size:contain;filter:drop-shadow(0 2px 2px #05122499)}
+        .rr-battle-settings .rr-gear{position:absolute;width:48px;height:48px;min-height:48px;padding:0;pointer-events:auto;background-image:url('${assetUrl('assets/art/settings-gear.png')}');background-size:contain;filter:drop-shadow(0 2px 2px #05122499)}
         .rr-battle-settings .rr-overlay{position:absolute;inset:0;pointer-events:auto;display:grid;place-items:center;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));background:#020d1cb8}
         .rr-battle-settings [hidden]{display:none!important}
         .rr-battle-settings .rr-panel{position:relative;isolation:isolate;width:380px;max-width:100%;max-height:100%;overflow:auto;overscroll-behavior:contain;padding:36px 34px 41px;filter:drop-shadow(0 14px 20px #0009)}
-        .rr-battle-settings .rr-panel:before{content:'';position:absolute;inset:0;border:28px solid transparent;border-image:url('${artBase}portrait-frame.png') 255 255 295 255 / 28px 28px 34px 28px round;pointer-events:none;z-index:-1}
+        .rr-battle-settings .rr-panel:before{content:'';position:absolute;inset:0;border:28px solid transparent;border-image:url('${assetUrl('assets/art/portrait-frame.png')}') 255 255 295 255 / 28px 28px 34px 28px round;pointer-events:none;z-index:-1}
         .rr-battle-settings .rr-panel:after{content:'';position:absolute;inset:24px 23px 28px;z-index:-2;background:repeating-linear-gradient(0deg,#7aa2b908 0 1px,transparent 1px 4px),repeating-linear-gradient(90deg,#030b1512 0 1px,transparent 1px 7px),linear-gradient(135deg,#243c4c,#112536 60%,#0c1c2b);box-shadow:inset 0 0 0 2px #081523,inset 0 0 24px #020b17}
-        .rr-battle-settings .rr-tag{position:absolute;bottom:12px;left:50%;width:160px;height:22px;display:grid;place-items:center;transform:translateX(-50%);background:url('${artBase}button-steel.png') center/100% 100% no-repeat;font:800 8px monospace;letter-spacing:2px;text-align:center;color:#b7c8cd;text-shadow:0 1px #000}
-        .rr-battle-settings h2{width:174px;min-height:39px;display:grid;place-items:center;margin:0 auto 15px;background:url('${artBase}button-gold.png') center/100% 100% no-repeat;text-align:center;font-size:21px;letter-spacing:3px;color:#151c22;text-shadow:0 1px #ffe6a0}
+        .rr-battle-settings .rr-tag{position:absolute;bottom:12px;left:50%;width:160px;height:22px;display:grid;place-items:center;transform:translateX(-50%);background:url('${assetUrl('assets/art/button-steel.png')}') center/100% 100% no-repeat;font:800 8px monospace;letter-spacing:2px;text-align:center;color:#b7c8cd;text-shadow:0 1px #000}
+        .rr-battle-settings h2{width:174px;min-height:39px;display:grid;place-items:center;margin:0 auto 15px;background:url('${assetUrl('assets/art/button-gold.png')}') center/100% 100% no-repeat;text-align:center;font-size:21px;letter-spacing:3px;color:#151c22;text-shadow:0 1px #ffe6a0}
         .rr-battle-settings .rr-actions{display:grid;gap:11px}
         .rr-battle-settings .rr-sound{display:flex;align-items:center;gap:9px;text-align:left}
         .rr-battle-settings .rr-sound b{font:inherit;flex:1}
@@ -48,7 +48,7 @@ export class BattleSettings {
         .rr-battle-settings .rr-sound span:after{content:'';position:absolute;right:3px;top:2px;width:18px;height:20px;background:repeating-linear-gradient(90deg,transparent 0 4px,#5b411f44 4px 5px),linear-gradient(#f4d492,#a57536);border:1px solid #f6ddb0;box-shadow:1px 1px 0 #071623}
         .rr-battle-settings .rr-sound[aria-pressed=false] span{padding:3px 6px 3px 27px;text-align:right;background-color:#122230;border-color:#546270;color:#9cacb7}
         .rr-battle-settings .rr-sound[aria-pressed=false] span:after{left:3px;right:auto;filter:saturate(.25)}
-        .rr-battle-settings .rr-primary{background-image:url('${artBase}button-gold.png');color:#151c22;text-shadow:0 1px #ffe1a0}
+        .rr-battle-settings .rr-primary{background-image:url('${assetUrl('assets/art/button-gold.png')}');color:#151c22;text-shadow:0 1px #ffe1a0}
         .rr-battle-settings .rr-confirm-text{font-size:15px;line-height:1.7;text-align:center;color:#d2e0e9;text-shadow:0 2px #040e18;margin:0 0 16px;padding:8px 0;border-top:1px solid #78919c44;border-bottom:1px solid #020b16}
         @media(max-height:360px){.rr-battle-settings .rr-panel{width:350px;padding:28px 28px 34px}.rr-battle-settings .rr-panel:before{border-image-width:23px 23px 29px 23px}.rr-battle-settings .rr-panel:after{inset:20px 19px 24px}.rr-battle-settings h2{font-size:19px;min-height:34px;width:158px;margin-bottom:9px}.rr-battle-settings .rr-actions{gap:8px}.rr-battle-settings button{min-height:48px;padding:8px 22px}.rr-battle-settings .rr-gear{padding:0}.rr-battle-settings .rr-tag{bottom:10px;font-size:7px}.rr-battle-settings .rr-confirm-text{margin-bottom:10px;padding:5px 0}}
       </style>

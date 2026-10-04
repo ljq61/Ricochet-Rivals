@@ -1,5 +1,11 @@
 node_modules/
 dist/
+dist-crazygames/
+.optimized-assets/
+.asset-optimization-report.json
+.crazygames-assets/
+.crazygames-assets-report.json
+artifacts/
 coverage/
 *.local
 .DS_Store
